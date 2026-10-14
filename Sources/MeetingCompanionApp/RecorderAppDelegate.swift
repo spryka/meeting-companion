@@ -56,7 +56,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     @objc func showSettings() {
         if settingsWindow == nil {
-            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 540),
+            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 740),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
             settings.title = "Настройки и диагностика"
             settings.isReleasedWhenClosed = false
