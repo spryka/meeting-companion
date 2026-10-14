@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IDENTITY="${CODESIGN_IDENTITY:--}"
+IDENTITY="${CODESIGN_IDENTITY:-$(cat "$ROOT_DIR/.codesign/identity" 2>/dev/null || printf '%s' '-')}"
 UV_BIN="$(command -v uv)"
 if [[ "$(uname -m)" != arm64 ]]; then
   echo "Meeting Companion requires Apple Silicon." >&2
@@ -17,6 +17,7 @@ trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/Meeting Companion.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/transcription"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp "$BIN_DIR/MeetingCompanionApp" "$APP/Contents/MacOS/MeetingCompanion"
 for name in transcribe.py transcribe-recording.py check-local.py run.sh uv-LICENSE-MIT; do
   cp "transcription/$name" "$APP/Contents/Resources/transcription/"

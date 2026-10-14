@@ -7,7 +7,7 @@ if pgrep -x MeetingCompanion >/dev/null; then
   echo "Quit Meeting Companion before installing." >&2
   exit 1
 fi
-IDENTITY="${CODESIGN_IDENTITY:--}"
+IDENTITY="${CODESIGN_IDENTITY:-$(cat "$ROOT_DIR/.codesign/identity" 2>/dev/null || printf '%s' '-')}"
 if [[ "$IDENTITY" == - ]]; then
   if [[ -d "$APP_PATH" ]] &&
      [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")" == local.meeting-companion ]] &&
