@@ -8,6 +8,8 @@ struct RecorderSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Настройки и диагностика").font(.title2).bold()
+            CalendarSettingsView(calendar: model.calendar)
+            Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Папка записей").font(.headline)
@@ -69,8 +71,11 @@ struct RecorderSettingsView: View {
             }
         }
         .padding(22)
-        .frame(width: 620, height: 540)
-        .onAppear { model.refreshAccess() }
+        .frame(width: 620, height: 740)
+        .onAppear {
+            model.refreshAccess()
+            model.calendar.refresh()
+        }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             model.refreshAccess()
             model.refreshPreparationProgress()
@@ -79,5 +84,35 @@ struct RecorderSettingsView: View {
 
     private func check(prepare: Bool) {
         Task { await model.checkTranscription(prepare: prepare) }
+    }
+}
+
+private struct CalendarSettingsView: View {
+    @ObservedObject var calendar: MeetingCalendar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Календари встреч").font(.headline)
+            if calendar.calendars.isEmpty {
+                Text(calendar.message.isEmpty ? "Нет доступных календарей." : calendar.message)
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(calendar.calendars, id: \.calendarIdentifier) { item in
+                            Toggle(item.title + " · " + item.source.title, isOn: Binding(
+                                get: { calendar.isSelected(item) },
+                                set: { calendar.select(item, enabled: $0) }
+                            ))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 100)
+            }
+            Toggle("Напоминать только о встречах со ссылкой на созвон", isOn: $calendar.requireCallLink)
+            Text("Ссылки ищутся в URL, месте и описании встречи. Для очных встреч отключи фильтр или начни запись вручную.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
