@@ -18,7 +18,9 @@ required to record or transcribe. Keep changes small; use existing platform APIs
 
 - Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths
   stable; changing signing identity can reset macOS permissions.
-- Never remove user recordings, transcripts, model caches or permissions.
+- Never remove user recordings, transcripts or model caches. Reset permissions
+  only at the user's explicit request, with `scripts/reset-permissions.sh` after
+  the app quits. Never reset permissions automatically during build/install.
 - Keep host and remote WAVs on the same timeline: 16 kHz mono PCM16, silence
   included. Host is the microphone owner; do not hardcode a person's name.
 - Transcription must work offline after preparation. Never upload audio.
