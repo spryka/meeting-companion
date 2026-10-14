@@ -9,7 +9,7 @@ if [[ "$(uname -m)" != arm64 ]]; then
   exit 1
 fi
 cd "$ROOT_DIR"
-swift build -c release --arch arm64 --product InterviewRecorderApp
+swift build -c release --arch arm64 --product MeetingCompanionApp
 BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
 mkdir -p dist
 STAGE="$(mktemp -d "$ROOT_DIR/dist/.build-app.XXXXXX")"
@@ -17,12 +17,12 @@ trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/Meeting Companion.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/transcription"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-cp "$BIN_DIR/InterviewRecorderApp" "$APP/Contents/MacOS/InterviewRecorder"
+cp "$BIN_DIR/MeetingCompanionApp" "$APP/Contents/MacOS/MeetingCompanion"
 for name in transcribe.py transcribe-recording.py check-local.py run.sh uv-LICENSE-MIT; do
   cp "transcription/$name" "$APP/Contents/Resources/transcription/"
 done
 cp "$UV_BIN" "$APP/Contents/Resources/transcription/uv"
-chmod +x "$APP/Contents/MacOS/InterviewRecorder" "$APP/Contents/Resources/transcription/uv" "$APP/Contents/Resources/transcription/run.sh"
+chmod +x "$APP/Contents/MacOS/MeetingCompanion" "$APP/Contents/Resources/transcription/uv" "$APP/Contents/Resources/transcription/run.sh"
 codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/transcription/uv"
 codesign --force --sign "$IDENTITY" "$APP"
 "$ROOT_DIR/scripts/check-bundle.sh" "$APP"

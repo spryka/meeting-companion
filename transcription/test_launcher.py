@@ -25,7 +25,7 @@ printf '%s\\n' "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$HF_HOME" "$HF_HUB_CACH
 
     def test_check_uses_private_storage_and_stays_offline(self):
         lines = self.run_launcher("--check")
-        root = Path.home() / "Library/Application Support/InterviewRecorder"
+        root = Path.home() / "Library/Application Support/MeetingCompanion"
         self.assertEqual(lines[:5], [str(root / path) for path in
                          ("runtime/cache", "runtime/python", "models", "models/hub", "models/xet")])
         self.assertEqual(lines[5:7], ["1", "1"])

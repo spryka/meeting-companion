@@ -8,13 +8,12 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "meeting-companion", targets: ["InterviewRecorderCLI"]),
-        .executable(name: "interview-recorder", targets: ["InterviewRecorderCLI"]),
-        .executable(name: "InterviewRecorderApp", targets: ["InterviewRecorderApp"])
+        .executable(name: "meeting-companion", targets: ["MeetingCompanionCLI"]),
+        .executable(name: "MeetingCompanionApp", targets: ["MeetingCompanionApp"])
     ],
     targets: [
         .target(
-            name: "InterviewRecorderCore",
+            name: "MeetingCompanionCore",
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreMedia"),
@@ -22,12 +21,12 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "InterviewRecorderCLI",
-            dependencies: ["InterviewRecorderCore"]
+            name: "MeetingCompanionCLI",
+            dependencies: ["MeetingCompanionCore"]
         ),
         .executableTarget(
-            name: "InterviewRecorderApp",
-            dependencies: ["InterviewRecorderCore"],
+            name: "MeetingCompanionApp",
+            dependencies: ["MeetingCompanionCore"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),

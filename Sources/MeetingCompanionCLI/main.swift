@@ -1,9 +1,9 @@
 import Foundation
-import InterviewRecorderCore
+import MeetingCompanionCore
 
 @available(macOS 15.0, *)
 @main
-struct InterviewRecorderCLI {
+struct MeetingCompanionCLI {
     static func main() async {
         do {
             let options = try Options.parse(CommandLine.arguments)
@@ -131,7 +131,7 @@ struct Options {
       meeting-companion --monitor-levels [--duration SECONDS] [--microphone-id ID]
 
     Defaults:
-      --output-dir ~/Downloads/Interviews
+      --output-dir ~/Downloads/Meetings
       --type m4a
 
     The utility records system audio and the default microphone until Enter is pressed.

@@ -7,9 +7,9 @@
 	<key>CFBundleDisplayName</key>
 	<string>Meeting Companion</string>
 	<key>CFBundleExecutable</key>
-	<string>InterviewRecorder</string>
+	<string>MeetingCompanion</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.interview-recorder</string>
+	<string>local.meeting-companion</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

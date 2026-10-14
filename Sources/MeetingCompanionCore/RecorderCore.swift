@@ -51,7 +51,7 @@ public struct RecordingPaths {
     public static var defaultOutputDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Downloads")
-            .appendingPathComponent("Interviews")
+            .appendingPathComponent("Meetings")
     }
 
     public static func makeOutputURL(outputDirectory: URL, outputKind: OutputKind = .m4a, date: Date = Date()) throws -> URL {
@@ -62,7 +62,7 @@ public struct RecordingPaths {
         let directory = outputDirectory.appendingPathComponent(formatter.string(from: date))
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let filename = "interview_\(formatter.string(from: date)).\(outputKind.fileExtension)"
+        let filename = "meeting_\(formatter.string(from: date)).\(outputKind.fileExtension)"
 
         return directory.appendingPathComponent(filename)
     }
@@ -76,7 +76,7 @@ public final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamOutput
     private let onLevels: (@Sendable (Double, Double) -> Void)?
     private let recordingURL: URL
     private let finished = AsyncSignal()
-    private let audioQueue = DispatchQueue(label: "local.interview-recorder.sources")
+    private let audioQueue = DispatchQueue(label: "local.meeting-companion.sources")
     private let sourceFiles: SourceAudioFiles
     private var stream: SCStream?
     private var recordingOutput: SCRecordingOutput?
@@ -259,8 +259,8 @@ public final class AudioLevelMonitor: NSObject, SCStreamOutput, @unchecked Senda
         configuration.channelCount = 2
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "local.interview-recorder.monitor.system"))
-        try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: DispatchQueue(label: "local.interview-recorder.monitor.microphone"))
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "local.meeting-companion.monitor.system"))
+        try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: DispatchQueue(label: "local.meeting-companion.monitor.microphone"))
         self.stream = stream
     }
 

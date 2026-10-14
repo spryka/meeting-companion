@@ -5,19 +5,19 @@ required to record or transcribe. Keep changes small; use existing platform APIs
 
 ## Layout
 
-- `Sources/InterviewRecorderCore`: ScreenCaptureKit capture, synchronized source
+- `Sources/MeetingCompanionCore`: ScreenCaptureKit capture, synchronized source
   WAV files, subprocess transcription.
-- `Sources/InterviewRecorderApp`: menu bar UI, permissions/diagnostics, calendar,
+- `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and completion notifications.
-- `Sources/InterviewRecorderCLI`: optional recording CLI.
+- `Sources/MeetingCompanionCLI`: optional recording CLI.
 - `transcription/`: GigaAM ONNX speech recognition, Nemotron MLX diarization,
   timestamp merge, runtime/model preparation and Python tests.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
 
 ## Invariants
 
-- Keep `local.interview-recorder` bundle ID and legacy storage paths compatible;
-  changing signing identity can reset macOS permissions.
+- Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths
+  stable; changing signing identity can reset macOS permissions.
 - Never remove user recordings, transcripts, model caches or permissions.
 - Keep host and remote WAVs on the same timeline: 16 kHz mono PCM16, silence
   included. Host is the microphone owner; do not hardcode a person's name.

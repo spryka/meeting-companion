@@ -14,19 +14,19 @@
    и нажми «Открыть текст».
 
 Python, пакеты и модели устанавливаются приложением автоматически при подготовке.
-Они хранятся отдельно в `~/Library/Application Support/InterviewRecorder/`;
+Они хранятся отдельно в `~/Library/Application Support/MeetingCompanion/`;
 кэши Ollama и других приложений не используются.
 Записи никуда не отправляются. При сбое звук сохраняется; кнопку «Получить текст»
 можно использовать для повторной транскрибации последней записи.
 
 ## Записи
 
-По умолчанию — `~/Downloads/Interviews/YYYY-MM/DD/`, по времени этого Mac.
+По умолчанию — `~/Downloads/Meetings/YYYY-MM/DD/`, по времени этого Mac.
 Папка меняется в «Настройки…», кнопка «Записи» открывает её в Finder.
 
 Для каждой встречи сохраняются:
 
-- `interview_YYYY-MM-DD_HH-mm-ss.m4a` — общая резервная запись;
+- `meeting_YYYY-MM-DD_HH-mm-ss.m4a` — общая резервная запись;
 - `*.host_record.wav` — микрофон;
 - `*.remote_record.wav` — системный звук;
 - `*.sources.transcript.txt` — готовый текст;
@@ -87,10 +87,7 @@ CODESIGN_IDENTITY="имя сертификата в Keychain" ./scripts/install-
 
 Установка требует закрыть приложение и отказывается заменять установленную
 подписанную версию сборкой ad-hoc: смена подписи может сбросить разрешения macOS.
-При обновлении Interview Recorder используй тот же сертификат и удали старый
-значок приложения после проверки новой версии. Внутренний bundle ID
-`local.interview-recorder`, настройки, имена записей и папка моделей сохранены
-для совместимости.
+
 
 Встроенный конвейер находится в `transcription/`: GigaAM для речи и Nemotron
 для голосов. CLI использует ресурсы установленного приложения:
@@ -106,15 +103,15 @@ swift run -c release meeting-companion --help
 ```bash
 uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest discover -s transcription -p 'test_*.py' -q
 ./scripts/check-bundle.sh "dist/Meeting Companion.app"
-swiftc Sources/InterviewRecorderCore/RecorderCore.swift Sources/InterviewRecorderCore/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
+swiftc Sources/MeetingCompanionCore/RecorderCore.swift Sources/MeetingCompanionCore/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
 /tmp/check-source-audio
-swiftc Sources/InterviewRecorderCore/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
+swiftc Sources/MeetingCompanionCore/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
 /tmp/check-transcription
-swiftc Sources/InterviewRecorderApp/MeetingCalendar.swift scripts/check-meeting-context.swift -o /tmp/check-meeting-context
+swiftc Sources/MeetingCompanionApp/MeetingCalendar.swift scripts/check-meeting-context.swift -o /tmp/check-meeting-context
 /tmp/check-meeting-context
-swiftc Sources/InterviewRecorderApp/RecorderDiagnostics.swift scripts/check-diagnostics.swift -o /tmp/check-diagnostics
+swiftc Sources/MeetingCompanionApp/RecorderDiagnostics.swift scripts/check-diagnostics.swift -o /tmp/check-diagnostics
 /tmp/check-diagnostics
-swiftc Sources/InterviewRecorderApp/TranscriptionNotifications.swift scripts/check-transcription-notifications.swift -o /tmp/check-transcription-notifications
+swiftc Sources/MeetingCompanionApp/TranscriptionNotifications.swift scripts/check-transcription-notifications.swift -o /tmp/check-transcription-notifications
 /tmp/check-transcription-notifications
 ```
 

@@ -9,7 +9,7 @@ struct MeetingChecks {
         let event = EKEvent(eventStore: store)
         event.calendar = EKCalendar(for: .event, eventStore: store)
         event.calendar.title = "Work"
-        event.title = "Interview"
+        event.title = "Meeting"
         event.startDate = now
         event.endDate = now.addingTimeInterval(3600)
         event.notes = "Agenda: architecture https://telemost.yandex.ru/j/123"
@@ -31,7 +31,7 @@ struct MeetingChecks {
         let json = try JSONSerialization.jsonObject(with: original) as! [String: Any]
         precondition(json["host"] as? String == NSFullUserName())
         precondition(json["timezone"] as? String == TimeZone.current.identifier)
-        precondition(json["summary"] as? String == "Interview")
+        precondition(json["summary"] as? String == "Meeting")
         precondition(json["agenda"] as? String == event.notes)
         precondition(json["start"] as? String != nil)
         do { try meeting.save(beside: audio); preconditionFailure("Context overwritten") } catch {}

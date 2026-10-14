@@ -70,7 +70,7 @@ def main():
                 parser.error(f"Transcript output aliases source audio: {output}")
     runner = Path(__file__).with_name("run.sh")
     options = ["--offline"] if args.offline else []
-    with tempfile.TemporaryDirectory(prefix="interview-transcript-") as directory:
+    with tempfile.TemporaryDirectory(prefix="meeting-transcript-") as directory:
         host_json, remote_json = (Path(directory) / name for name in ("host.json", "remote.json"))
         subprocess.run([str(runner), *options, "--no-diarize", "--segments-json", str(host_json),
                         str(host), str(host_output)], check=True)

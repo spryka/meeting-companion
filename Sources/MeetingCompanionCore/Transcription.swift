@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public enum Transcription {
-    private static let queue = DispatchQueue(label: "InterviewRecorder.transcription")
+    private static let queue = DispatchQueue(label: "MeetingCompanion.transcription")
 
     public static func run(recording: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
@@ -40,11 +40,7 @@ public enum Transcription {
         if let bundled, FileManager.default.fileExists(atPath: bundled.appendingPathComponent("run.sh").path) {
             return bundled
         }
-        let installed = URL(fileURLWithPath: "/Applications/Meeting Companion.app/Contents/Resources/transcription")
-        if FileManager.default.fileExists(atPath: installed.appendingPathComponent("run.sh").path) {
-            return installed
-        }
-        return URL(fileURLWithPath: "/Applications/InterviewRecorder.app/Contents/Resources/transcription")
+        return URL(fileURLWithPath: "/Applications/Meeting Companion.app/Contents/Resources/transcription")
     }
 
     private static func makeProcess(arguments: [String]) throws -> Process {

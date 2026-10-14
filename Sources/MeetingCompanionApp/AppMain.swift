@@ -1,10 +1,10 @@
 import AppKit
 import Foundation
-import InterviewRecorderCore
+import MeetingCompanionCore
 import SwiftUI
 
 @main
-struct InterviewRecorderApp: App {
+struct MeetingCompanionApp: App {
     @NSApplicationDelegateAdaptor(RecorderAppDelegate.self) private var delegate
     var body: some Scene {
         Settings { EmptyView() }

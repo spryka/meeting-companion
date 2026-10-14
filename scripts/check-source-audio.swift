@@ -131,7 +131,7 @@ struct SourceAudioFilesChecks {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM/dd/'interview_'yyyy-MM-dd_HH-mm-ss'.m4a'"
+        formatter.dateFormat = "yyyy-MM/dd/'meeting_'yyyy-MM-dd_HH-mm-ss'.m4a'"
         precondition(path.path == directory.appendingPathComponent(formatter.string(from: date)).path)
         precondition(FileManager.default.fileExists(atPath: path.deletingLastPathComponent().path))
     }

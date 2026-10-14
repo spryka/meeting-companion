@@ -5,7 +5,7 @@ import Foundation
 
 struct RecorderDiagnostics {
     static var dataDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/InterviewRecorder")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/MeetingCompanion")
     }
 
     struct PreparationProgress: Sendable, Equatable {

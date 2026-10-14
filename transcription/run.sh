@@ -2,7 +2,7 @@
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 UV_FLAGS=(--quiet)
-DATA_DIR="$HOME/Library/Application Support/InterviewRecorder"
+DATA_DIR="$HOME/Library/Application Support/MeetingCompanion"
 export UV_CACHE_DIR="$DATA_DIR/runtime/cache"
 export UV_PYTHON_INSTALL_DIR="$DATA_DIR/runtime/python"
 export HF_HOME="$DATA_DIR/models"
