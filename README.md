@@ -1,93 +1,136 @@
-# Meeting Recorder
+# Meeting Companion
 
+Записывает микрофон и системный звук, после остановки создаёт текст встречи
+с временными метками и разделением голосов. Apple Silicon, macOS 15+.
+Распознавание речи — русский язык.
 
+## Первый запуск
 
-## Getting started
+1. Перенеси `Meeting Companion.app` в «Программы» и открой его.
+2. Разреши доступ к микрофону и записи системного звука в macOS.
+3. Если модели ещё не установлены, нажми «Скачать модели». Интернет нужен
+   только для первоначальной подготовки; затем транскрибация работает офлайн.
+4. Выбери микрофон и нажми «Записать». После «Стоп» дождись готового текста
+   и нажми «Открыть текст».
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Python, пакеты и модели устанавливаются приложением автоматически при подготовке.
+Они хранятся отдельно в `~/Library/Application Support/InterviewRecorder/`;
+кэши Ollama и других приложений не используются.
+Записи никуда не отправляются. При сбое звук сохраняется; кнопку «Получить текст»
+можно использовать для повторной транскрибации последней записи.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Записи
 
-## Add your files
+По умолчанию — `~/Downloads/Interviews/YYYY-MM/DD/`, по времени этого Mac.
+Папка меняется в «Настройки…», кнопка «Записи» открывает её в Finder.
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Для каждой встречи сохраняются:
 
+- `interview_YYYY-MM-DD_HH-mm-ss.m4a` — общая резервная запись;
+- `*.host_record.wav` — микрофон;
+- `*.remote_record.wav` — системный звук;
+- `*.sources.transcript.txt` — готовый текст;
+- `*.context.json` — выбранная встреча из календаря, если есть.
+
+Дорожки WAV синхронизированы, включая тишину, и готовы для моделей:
+16 kHz mono PCM16. Транскрибация читает их напрямую; ffmpeg не используется. Наушники уменьшают попадание голоса собеседника в микрофон.
+BlackHole не нужен. Отдельные транскрипты дорожек и журналы ошибок лежат рядом.
+Общий текст собирается по временным меткам слов: реплика другого канала
+разрывает абзац, непрерывная речь делится на участки до 15 секунд.
+При одновременной речи сохраняются обе реплики; метки времени приблизительные.
+После успешной транскрибации появляется уведомление macOS с названием встречи
+из сохранённого контекста или именем записи. Уведомление не требует ответа;
+macOS один раз запрашивает разрешение на показ баннеров.
+
+## Календарь и фоновая работа
+
+Приложение остаётся в строке меню при закрытии окна. Нажатие на значок открывает
+окно; правое нажатие — настройки, автозапуск и выход.
+
+Доступ к календарю необязателен. При начале встречи появляется напоминание
+«На встрече? Начать запись?». «Да, начать» запускает запись, «Нет» закрывает
+напоминание. Встречу можно выбрать вручную. Приложение не подключается к звонку
+и не меняет события календаря.
+
+## Диагностика
+
+«Настройки…» показывает разрешения macOS. «Проверить всё» проверяет папку
+и короткое распознавание локальными моделями. Уровни звука видны в главном окне.
+Статусы разрешений обновляются автоматически: зелёный — доступ есть, оранжевый —
+ещё не запрошен, красный — доступа нет. Во время подготовки видны таймер и живой
+лог скачивания Python, пакетов и моделей, объём файлов на диске и время
+последнего изменения. Объём на диске включает распакованные пакеты и не является
+процентом загрузки. На медленном соединении подготовка может
+занять больше нескольких минут. Если доступ запрещён, открой «Разрешения macOS»
+и разреши его вручную.
+
+## Сборка из исходников
+
+Нужны macOS 15+, Apple Silicon, Swift 6 (Xcode Command Line Tools) и
+[uv](https://docs.astral.sh/uv/getting-started/installation/) в PATH.
+Homebrew в примере — один из способов установить uv; получателю готового
+приложения он не нужен.
+
+```bash
+xcode-select --install  # если инструменты разработчика ещё не установлены
+brew install uv
+./scripts/build-app.sh
+./scripts/install-app.sh
 ```
-cd existing_repo
-git remote add origin https://gitlab.lamoda.tech/bulat.fayzulin/meeting-recorder.git
-git branch -M master
-git push -uf origin master
+
+Сборка создаёт `dist/Meeting Companion.app` из исходников и `Resources/Info.plist`.
+По умолчанию используется подпись ad-hoc. Для подписи своим сертификатом:
+
+```bash
+CODESIGN_IDENTITY="имя сертификата в Keychain" ./scripts/install-app.sh
 ```
 
-## Integrate with your tools
+Установка требует закрыть приложение и отказывается заменять установленную
+подписанную версию сборкой ad-hoc: смена подписи может сбросить разрешения macOS.
+При обновлении Interview Recorder используй тот же сертификат и удали старый
+значок приложения после проверки новой версии. Внутренний bundle ID
+`local.interview-recorder`, настройки, имена записей и папка моделей сохранены
+для совместимости.
 
-* [Set up project integrations](https://gitlab.lamoda.tech/bulat.fayzulin/meeting-recorder/-/settings/integrations)
+Встроенный конвейер находится в `transcription/`: GigaAM для речи и Nemotron
+для голосов. CLI использует ресурсы установленного приложения:
 
-## Collaborate with your team
+```bash
+swift run -c release meeting-companion --help
+```
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Проверки
 
-## Test and Deploy
+Проверки без XCTest:
 
-Use the built-in continuous integration in GitLab.
+```bash
+uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest discover -s transcription -p 'test_*.py' -q
+./scripts/check-bundle.sh "dist/Meeting Companion.app"
+swiftc Sources/InterviewRecorderCore/RecorderCore.swift Sources/InterviewRecorderCore/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
+/tmp/check-source-audio
+swiftc Sources/InterviewRecorderCore/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
+/tmp/check-transcription
+swiftc Sources/InterviewRecorderApp/MeetingCalendar.swift scripts/check-meeting-context.swift -o /tmp/check-meeting-context
+/tmp/check-meeting-context
+swiftc Sources/InterviewRecorderApp/RecorderDiagnostics.swift scripts/check-diagnostics.swift -o /tmp/check-diagnostics
+/tmp/check-diagnostics
+swiftc Sources/InterviewRecorderApp/TranscriptionNotifications.swift scripts/check-transcription-notifications.swift -o /tmp/check-transcription-notifications
+/tmp/check-transcription-notifications
+```
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Распространение
 
-***
+Архив из `dist/` содержит приложение с конвейером и uv. Записи и модели
+в архив не входят; модели устанавливаются на Mac получателя.
+Для архива приложения:
 
-# Editing this README
+```bash
+ditto -c -k --sequesterRsrc --keepParent "dist/Meeting Companion.app" "dist/Meeting Companion-0.1.0-arm64.zip"
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Локальная подпись/ad-hoc не заменяет Developer ID и Apple notarization.
+При скачивании такого архива macOS может потребовать разрешить запуск через
+«Системные настройки → Конфиденциальность и безопасность». Не отключай Gatekeeper.
 
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Исходники экспортируются без `.build/`, `dist/`, `.codesign/`, записей и кэшей.
+Сторонние компоненты и модели: [THIRD_PARTY.md](THIRD_PARTY.md).
