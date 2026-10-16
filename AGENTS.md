@@ -5,7 +5,7 @@ required to record or transcribe. Keep changes small; use existing platform APIs
 
 ## Layout
 
-- `Sources/MeetingCompanionCore`: ScreenCaptureKit capture, synchronized source
+- `Sources/MeetingCompanionCore`: ScreenCaptureKit / Core Audio Tap audio capture, synchronized source
   WAV files, subprocess transcription.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and completion notifications.
@@ -18,7 +18,8 @@ required to record or transcribe. Keep changes small; use existing platform APIs
 
 - Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths
   stable; changing signing identity can reset macOS permissions.
-- Never remove user recordings, transcripts or model caches. Reset permissions
+- Never remove user recordings or transcripts. Remove app-owned model/runtime caches
+  only through the user-confirmed reset action; preserve shared caches. Reset permissions
   only at the user's explicit request, with `scripts/reset-permissions.sh` after
   the app quits. Never reset permissions automatically during build/install.
 - Keep host and remote WAVs on the same timeline: 16 kHz mono PCM16, silence

@@ -19,8 +19,51 @@ import Foundation
         try Data("longer file".utf8).write(to: existing)
         precondition(RecorderDiagnostics.preparationProgress(in: folder).bytes == 11)
         do { try RecorderDiagnostics.checkFolder(existing); preconditionFailure("File accepted as folder") } catch {}
+        let cache = folder.appendingPathComponent("app")
+        let recordings = folder.appendingPathComponent("recordings")
+        for name in ["models", "runtime", "settings"] {
+            let path = cache.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            try Data("keep".utf8).write(to: path.appendingPathComponent("data"))
+        }
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        let recording = recordings.appendingPathComponent("meeting.wav")
+        try Data("recording".utf8).write(to: recording)
+        do {
+            try RecorderDiagnostics.resetCache(in: cache, recordings: cache.appendingPathComponent("models/recordings"))
+            preconditionFailure("Nested recordings accepted")
+        } catch {}
+        do {
+            try RecorderDiagnostics.resetCache(in: cache, recordings: folder)
+            preconditionFailure("Parent recordings accepted")
+        } catch {}
+        let linked = folder.appendingPathComponent("linked")
+        try FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("models"), withDestinationURL: cache.appendingPathComponent("models"))
+        do {
+            try RecorderDiagnostics.resetCache(in: linked, recordings: recordings)
+            preconditionFailure("Linked cache accepted")
+        } catch {}
+        precondition(FileManager.default.fileExists(atPath: cache.appendingPathComponent("models/data").path))
+        try RecorderDiagnostics.resetCache(in: cache, recordings: recordings)
+        try RecorderDiagnostics.resetCache(in: cache, recordings: recordings)
+        precondition(!FileManager.default.fileExists(atPath: cache.appendingPathComponent("models").path))
+        precondition(!FileManager.default.fileExists(atPath: cache.appendingPathComponent("runtime").path))
+        precondition(FileManager.default.fileExists(atPath: cache.appendingPathComponent("settings/data").path))
+        let savedRecording = try Data(contentsOf: recording)
+        precondition(savedRecording == Data("recording".utf8))
         let access = RecorderDiagnostics.access()
         precondition(access.map(\.name) == ["Микрофон", "Системный звук", "Календарь"])
+        let tapAccess = RecorderDiagnostics.access(coreAudioTap: true)
+        precondition(tapAccess[1].state == .pending)
+        precondition(tapAccess[1].message.contains("Проверить звук"))
+        for state in [RecorderDiagnostics.Access.State.granted, .denied] {
+            let result = RecorderDiagnostics.Access(name: "Системный звук", message: "checked", state: state)
+            for tap in [false, true] {
+                precondition(RecorderDiagnostics.access(coreAudioTap: tap, captureCheck: result)[1] == result)
+            }
+        }
+        precondition(RecorderDiagnostics.access(coreAudioTap: true)[1].state == .pending)
         for item in access { print(item.name + ": " + item.message) }
         print("Folder write/preservation checks passed")
     }

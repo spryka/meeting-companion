@@ -17,67 +17,6 @@ struct MeetingCompanionApp: App {
     }
 }
 
-@MainActor
-final class AppWindowState: ObservableObject {
-    weak var window: NSWindow?
-    private var normalFrame: NSRect?
-    private let normalSize = NSSize(width: 680, height: 560)
-    private let compactSize = NSSize(width: 330, height: 122)
-
-    func attach(_ window: NSWindow) {
-        guard self.window !== window else { return }
-        self.window = window
-        window.title = "Meeting Companion"
-        window.titleVisibility = .visible
-        window.titlebarAppearsTransparent = false
-        window.minSize = normalSize
-    }
-
-    func setRecordingMode(_ isRecording: Bool) {
-        guard let window else { return }
-
-        if isRecording {
-            if normalFrame == nil {
-                normalFrame = window.frame
-            }
-
-            window.minSize = compactSize
-            let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
-            let origin = NSPoint(
-                x: screenFrame.maxX - compactSize.width - 24,
-                y: screenFrame.maxY - compactSize.height - 24
-            )
-
-            window.level = .floating
-            window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            window.standardWindowButton(.zoomButton)?.isHidden = true
-            window.setFrame(NSRect(origin: origin, size: compactSize), display: true, animate: true)
-            window.orderFrontRegardless()
-        } else {
-            window.level = .normal
-            window.collectionBehavior.remove([.canJoinAllSpaces, .fullScreenAuxiliary])
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = false
-            window.standardWindowButton(.zoomButton)?.isHidden = false
-            window.minSize = normalSize
-
-            if let normalFrame {
-                let restoredFrame = NSRect(
-                    x: normalFrame.minX,
-                    y: normalFrame.maxY - max(normalFrame.height, normalSize.height),
-                    width: max(normalFrame.width, normalSize.width),
-                    height: max(normalFrame.height, normalSize.height)
-                )
-                window.setFrame(restoredFrame, display: true, animate: true)
-            } else {
-                window.setContentSize(normalSize)
-                window.center()
-            }
-            self.normalFrame = nil
-        }
-    }
-}
-
 struct WindowAccessor: NSViewRepresentable {
     let onAttach: (NSWindow) -> Void
 
@@ -113,6 +52,10 @@ final class RecorderViewModel: ObservableObject {
     @Published var selectedMeeting: MeetingContext?
     @Published var isBusy = false
     @Published var isRecording = false
+    @Published var recordingSaveError: String?
+    var onRecordingSaved: (() -> Void)?
+
+    var showsRecordingCapsule: Bool { isRecording || recordingSaveError != nil }
     @Published var elapsed: TimeInterval = 0
     @Published var status = "Готов к записи"
     @Published var lastFileURL: URL?
@@ -122,9 +65,18 @@ final class RecorderViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(transcriptionReady, forKey: "transcriptionPrepared") }
     }
     @Published var transcriptionStatus = ""
-    @Published var diagnosticAccess = RecorderDiagnostics.access()
+    @Published var captureBackend = AudioCaptureBackend(rawValue: UserDefaults.standard.string(forKey: "captureBackend") ?? "") ?? .screenCaptureKit {
+        didSet {
+            UserDefaults.standard.set(captureBackend.rawValue, forKey: "captureBackend")
+            captureCheck = nil
+            refreshAccess()
+        }
+    }
+    private var captureCheck: RecorderDiagnostics.Access?
+    @Published var diagnosticAccess = RecorderDiagnostics.access(coreAudioTap: UserDefaults.standard.string(forKey: "captureBackend") == AudioCaptureBackend.coreAudioTap.rawValue)
     @Published var diagnosticReport = ""
     @Published var diagnosticRunning = false
+    @Published private(set) var isResettingCache = false
     @Published var diagnosticStartedAt: Date?
     @Published var preparationProgress: RecorderDiagnostics.PreparationProgress?
     private var progressProbeRunning = false
@@ -140,6 +92,8 @@ final class RecorderViewModel: ObservableObject {
     let levels = AudioLevels()
 
     private var isWindowVisible = false
+    @Published private(set) var isCheckingAudio = false
+    private var audioCheckTimeout: Task<Void, Never>?
     private var recorder: Recorder?
     private var levelMonitor: AudioLevelMonitor?
     private var levelMonitorTask: Task<Void, Never>?
@@ -176,9 +130,31 @@ final class RecorderViewModel: ObservableObject {
         isWindowVisible = visible
         levels.setActive(visible)
         Task {
-            if visible { await startLevelMonitor(reportErrors: false) }
-            else { await stopLevelMonitor() }
+            if !visible { await endAudioCheck() }
         }
+    }
+
+    func toggleAudioCheck() {
+        guard !isRecording, !isBusy, !diagnosticRunning, isWindowVisible else { return }
+        if isCheckingAudio {
+            isCheckingAudio = false
+            Task { await endAudioCheck() }
+            return
+        }
+        isCheckingAudio = true
+        audioCheckTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) }
+            catch { return }
+            await self?.endAudioCheck()
+        }
+        Task { await startLevelMonitor(reportErrors: true) }
+    }
+
+    private func endAudioCheck() async {
+        isCheckingAudio = false
+        audioCheckTimeout?.cancel()
+        audioCheckTimeout = nil
+        await stopLevelMonitor()
     }
 
     func chooseFolder() {
@@ -210,12 +186,50 @@ final class RecorderViewModel: ObservableObject {
         NSWorkspace.shared.open(lastTranscriptURL)
     }
 
+    var canResetCache: Bool {
+        !isRecording && !isBusy && !isCheckingAudio && !diagnosticRunning && transcriptionJobs == 0
+    }
+
+    func resetCache() async {
+        guard canResetCache else { return }
+        diagnosticRunning = true
+        isResettingCache = true
+        defer { diagnosticRunning = false; isResettingCache = false }
+        let directory = RecorderDiagnostics.dataDirectory
+        let recordings = outputDirectory
+        do {
+            let bytes = try await Task.detached {
+                let targets = try RecorderDiagnostics.cacheDirectories(in: directory, recordings: recordings)
+                return targets.reduce(Int64(0)) { $0 + RecorderDiagnostics.preparationProgress(in: $1).bytes }
+            }.value
+            let alert = NSAlert()
+            alert.messageText = "Сбросить кэш транскрибации?"
+            alert.informativeText = "Будут удалены модели и Python-окружение Meeting Companion (" +
+                ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) +
+                "). Для транскрибации потребуется скачать их заново. Записи, тексты, настройки и разрешения сохранятся."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Отмена")
+            alert.addButton(withTitle: "Сбросить кэш")
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            transcriptionReady = false
+            diagnosticReport = "Удаление моделей и Python-окружения…"
+            try await Task.detached {
+                try RecorderDiagnostics.resetCache(in: directory, recordings: recordings)
+            }.value
+            preparationProgress = nil
+            transcriptionStatus = "Модели не установлены"
+            diagnosticReport = "Кэш сброшен. Нажмите «Скачать модели» перед транскрибацией."
+        } catch {
+            diagnosticReport = "Ошибка сброса кэша: " + error.localizedDescription
+        }
+    }
+
     func checkTranscription(prepare: Bool) async {
         guard !diagnosticRunning, !isRecording, !isBusy, transcriptionJobs == 0 else { return }
         diagnosticRunning = true
         diagnosticStartedAt = Date()
         defer { diagnosticRunning = false; diagnosticStartedAt = nil; preparationProgress = nil }
-        diagnosticAccess = RecorderDiagnostics.access()
+        diagnosticAccess = RecorderDiagnostics.access(coreAudioTap: captureBackend == .coreAudioTap, captureCheck: captureCheck)
         diagnosticReport = prepare ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
         do {
             try RecorderDiagnostics.checkFolder(outputDirectory)
@@ -232,8 +246,17 @@ final class RecorderViewModel: ObservableObject {
         } catch { diagnosticReport = "Ошибка: " + error.localizedDescription }
     }
 
+    private func updateCaptureCheck(succeeded: Bool) {
+        let result = RecorderDiagnostics.Access(name: "Системный звук",
+            message: succeeded ? "захват проверен" : "проверка захвата не пройдена",
+            state: succeeded ? .granted : .denied)
+        guard captureCheck != result else { return }
+        captureCheck = result
+        refreshAccess()
+    }
+
     func refreshAccess() {
-        let access = RecorderDiagnostics.access()
+        let access = RecorderDiagnostics.access(coreAudioTap: captureBackend == .coreAudioTap, captureCheck: captureCheck)
         if access != diagnosticAccess { diagnosticAccess = access }
     }
 
@@ -280,7 +303,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func restartLevelMonitor() {
-        guard !isRecording else { return }
+        guard isCheckingAudio, !isRecording else { return }
         Task { await startLevelMonitor(reportErrors: true) }
     }
 
@@ -298,15 +321,19 @@ final class RecorderViewModel: ObservableObject {
         let meeting = selectedMeeting
         do {
             errorMessage = nil
-            await stopLevelMonitor()
+            recordingSaveError = nil
+            await endAudioCheck()
             let outputURL = try RecordingPaths.makeOutputURL(outputDirectory: outputDirectory)
             let recorder = try await Recorder(
                 outputURL: outputURL,
                 outputKind: .m4a,
                 microphoneDeviceID: selectedMicrophoneDeviceID,
+                backend: captureBackend,
                 onLevels: { [weak self] mic, system in
                     Task { @MainActor in
-                        guard let self, self.isWindowVisible else { return }
+                        guard let self else { return }
+                        if system.isFinite { self.updateCaptureCheck(succeeded: true) }
+                        guard self.isWindowVisible else { return }
                         self.levels.receive(mic: mic, system: system)
                     }
                 }
@@ -328,6 +355,7 @@ final class RecorderViewModel: ObservableObject {
                 catch { errorMessage = "Запись идёт, но контекст не сохранён: " + error.localizedDescription }
             }
         } catch {
+            updateCaptureCheck(succeeded: false)
             errorMessage = error.localizedDescription
             status = "Ошибка"
         }
@@ -342,6 +370,7 @@ final class RecorderViewModel: ObservableObject {
             status = "Сохранение…"
             guard let recorder else { throw RecorderError.notConfigured }
             let result = try await recorder.stop()
+            onRecordingSaved?()
             self.recorder = nil
             isRecording = false
             levels.reset()
@@ -352,6 +381,7 @@ final class RecorderViewModel: ObservableObject {
             transcribe(result.outputURL)
         } catch {
             self.recorder = nil
+            recordingSaveError = error.localizedDescription
             isRecording = false
             levels.reset()
             status = "Ошибка"
@@ -365,15 +395,18 @@ final class RecorderViewModel: ObservableObject {
         let task = Task { @MainActor [self] in
             await previous?.value
             await stopCurrentLevelMonitor()
-            guard !Task.isCancelled, !isRecording, !isBusy, isWindowVisible else { return }
+            guard !Task.isCancelled, isCheckingAudio, !isRecording, !isBusy, recordingSaveError == nil, isWindowVisible else { return }
 
             assert(levelMonitor == nil, "Previous audio preview must stop before another starts")
             do {
                 let monitor = try await AudioLevelMonitor(
                     microphoneDeviceID: selectedMicrophoneDeviceID,
+                    backend: captureBackend,
                     onLevels: { [weak self] mic, system in
                         Task { @MainActor in
-                            guard let self, self.isWindowVisible else { return }
+                            guard let self else { return }
+                            if system.isFinite { self.updateCaptureCheck(succeeded: true) }
+                            guard self.isWindowVisible else { return }
                             self.levels.receive(mic: mic, system: system)
                         }
                     }
@@ -390,9 +423,14 @@ final class RecorderViewModel: ObservableObject {
                     status = "Готов к записи"
                 }
             } catch {
-                if !Task.isCancelled && reportErrors && (status == "Готов к записи" || status == "Не удалось проверить звук") {
-                    errorMessage = error.localizedDescription
-                    status = "Не удалось проверить звук"
+                if !Task.isCancelled {
+                    updateCaptureCheck(succeeded: false)
+                    isCheckingAudio = false
+                    audioCheckTimeout?.cancel()
+                    if reportErrors {
+                        errorMessage = error.localizedDescription
+                        status = "Не удалось проверить звук"
+                    }
                 }
             }
         }
@@ -423,7 +461,7 @@ final class RecorderViewModel: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.isRecording, let startedAt = self.startedAt {
+                if self.isRecording, !self.isBusy, let startedAt = self.startedAt {
                     self.elapsed = Date().timeIntervalSince(startedAt)
                 }
 
@@ -440,9 +478,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if viewModel.isRecording {
+            if viewModel.showsRecordingCapsule {
                 CompactRecordingView(viewModel: viewModel)
-                    .frame(width: 330, height: 122)
+                    .frame(width: 288, height: 76)
             } else {
                 FullRecorderView(viewModel: viewModel, showSettings: showSettings)
                     .frame(width: 680, height: 560)
@@ -451,7 +489,8 @@ struct ContentView: View {
         .background(WindowAccessor { window in
             windowState.attach(window)
         })
-        .onChange(of: viewModel.isRecording) { _, isRecording in
+        .onChange(of: viewModel.showsRecordingCapsule) { _, isRecording in
+            if !isRecording { viewModel.setWindowVisible(false) }
             windowState.setRecordingMode(isRecording)
         }
     }
@@ -465,7 +504,7 @@ struct FullRecorderView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Meeting Companion \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                    Text("Meeting Companion")
                         .font(.title2)
                         .fontWeight(.semibold)
                     Text(viewModel.status)
@@ -499,7 +538,7 @@ struct FullRecorderView: View {
             if viewModel.diagnosticRunning {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("Подготовка транскрибации…").foregroundStyle(.secondary)
+                    Text(viewModel.isResettingCache ? "Сброс кэша…" : "Подготовка транскрибации…").foregroundStyle(.secondary)
                 }
             } else if !viewModel.transcriptionReady {
                 HStack {
@@ -514,7 +553,13 @@ struct FullRecorderView: View {
 
             MeetingPicker(viewModel: viewModel, calendar: viewModel.calendar)
 
-            LevelMetersView(levels: viewModel.levels)
+            Button(viewModel.isCheckingAudio ? "Завершить проверку звука" : "Проверить звук", action: viewModel.toggleAudioCheck)
+                .disabled(viewModel.isBusy || viewModel.diagnosticRunning)
+            if viewModel.isCheckingAudio {
+                LevelMetersView(levels: viewModel.levels)
+                Text("Проверка выключится через 30 секунд.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Микрофон")
@@ -574,6 +619,12 @@ struct FullRecorderView: View {
             }
 
             Spacer()
+            HStack {
+                Spacer()
+                Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
         }
         .padding(22)
     }
@@ -583,32 +634,74 @@ struct CompactRecordingView: View {
     @ObservedObject var viewModel: RecorderViewModel
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Circle()
-                .fill(.red)
-                .frame(width: 12, height: 12)
+                .fill(viewModel.recordingSaveError == nil ? Color.red : Color.orange)
+                .frame(width: 7, height: 7)
+                .accessibilityLabel(viewModel.recordingSaveError != nil ? "Ошибка сохранения" : (viewModel.isBusy ? "Сохранение записи" : "Идёт запись"))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Идёт запись")
-                    .font(.headline)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(viewModel.elapsedText)
-                    .font(.system(size: 28, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 25, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                if let error = viewModel.recordingSaveError {
+                    Text("Ошибка сохранения")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(error)
+                } else if viewModel.isBusy {
+                    Text("Сохранение…").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+            if !viewModel.isBusy && viewModel.recordingSaveError == nil {
                 CompactLevelMetersView(levels: viewModel.levels)
+                    .frame(width: 64)
             }
-
-            Spacer()
-
-            Button(action: viewModel.toggleRecording) {
-                Text("Стоп")
-                    .frame(width: 70)
+            Group {
+                if viewModel.isBusy {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel("Сохранение записи")
+                } else if viewModel.recordingSaveError != nil {
+                    Button {
+                        viewModel.recordingSaveError = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .help("Закрыть. Подробности ошибки доступны в основном окне.")
+                    .accessibilityLabel("Закрыть сообщение об ошибке")
+                } else {
+                    Button(action: viewModel.toggleRecording) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 12))
+                    }
+                    .tint(.red)
+                    .help("Остановить запись")
+                    .accessibilityLabel("Остановить запись")
+                }
             }
-            .keyboardShortcut(.space, modifiers: [])
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.red)
-            .disabled(viewModel.isBusy)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
+            .frame(width: 34, height: 34)
         }
-        .padding(18)
+        .padding(.horizontal, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(MeetingOverlaySurface(capsule: true))
+        .padding(4)
+    }
+}
+
+struct MeetingOverlaySurface: ViewModifier {
+    var capsule = false
+
+    @ViewBuilder func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: capsule ? 36 : 24)
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.regularMaterial, in: shape)
+                .overlay(shape.stroke(.primary.opacity(0.08), lineWidth: 1))
+        }
     }
 }
 
@@ -630,10 +723,23 @@ struct CompactLevelMetersView: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            ThinMeter(level: levels.mic, color: .green)
-            ThinMeter(level: levels.system, color: .blue)
+            HStack(spacing: 5) {
+                Image(systemName: "mic.fill").frame(width: 14)
+                ThinMeter(level: levels.mic, color: .green)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Микрофон")
+            .accessibilityValue("\(Int(levels.mic * 100)) процентов")
+            HStack(spacing: 5) {
+                Image(systemName: "speaker.wave.2.fill").frame(width: 14)
+                ThinMeter(level: levels.system, color: .blue)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Системный звук")
+            .accessibilityValue("\(Int(levels.system * 100)) процентов")
         }
-        .frame(width: 118)
+        .font(.system(size: 10))
+        .foregroundStyle(.primary)
     }
 }
 

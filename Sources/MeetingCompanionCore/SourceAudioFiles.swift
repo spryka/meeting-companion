@@ -9,13 +9,19 @@ final class SourceAudioFiles {
     private var startTime: CMTime?
     private var recording = false
     private var failure: Error?
+    private let archive: [SourceAudioFile]
+    let archiveURLs: [URL]
 
-    init(outputURL: URL) throws {
+    init(outputURL: URL, archiveAudio: Bool = false) throws {
         host = try SourceAudioFile(url: outputURL.deletingPathExtension().appendingPathExtension("host_record.wav"))
         remote = try SourceAudioFile(url: outputURL.deletingPathExtension().appendingPathExtension("remote_record.wav"))
+        archiveURLs = archiveAudio ? ["host", "remote"].map {
+            outputURL.deletingPathExtension().appendingPathExtension($0 + ".capture.caf")
+        } : []
+        archive = try archiveURLs.map { try SourceAudioFile(url: $0, sampleRate: 48000, channels: 2) }
     }
 
-    func start() { recording = true }
+    func start() { startTime = CMClockGetTime(CMClockGetHostTimeClock()); recording = true }
     func pause() { recording = false }
 
     func append(_ sample: CMSampleBuffer, microphone: Bool) {
@@ -38,18 +44,27 @@ final class SourceAudioFiles {
             let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(sample, at: 0,
                 frameCount: Int32(buffer.frameLength), into: buffer.mutableAudioBufferList)
             guard status == noErr else { throw SourceAudioError.invalidBuffer }
-            let offset = CMTimeGetSeconds(CMTimeSubtract(timestamp, startTime!))
-            try (microphone ? host : remote).append(buffer, seconds: offset)
+            append(buffer, timestamp: timestamp, microphone: microphone)
         } catch {
             failure = error
         }
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer, timestamp: CMTime, microphone: Bool) {
+        guard recording, failure == nil else { return }
+        if startTime == nil { startTime = timestamp }
+        do {
+            let offset = CMTimeGetSeconds(CMTimeSubtract(timestamp, startTime!))
+            try (microphone ? host : remote).append(buffer, seconds: offset)
+            if !archive.isEmpty { try archive[microphone ? 0 : 1].append(buffer, seconds: offset) }
+        } catch { failure = error }
     }
 
     func finish(duration: TimeInterval) throws {
         defer { startTime = nil; recording = false }
         var finishError: Error?
         let duration = max(duration, host.duration, remote.duration)
-        for source in [host, remote] {
+        for source in [host, remote] + archive {
             do { try source.finish(duration: duration) } catch { finishError = error }
         }
         if let error = failure ?? finishError { throw error }
@@ -70,16 +85,17 @@ enum SourceAudioError: LocalizedError {
 final class SourceAudioFile {
     private let url: URL
     private var file: AVAudioFile?
-    private let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+    private let format: AVAudioFormat
     private var converter: AVAudioConverter?
     private var position: AVAudioFramePosition = 0
     var duration: Double { Double(position) / format.sampleRate }
 
-    init(url: URL) throws {
+    init(url: URL, sampleRate: Double = 16000, channels: AVAudioChannelCount = 1) throws {
         guard !FileManager.default.fileExists(atPath: url.path) else {
             throw SourceAudioError.existingFile(url.path)
         }
         self.url = url
+        format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels)!
     }
 
     func append(_ input: AVAudioPCMBuffer, seconds: Double) throws {
@@ -91,7 +107,7 @@ final class SourceAudioFile {
         }
         guard let converter,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity:
-                AVAudioFrameCount(ceil(Double(input.frameLength) * 16000 / input.format.sampleRate)) + 32)
+                AVAudioFrameCount(ceil(Double(input.frameLength) * format.sampleRate / input.format.sampleRate)) + 32)
         else { throw SourceAudioError.invalidBuffer }
         var supplied = false
         var conversionError: NSError?
@@ -132,8 +148,8 @@ final class SourceAudioFile {
     private func open() throws {
         file = try AVAudioFile(forWriting: url, settings: [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: format.channelCount,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false

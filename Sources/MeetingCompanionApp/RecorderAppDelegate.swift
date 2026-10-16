@@ -21,6 +21,10 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         window.delegate = self
         window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() })
         window.center()
+        model.onRecordingSaved = { [weak self] in
+            self?.window.orderOut(nil)
+            self?.model.setWindowVisible(false)
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusClicked)
@@ -128,8 +132,11 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             return
         }
         model.calendar.acknowledge(meeting)
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 160),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 348, height: 134),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
         panel.isReleasedWhenClosed = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -145,7 +152,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             }
         })
         let screen = window.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: screen.maxX - 404, y: screen.maxY - 184))
+        panel.setFrameOrigin(NSPoint(x: screen.maxX - 372, y: screen.maxY - 158))
         reminder = panel
         Timer.scheduledTimer(withTimeInterval: max(1, min(300, meeting.end.timeIntervalSinceNow)), repeats: false) { [weak self, weak panel] _ in
             Task { @MainActor in
@@ -163,18 +170,21 @@ struct MeetingReminderView: View {
     let respond: (Bool) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             Text(meeting.summary).font(.headline).lineLimit(2)
-            Text("На встрече? Начать запись?")
             HStack {
-                Button("Нет") { respond(false) }
+                Button("Пропустить") { respond(false) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Button("Да, начать") { respond(true) }
+                Button("Начать запись") { respond(true) }
                     .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
             }
         }
         .padding(20)
-        .frame(width: 380, height: 160)
-        .background(.regularMaterial)
+        .frame(width: 340, height: 126)
+        .modifier(MeetingOverlaySurface())
+        .padding(4)
     }
 }

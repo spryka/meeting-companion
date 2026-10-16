@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreMedia
 import Foundation
-import ScreenCaptureKit
 
 public enum OutputKind {
     case m4a
@@ -69,232 +68,142 @@ public struct RecordingPaths {
 }
 
 @available(macOS 15.0, *)
-public final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamOutput, @unchecked Sendable {
+public final class Recorder: @unchecked Sendable {
     private let outputURL: URL
     private let outputKind: OutputKind
-    private let microphoneDeviceID: String?
-    private let onLevels: (@Sendable (Double, Double) -> Void)?
-    private let recordingURL: URL
-    private let finished = AsyncSignal()
-    private let audioQueue = DispatchQueue(label: "local.meeting-companion.sources")
     private let sourceFiles: SourceAudioFiles
-    private var stream: SCStream?
-    private var recordingOutput: SCRecordingOutput?
-    private var recordedDuration: TimeInterval = 0
-    private var lastSystemLevelEmit = Date.distantPast
-    private var lastMicrophoneLevelEmit = Date.distantPast
+    private let queue = DispatchQueue(label: "local.meeting-companion.sources")
+    private var capture: (any AudioCapture)?
+    private var startedAt: CMTime?
+    private var lastMic = Date.distantPast
+    private var lastSystem = Date.distantPast
+    private let onLevels: (@Sendable (Double, Double) -> Void)?
 
-    public init(
-        outputURL: URL,
-        outputKind: OutputKind = .m4a,
-        microphoneDeviceID: String? = nil,
-        onLevels: (@Sendable (Double, Double) -> Void)? = nil
-    ) async throws {
+    public init(outputURL: URL, outputKind: OutputKind = .m4a,
+                microphoneDeviceID: String? = nil,
+                backend: AudioCaptureBackend = .screenCaptureKit,
+                onLevels: (@Sendable (Double, Double) -> Void)? = nil) async throws {
+        guard !FileManager.default.fileExists(atPath: outputURL.path) else { throw SourceAudioError.existingFile(outputURL.path) }
         self.outputURL = outputURL
         self.outputKind = outputKind
-        self.microphoneDeviceID = microphoneDeviceID
         self.onLevels = onLevels
-        self.sourceFiles = try SourceAudioFiles(outputURL: outputURL)
-        self.recordingURL = outputKind == .m4a
-            ? outputURL.deletingPathExtension().appendingPathExtension("recording-tmp.mp4")
-            : outputURL
-        super.init()
-        for path in [outputURL, recordingURL] where FileManager.default.fileExists(atPath: path.path) {
-            throw SourceAudioError.existingFile(path.path)
+        sourceFiles = try SourceAudioFiles(outputURL: outputURL, archiveAudio: true)
+        capture = try await makeAudioCapture(backend: backend, microphoneID: microphoneDeviceID) { [weak self] buffer, time, microphone in
+            guard let self else { return }
+            self.queue.sync {
+                self.sourceFiles.append(buffer, timestamp: time, microphone: microphone)
+                guard let onLevels = self.onLevels else { return }
+                let now = Date()
+                if microphone {
+                    guard now.timeIntervalSince(self.lastMic) >= 0.2 else { return }
+                    self.lastMic = now
+                    onLevels(audioLevel(from: buffer), .nan)
+                } else {
+                    guard now.timeIntervalSince(self.lastSystem) >= 0.2 else { return }
+                    self.lastSystem = now
+                    onLevels(.nan, audioLevel(from: buffer))
+                }
+            }
         }
-        try await configure()
-    }
-
-    private func configure() async throws {
-        let content = try await SCShareableContent.current
-        guard let display = content.displays.first else {
-            throw RecorderError.noDisplay
-        }
-
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        filter.includeMenuBar = false
-
-        let configuration = SCStreamConfiguration()
-        configuration.width = 2
-        configuration.height = 2
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        configuration.queueDepth = 1
-        configuration.showsCursor = false
-        configuration.capturesAudio = true
-        configuration.captureMicrophone = true
-        configuration.microphoneCaptureDeviceID = microphoneDeviceID
-        configuration.excludesCurrentProcessAudio = true
-        configuration.sampleRate = 48_000
-        configuration.channelCount = 2
-
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-
-        let recordingConfiguration = SCRecordingOutputConfiguration()
-        recordingConfiguration.outputURL = recordingURL
-        guard recordingConfiguration.availableOutputFileTypes.contains(.mp4) else {
-            throw RecorderError.unsupportedFileType(
-                AVFileType.mp4.rawValue,
-                recordingConfiguration.availableOutputFileTypes.map(\.rawValue).joined(separator: ", ")
-            )
-        }
-        recordingConfiguration.outputFileType = .mp4
-
-        let recordingOutput = SCRecordingOutput(configuration: recordingConfiguration, delegate: self)
-        try stream.addRecordingOutput(recordingOutput)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
-        try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: audioQueue)
-
-        self.stream = stream
-        self.recordingOutput = recordingOutput
     }
 
     public func start() async throws {
-        guard let stream else { throw RecorderError.notConfigured }
-        audioQueue.sync { sourceFiles.start() }
-        try await stream.startCapture()
+        guard let capture else { throw RecorderError.notConfigured }
+        startedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        queue.sync { sourceFiles.start() }
+        do { try await capture.start() }
+        catch {
+            try? await capture.stop()
+            queue.sync { sourceFiles.pause() }
+            self.capture = nil
+            throw error
+        }
     }
 
     public func stop() async throws -> RecordingResult {
-        guard let stream else { throw RecorderError.notConfigured }
-        audioQueue.sync { sourceFiles.pause() }
-        if let recordingOutput {
-            try stream.removeRecordingOutput(recordingOutput)
-            do { try await finished.wait() }
-            catch {
-                try? await stream.stopCapture()
-                throw error
-            }
-        }
-        try await stream.stopCapture()
-        if outputKind == .m4a {
-            try await exportAudioToM4A(from: recordingURL, to: outputURL)
-            try? FileManager.default.removeItem(at: recordingURL)
-        }
-        // Finalize sidecars after the original recording is safely saved.
-        try audioQueue.sync { try sourceFiles.finish(duration: recordedDuration) }
-
-        return RecordingResult(
-            outputURL: outputURL,
-            duration: recordedDuration,
-            fileSize: fileSize(at: outputURL)
-        )
-    }
-
-    public func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {}
-
-    public func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        let finished = finished
-        Task { await finished.signal(error: error) }
-    }
-
-    public func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        recordedDuration = CMTimeGetSeconds(recordingOutput.recordedDuration)
-        let finished = finished
-        Task { await finished.signal() }
-    }
-
-    public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio || type == .microphone else { return }
-        sourceFiles.append(sampleBuffer, microphone: type == .microphone)
-        emitLevel(from: sampleBuffer, type: type)
-    }
-
-    private func emitLevel(from sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
-        let now = Date()
-
-        switch type {
-        case .audio:
-            guard now.timeIntervalSince(lastSystemLevelEmit) >= 0.2 else { return }
-            lastSystemLevelEmit = now
-            onLevels?(Double.nan, audioLevel(from: sampleBuffer))
-        case .microphone:
-            guard now.timeIntervalSince(lastMicrophoneLevelEmit) >= 0.2 else { return }
-            lastMicrophoneLevelEmit = now
-            onLevels?(audioLevel(from: sampleBuffer), Double.nan)
-        default:
-            break
-        }
+        guard let capture, let startedAt else { throw RecorderError.notConfigured }
+        var captureError: Error?
+        do { try await capture.stop() } catch { captureError = error }
+        self.capture = nil
+        let duration = CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), startedAt))
+        // Finalize all captured audio even when the backend reports a partial recording.
+        try queue.sync { try sourceFiles.finish(duration: duration) }
+        try await exportMixedAudio(from: sourceFiles.archiveURLs, to: outputURL, outputKind: outputKind)
+        if let captureError { throw captureError }
+        for url in sourceFiles.archiveURLs { try? FileManager.default.removeItem(at: url) }
+        return RecordingResult(outputURL: outputURL, duration: duration, fileSize: fileSize(at: outputURL))
     }
 }
 
 @available(macOS 15.0, *)
-public final class AudioLevelMonitor: NSObject, SCStreamOutput, @unchecked Sendable {
-    private let microphoneDeviceID: String?
-    private let onLevels: (@Sendable (Double, Double) -> Void)
-    private var stream: SCStream?
-    private var lastSystemLevelEmit = Date.distantPast
-    private var lastMicrophoneLevelEmit = Date.distantPast
+public final class AudioLevelMonitor: @unchecked Sendable {
+    private var capture: (any AudioCapture)?
+    private let onLevels: @Sendable (Double, Double) -> Void
+    private var lastMic = Date.distantPast
+    private var lastSystem = Date.distantPast
 
-    public init(
-        microphoneDeviceID: String? = nil,
-        onLevels: @escaping @Sendable (Double, Double) -> Void
-    ) async throws {
-        self.microphoneDeviceID = microphoneDeviceID
+    public init(microphoneDeviceID: String? = nil, backend: AudioCaptureBackend = .screenCaptureKit,
+                onLevels: @escaping @Sendable (Double, Double) -> Void) async throws {
         self.onLevels = onLevels
-        super.init()
-        try await configure()
-    }
-
-    private func configure() async throws {
-        let content = try await SCShareableContent.current
-        guard let display = content.displays.first else {
-            throw RecorderError.noDisplay
+        capture = try await makeAudioCapture(backend: backend, microphoneID: microphoneDeviceID) { [weak self] buffer, _, microphone in
+            guard let self else { return }
+            let now = Date()
+            if microphone {
+                guard now.timeIntervalSince(lastMic) >= 0.2 else { return }
+                lastMic = now
+                onLevels(audioLevel(from: buffer), .nan)
+            } else {
+                guard now.timeIntervalSince(lastSystem) >= 0.2 else { return }
+                lastSystem = now
+                onLevels(.nan, audioLevel(from: buffer))
+            }
         }
-
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        filter.includeMenuBar = false
-
-        let configuration = SCStreamConfiguration()
-        configuration.width = 2
-        configuration.height = 2
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        configuration.queueDepth = 1
-        configuration.showsCursor = false
-        configuration.capturesAudio = true
-        configuration.captureMicrophone = true
-        configuration.microphoneCaptureDeviceID = microphoneDeviceID
-        configuration.excludesCurrentProcessAudio = true
-        configuration.sampleRate = 48_000
-        configuration.channelCount = 2
-
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "local.meeting-companion.monitor.system"))
-        try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: DispatchQueue(label: "local.meeting-companion.monitor.microphone"))
-        self.stream = stream
     }
 
-    public func start() async throws {
-        guard let stream else { throw RecorderError.notConfigured }
-        try await stream.startCapture()
-    }
-
+    public func start() async throws { try await capture?.start() }
     public func stop() async throws {
-        guard let stream else { return }
-        try await stream.stopCapture()
-        self.stream = nil
+        let capture = capture
+        self.capture = nil
+        try await capture?.stop()
     }
+}
 
-    public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio || type == .microphone else { return }
-        emitLevel(from: sampleBuffer, type: type)
-    }
-
-    private func emitLevel(from sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
-        let now = Date()
-
-        switch type {
-        case .audio:
-            guard now.timeIntervalSince(lastSystemLevelEmit) >= 0.2 else { return }
-            lastSystemLevelEmit = now
-            onLevels(Double.nan, audioLevel(from: sampleBuffer))
-        case .microphone:
-            guard now.timeIntervalSince(lastMicrophoneLevelEmit) >= 0.2 else { return }
-            lastMicrophoneLevelEmit = now
-            onLevels(audioLevel(from: sampleBuffer), Double.nan)
-        default:
-            break
+public func exportMixedAudio(from sources: [URL], to output: URL, outputKind: OutputKind = .m4a) async throws {
+    guard !FileManager.default.fileExists(atPath: output.path) else { throw SourceAudioError.existingFile(output.path) }
+    let composition = AVMutableComposition()
+    var parameters: [AVMutableAudioMixInputParameters] = []
+    for url in sources {
+        let asset = AVURLAsset(url: url)
+        guard let source = try await asset.loadTracks(withMediaType: .audio).first,
+              let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw RecorderError.exportUnavailable
         }
+        let duration = try await asset.load(.duration)
+        try track.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: source, at: .zero)
+        let parameter = AVMutableAudioMixInputParameters(track: track)
+        parameter.setVolume(0.5, at: .zero)
+        parameters.append(parameter)
     }
+    guard !parameters.isEmpty else { throw RecorderError.exportUnavailable }
+    let mix = AVMutableAudioMix()
+    mix.inputParameters = parameters
+    guard let session = AVAssetExportSession(asset: composition,
+        presetName: outputKind == .m4a ? AVAssetExportPresetAppleM4A : AVAssetExportPresetHighestQuality) else {
+        throw RecorderError.exportUnavailable
+    }
+    session.audioMix = mix
+    try await session.export(to: output, as: outputKind == .m4a ? .m4a : .mp4)
+}
+
+func audioLevel(from buffer: AVAudioPCMBuffer) -> Double {
+    var sum = 0.0
+    var count = 0
+    for audio in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+        guard let data = audio.mData else { continue }
+        accumulateAudioSamples(data: data, byteCount: Int(audio.mDataByteSize),
+            audioFormat: buffer.format.streamDescription.pointee, sumSquares: &sum, sampleCount: &count)
+    }
+    return count == 0 ? 0 : min(sqrt(sum / Double(count)) * 6, 1)
 }
 
 actor AsyncSignal {
