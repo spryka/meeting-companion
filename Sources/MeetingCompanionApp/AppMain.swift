@@ -137,12 +137,12 @@ final class RecorderViewModel: ObservableObject {
             }
         }
     }
-    @Published var micLevel = 0.0
-    @Published var systemLevel = 0.0
+    let levels = AudioLevels()
 
-    private var isWindowVisible = true
+    private var isWindowVisible = false
     private var recorder: Recorder?
     private var levelMonitor: AudioLevelMonitor?
+    private var levelMonitorTask: Task<Void, Never>?
     private var startedAt: Date?
     private var timer: Timer?
     private var shouldPersistMicrophoneSelection = true
@@ -158,7 +158,6 @@ final class RecorderViewModel: ObservableObject {
     init() {
         refreshMicrophones()
         startTimer()
-        Task { await startLevelMonitor(reportErrors: true) }
         if !transcriptionReady { Task { await checkTranscription(prepare: false) } }
     }
 
@@ -175,6 +174,7 @@ final class RecorderViewModel: ObservableObject {
     func setWindowVisible(_ visible: Bool) {
         guard isWindowVisible != visible else { return }
         isWindowVisible = visible
+        levels.setActive(visible)
         Task {
             if visible { await startLevelMonitor(reportErrors: false) }
             else { await stopLevelMonitor() }
@@ -291,7 +291,10 @@ final class RecorderViewModel: ObservableObject {
     }
 
     private func startRecording() async {
-        defer { isBusy = false }
+        defer {
+            isBusy = false
+            restartLevelMonitor()
+        }
         let meeting = selectedMeeting
         do {
             errorMessage = nil
@@ -303,13 +306,8 @@ final class RecorderViewModel: ObservableObject {
                 microphoneDeviceID: selectedMicrophoneDeviceID,
                 onLevels: { [weak self] mic, system in
                     Task { @MainActor in
-                        guard let self else { return }
-                        if mic.isFinite {
-                            self.micLevel = mic
-                        }
-                        if system.isFinite {
-                            self.systemLevel = system
-                        }
+                        guard let self, self.isWindowVisible else { return }
+                        self.levels.receive(mic: mic, system: system)
                     }
                 }
             )
@@ -320,8 +318,7 @@ final class RecorderViewModel: ObservableObject {
             lastTranscriptURL = nil
             isRecording = true
             elapsed = 0
-            micLevel = 0
-            systemLevel = 0
+            levels.reset()
             startedAt = Date()
             status = "Идёт запись"
             transcriptionStatus = ""
@@ -333,87 +330,103 @@ final class RecorderViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
             status = "Ошибка"
-            await startLevelMonitor(reportErrors: false)
         }
     }
 
     private func stopRecording() async {
-        defer { isBusy = false }
+        defer {
+            isBusy = false
+            restartLevelMonitor()
+        }
         do {
             status = "Сохранение…"
             guard let recorder else { throw RecorderError.notConfigured }
             let result = try await recorder.stop()
             self.recorder = nil
             isRecording = false
-            micLevel = 0
-            systemLevel = 0
+            levels.reset()
             elapsed = result.duration
             lastFileURL = result.outputURL
             errorMessage = nil
             status = "Запись сохранена · \(formatBytes(result.fileSize))"
             transcribe(result.outputURL)
-            await startLevelMonitor(reportErrors: false)
         } catch {
             self.recorder = nil
             isRecording = false
-            micLevel = 0
-            systemLevel = 0
+            levels.reset()
             status = "Ошибка"
             errorMessage = error.localizedDescription
-            await startLevelMonitor(reportErrors: false)
         }
     }
 
     private func startLevelMonitor(reportErrors: Bool) async {
-        await stopLevelMonitor()
-        guard !isRecording, isWindowVisible else { return }
+        let previous = levelMonitorTask
+        previous?.cancel()
+        let task = Task { @MainActor [self] in
+            await previous?.value
+            await stopCurrentLevelMonitor()
+            guard !Task.isCancelled, !isRecording, !isBusy, isWindowVisible else { return }
 
-        do {
-            let monitor = try await AudioLevelMonitor(
-                microphoneDeviceID: selectedMicrophoneDeviceID,
-                onLevels: { [weak self] mic, system in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        if mic.isFinite {
-                            self.micLevel = mic
-                        }
-                        if system.isFinite {
-                            self.systemLevel = system
+            assert(levelMonitor == nil, "Previous audio preview must stop before another starts")
+            do {
+                let monitor = try await AudioLevelMonitor(
+                    microphoneDeviceID: selectedMicrophoneDeviceID,
+                    onLevels: { [weak self] mic, system in
+                        Task { @MainActor in
+                            guard let self, self.isWindowVisible else { return }
+                            self.levels.receive(mic: mic, system: system)
                         }
                     }
+                )
+                guard !Task.isCancelled else { return }
+                try await monitor.start()
+                if Task.isCancelled {
+                    try? await monitor.stop()
+                    return
                 }
-            )
-            try await monitor.start()
-            levelMonitor = monitor
-            if reportErrors && status == "Не удалось проверить звук" {
-                errorMessage = nil
-                status = "Готов к записи"
-            }
-        } catch {
-            levelMonitor = nil
-            if reportErrors && (status == "Готов к записи" || status == "Не удалось проверить звук") {
-                errorMessage = error.localizedDescription
-                status = "Не удалось проверить звук"
+                levelMonitor = monitor
+                if reportErrors && status == "Не удалось проверить звук" {
+                    errorMessage = nil
+                    status = "Готов к записи"
+                }
+            } catch {
+                if !Task.isCancelled && reportErrors && (status == "Готов к записи" || status == "Не удалось проверить звук") {
+                    errorMessage = error.localizedDescription
+                    status = "Не удалось проверить звук"
+                }
             }
         }
+        levelMonitorTask = task
+        await task.value
     }
 
     private func stopLevelMonitor() async {
-        guard let levelMonitor else { return }
-        try? await levelMonitor.stop()
-        self.levelMonitor = nil
+        let previous = levelMonitorTask
+        previous?.cancel()
+        let task = Task { @MainActor [self] in
+            await previous?.value
+            await stopCurrentLevelMonitor()
+        }
+        levelMonitorTask = task
+        await task.value
+    }
+
+    private func stopCurrentLevelMonitor() async {
+        guard let monitor = levelMonitor else { return }
+        levelMonitor = nil
+        try? await monitor.stop()
+        levels.reset()
     }
 
     private func startTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 if self.isRecording, let startedAt = self.startedAt {
                     self.elapsed = Date().timeIntervalSince(startedAt)
                 }
-                self.micLevel *= 0.86
-                self.systemLevel *= 0.86
+
             }
         }
     }
@@ -452,7 +465,7 @@ struct FullRecorderView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Meeting Companion")
+                    Text("Meeting Companion \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                         .font(.title2)
                         .fontWeight(.semibold)
                     Text(viewModel.status)
@@ -501,7 +514,7 @@ struct FullRecorderView: View {
 
             MeetingPicker(viewModel: viewModel, calendar: viewModel.calendar)
 
-            LevelMetersView(micLevel: viewModel.micLevel, systemLevel: viewModel.systemLevel)
+            LevelMetersView(levels: viewModel.levels)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Микрофон")
@@ -580,7 +593,7 @@ struct CompactRecordingView: View {
                     .font(.headline)
                 Text(viewModel.elapsedText)
                     .font(.system(size: 28, weight: .semibold, design: .monospaced))
-                CompactLevelMetersView(micLevel: viewModel.micLevel, systemLevel: viewModel.systemLevel)
+                CompactLevelMetersView(levels: viewModel.levels)
             }
 
             Spacer()
@@ -600,27 +613,25 @@ struct CompactRecordingView: View {
 }
 
 struct LevelMetersView: View {
-    let micLevel: Double
-    let systemLevel: Double
+    @ObservedObject var levels: AudioLevels
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Уровни звука")
                 .font(.headline)
-            LevelMeterRow(label: "Микрофон", level: micLevel, color: .green)
-            LevelMeterRow(label: "Система", level: systemLevel, color: .blue)
+            LevelMeterRow(label: "Микрофон", level: levels.mic, color: .green)
+            LevelMeterRow(label: "Система", level: levels.system, color: .blue)
         }
     }
 }
 
 struct CompactLevelMetersView: View {
-    let micLevel: Double
-    let systemLevel: Double
+    @ObservedObject var levels: AudioLevels
 
     var body: some View {
         VStack(spacing: 3) {
-            ThinMeter(level: micLevel, color: .green)
-            ThinMeter(level: systemLevel, color: .blue)
+            ThinMeter(level: levels.mic, color: .green)
+            ThinMeter(level: levels.system, color: .blue)
         }
         .frame(width: 118)
     }
@@ -646,14 +657,10 @@ struct ThinMeter: View {
     let color: Color
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.secondary.opacity(0.18))
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(color)
-                    .frame(width: max(3, proxy.size.width * min(max(level, 0), 1)))
-                    .animation(.linear(duration: 0.08), value: level)
+        HStack(spacing: 2) {
+            ForEach(0..<10) { index in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(index < Int(level * 10) ? color : Color.secondary.opacity(0.18))
             }
         }
         .frame(height: 8)

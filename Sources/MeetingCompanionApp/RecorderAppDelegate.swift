@@ -81,9 +81,9 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func showWindow() {
-        model.setWindowVisible(true)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        updatePreviewVisibility()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -91,6 +91,16 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         model.setWindowVisible(false)
         return false
     }
+
+    private func updatePreviewVisibility() {
+        model.setWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }
+    func windowDidMiniaturize(_ notification: Notification) { updatePreviewVisibility() }
+    func windowDidDeminiaturize(_ notification: Notification) { updatePreviewVisibility() }
+    func applicationDidHide(_ notification: Notification) { updatePreviewVisibility() }
+    func applicationDidUnhide(_ notification: Notification) { updatePreviewVisibility() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
