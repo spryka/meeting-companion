@@ -38,6 +38,10 @@ open "/Applications/Meeting Companion.app"
 
 ## Первая запись
 
+Кнопка «Проверить звук» показывает уровни микрофона и системного звука на
+30 секунд. Проверка выключается при скрытии окна или начале записи.
+Открытие окна само по себе захват не запускает.
+
 1. Нажми «Скачать модели» и дождись завершения подготовки. Интернет нужен
    только для первоначальной подготовки; затем транскрибация работает офлайн.
 2. Выбери микрофон и нажми «Записать». Разреши доступ к микрофону
@@ -47,8 +51,30 @@ open "/Applications/Meeting Companion.app"
 
 Python, пакеты и модели устанавливаются приложением автоматически при подготовке.
 Они хранятся в `~/Library/Application Support/MeetingCompanion/`.
+Кнопка «Сбросить кэш…» в настройках удаляет только подпапки `models` и `runtime`
+после подтверждения с размером. Записи, тексты, настройки и разрешения сохраняются.
+Сброс недоступен во время записи, проверки звука, транскрибации и подготовки.
+После сброса нужно заново нажать «Скачать модели». Общие кэши uv и Hugging Face
+не затрагиваются.
 Записи никуда не отправляются. При сбое звук сохраняется; кнопку «Получить текст»
 можно использовать для повторной транскрибации последней записи.
+
+## Режим захвата звука
+
+В «Настройки…» можно выбрать:
+
+- **ScreenCaptureKit** — стандартный режим, сохраняет только звук, без
+  видеовыхода и временного видеофайла. macOS может использовать службу захвата
+  экрана даже без сохранения видео.
+- **Core Audio Tap (экспериментальный)** — захват системного звука без экрана.
+  Может уменьшить нагрузку GPU, но возможны сбои аудиоустройств. Длительные
+  записи, Bluetooth и смена устройства во время записи пока не проверены.
+
+Выбор сохраняется. Менять режим во время записи и проверки звука нельзя.
+При ошибке приложение сообщает о ней, автоматического переключения нет.
+Микрофон, раздельные WAV и автоматическая транскрибация работают в обоих режимах.
+Временные аудиофайлы `*.capture.caf` удаляются после успешного сохранения M4A;
+при ошибке остаются рядом с записью для восстановления.
 
 ## Записи
 
@@ -194,7 +220,7 @@ uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest
 Для изменённых компонентов запусти соответствующие Swift-проверки:
 
 ```bash
-swiftc Sources/MeetingCompanionCore/RecorderCore.swift Sources/MeetingCompanionCore/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
+swiftc Sources/MeetingCompanionCore/AudioCapture.swift Sources/MeetingCompanionCore/RecorderCore.swift Sources/MeetingCompanionCore/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
 /tmp/check-source-audio
 swiftc Sources/MeetingCompanionCore/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
 /tmp/check-transcription
@@ -254,4 +280,10 @@ macOS может заблокировать скачанное приложен�
 ```sh
 swiftc Sources/MeetingCompanionApp/AudioLevels.swift scripts/check-audio-levels.swift -o /tmp/check-audio-levels
 /tmp/check-audio-levels
+```
+
+Проверка переходов окна записи (на Mac):
+```sh
+swiftc Sources/MeetingCompanionApp/RecordingWindowState.swift scripts/check-recording-window.swift -o /tmp/check-recording-window
+/tmp/check-recording-window
 ```

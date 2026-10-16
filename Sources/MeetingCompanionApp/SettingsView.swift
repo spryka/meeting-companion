@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MeetingCompanionCore
 
 struct RecorderSettingsView: View {
     @ObservedObject var model: RecorderViewModel
@@ -8,6 +9,17 @@ struct RecorderSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Настройки и диагностика").font(.title2).bold()
+            VStack(alignment: .leading, spacing: 6) {
+                Picker("Захват системного звука", selection: $model.captureBackend) {
+                    Text("ScreenCaptureKit").tag(AudioCaptureBackend.screenCaptureKit)
+                    Text("Core Audio Tap (экспериментальный)").tag(AudioCaptureBackend.coreAudioTap)
+                }
+                .disabled(model.isRecording || model.isBusy || model.isCheckingAudio || model.diagnosticRunning)
+                Text(model.captureBackend == .screenCaptureKit
+                    ? "Только звук, без видеозаписи. Стандартный режим macOS."
+                    : "Без захвата экрана. Возможны сбои аудиоустройств; длительные записи пока не проверены.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             CalendarSettingsView(calendar: model.calendar)
             Divider()
             HStack {
@@ -34,7 +46,7 @@ struct RecorderSettingsView: View {
                 }
                 Button("Проверить уровни звука", action: showRecorder)
             }
-            Text("Включи звук и скажи несколько слов — уровни видны в основном окне.")
+            Text("В основном окне нажми «Проверить звук», включи звук и скажи несколько слов.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             HStack {
@@ -46,6 +58,8 @@ struct RecorderSettingsView: View {
                 }
             }
             .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
+            Button("Сбросить кэш…") { Task { await model.resetCache() } }
+                .disabled(!model.canResetCache)
             Text("Первоначальная загрузка может занять несколько минут, при медленном соединении — дольше. После неё распознавание русской речи работает без интернета; записи никуда не отправляются.")
                 .font(.caption).foregroundStyle(.secondary)
             if let progress = model.preparationProgress {
@@ -71,7 +85,7 @@ struct RecorderSettingsView: View {
             }
         }
         .padding(22)
-        .frame(width: 620, height: 740)
+        .frame(width: 620, height: 820)
         .onAppear {
             model.refreshAccess()
             model.calendar.refresh()

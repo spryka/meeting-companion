@@ -12,8 +12,46 @@ struct SourceAudioFilesChecks {
         try checks.testStreamingStereoResample()
         try await checks.testExistingExportIsPreserved()
         try await checks.testRecordingFailureIsPropagated()
-        print("8 recording checks passed")
+        try await checks.testAudioOnlyMixAndArchives()
+        print("9 recording checks passed")
     }
+    private func testAudioOnlyMixAndArchives() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("mix.m4a")
+        let files = try SourceAudioFiles(outputURL: output, archiveAudio: true)
+        files.start()
+        let epoch = CMClockGetTime(CMClockGetHostTimeClock())
+        files.append(tone(seconds: 0.2), timestamp: epoch, microphone: true)
+        files.append(tone(seconds: 0.2), timestamp: CMTimeAdd(epoch, CMTime(seconds: 0.5, preferredTimescale: 48000)), microphone: false)
+        try files.finish(duration: 1)
+        let host = try read(output.deletingPathExtension().appendingPathExtension("host_record.wav"))
+        let remote = try read(output.deletingPathExtension().appendingPathExtension("remote_record.wav"))
+        precondition(host.frameLength == 16000 && remote.frameLength == host.frameLength)
+        precondition(rms(remote, start: 0.1, end: 0.4) < 0.005)
+        precondition(rms(remote, start: 0.52, end: 0.65) > 0.1)
+        for url in files.archiveURLs {
+            let file = try AVAudioFile(forReading: url)
+            precondition(file.fileFormat.sampleRate == 48000 && file.fileFormat.channelCount == 2)
+            precondition(file.length == 48000)
+        }
+        try await exportMixedAudio(from: files.archiveURLs, to: output)
+        let asset = AVURLAsset(url: output)
+        let video = try await asset.loadTracks(withMediaType: .video)
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        let duration = try await asset.load(.duration).seconds
+        precondition(video.isEmpty && audio.count == 1 && abs(duration - 1) < 0.05)
+        let mp4 = directory.appendingPathComponent("mix.mp4")
+        try await exportMixedAudio(from: files.archiveURLs, to: mp4, outputKind: .mp4)
+        let mp4Video = try await AVURLAsset(url: mp4).loadTracks(withMediaType: .video)
+        precondition(mp4Video.isEmpty)
+        do {
+            try await exportMixedAudio(from: files.archiveURLs, to: output)
+            preconditionFailure("Existing mixed recording overwritten")
+        } catch SourceAudioError.existingFile {}
+        precondition(files.archiveURLs.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
     private func testExistingExportIsPreserved() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
