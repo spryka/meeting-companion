@@ -238,3 +238,20 @@ macOS может заблокировать скачанное приложен�
 в «Системные настройки → Конфиденциальность и безопасность».
 
 Сторонние компоненты и модели: [THIRD_PARTY.md](THIRD_PARTY.md).
+
+## Версии и изменения
+
+Используем SemVer: исправления — patch (`1.0.1`), совместимые возможности — minor
+(`1.1.0`), несовместимые изменения — major (`2.0.0`). Версия хранится в
+`Resources/Info.plist` (`CFBundleShortVersionString`) и показывается в основном окне.
+`CFBundleVersion` — возрастающий номер сборки.
+
+Изменения добавляй в `[Unreleased]` файла [CHANGELOG.md](CHANGELOG.md).
+Перед выпуском перенеси их под номер версии с датой, обнови версию и номер
+сборки в Info.plist. Сборка приложения проверяет наличие версии в changelog.
+
+Проверка индикаторов звука:
+```sh
+swiftc Sources/MeetingCompanionApp/AudioLevels.swift scripts/check-audio-levels.swift -o /tmp/check-audio-levels
+/tmp/check-audio-levels
+```

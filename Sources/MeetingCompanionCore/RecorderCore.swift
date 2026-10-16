@@ -196,22 +196,21 @@ public final class Recorder: NSObject, SCRecordingOutputDelegate, SCStreamOutput
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio || type == .microphone else { return }
         sourceFiles.append(sampleBuffer, microphone: type == .microphone)
-        let level = audioLevel(from: sampleBuffer)
-        emitLevel(level, type: type)
+        emitLevel(from: sampleBuffer, type: type)
     }
 
-    private func emitLevel(_ level: Double, type: SCStreamOutputType) {
+    private func emitLevel(from sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
         let now = Date()
 
         switch type {
         case .audio:
-            guard now.timeIntervalSince(lastSystemLevelEmit) >= 0.05 else { return }
+            guard now.timeIntervalSince(lastSystemLevelEmit) >= 0.2 else { return }
             lastSystemLevelEmit = now
-            onLevels?(Double.nan, level)
+            onLevels?(Double.nan, audioLevel(from: sampleBuffer))
         case .microphone:
-            guard now.timeIntervalSince(lastMicrophoneLevelEmit) >= 0.05 else { return }
+            guard now.timeIntervalSince(lastMicrophoneLevelEmit) >= 0.2 else { return }
             lastMicrophoneLevelEmit = now
-            onLevels?(level, Double.nan)
+            onLevels?(audioLevel(from: sampleBuffer), Double.nan)
         default:
             break
         }
@@ -277,22 +276,21 @@ public final class AudioLevelMonitor: NSObject, SCStreamOutput, @unchecked Senda
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio || type == .microphone else { return }
-        let level = audioLevel(from: sampleBuffer)
-        emitLevel(level, type: type)
+        emitLevel(from: sampleBuffer, type: type)
     }
 
-    private func emitLevel(_ level: Double, type: SCStreamOutputType) {
+    private func emitLevel(from sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
         let now = Date()
 
         switch type {
         case .audio:
-            guard now.timeIntervalSince(lastSystemLevelEmit) >= 0.05 else { return }
+            guard now.timeIntervalSince(lastSystemLevelEmit) >= 0.2 else { return }
             lastSystemLevelEmit = now
-            onLevels(Double.nan, level)
+            onLevels(Double.nan, audioLevel(from: sampleBuffer))
         case .microphone:
-            guard now.timeIntervalSince(lastMicrophoneLevelEmit) >= 0.05 else { return }
+            guard now.timeIntervalSince(lastMicrophoneLevelEmit) >= 0.2 else { return }
             lastMicrophoneLevelEmit = now
-            onLevels(level, Double.nan)
+            onLevels(audioLevel(from: sampleBuffer), Double.nan)
         default:
             break
         }

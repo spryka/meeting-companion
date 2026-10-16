@@ -41,3 +41,9 @@ uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest
 For packaging run `./scripts/build-app.sh`; it validates bundle metadata,
 resources and signatures. Relevant Swift self-check commands are in README.
 Describe any UI, recording or permission flows you did not exercise.
+
+## Releases
+
+Use SemVer in `Resources/Info.plist`; increment `CFBundleVersion` for a release
+build. Record user-visible changes in `CHANGELOG.md` under `[Unreleased]`, then
+move them to a dated version section for release. Keep version strings out of code.
