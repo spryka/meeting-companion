@@ -1,8 +1,9 @@
-"""Conservative phonetic replacements from a timestamped English donor transcript."""
+"""Propose timestamped alternatives; apply only user-confirmed terms."""
 import difflib
 import re
 
 STOP=set('а и но или либо да не ни в во на по за из от до с со к ко у о об обо при для без над под через что чтобы как это то же ли бы вот ну'.split())
+STOP.update('я ты он она оно мы вы они меня мне мной мною тебя тебе тобой тобою его ему им ним него нем ее ей ею нее ней нас нам нами вас вам вами их ими них себя себе собой собою мой твой наш ваш свой'.split())
 def norm(s):return re.sub(r'[^a-zа-яё0-9]','',s.lower()).replace('ё','е')
 def phonetic(s):
  s=s.lower()
@@ -20,57 +21,96 @@ def similarity(a,b):
   for j,y in enumerate(b,1):nxt.append(min(nxt[-1]+1,row[j]+1,row[j-1]+(x!=y)))
   row=nxt
  return 1-row[-1]/max(len(a),len(b))
-def allowed(a,b,terms=()):
+def allowed(a,b,known_term=False):
  # Latin-only donor words; punctuation is ignored, numbers must survive.
  return (all(re.fullmatch(r'[A-Za-z]+(?:[-’\'][A-Za-z]+)*[.,!?;:]?',s) for s in b.split())
-  and not any(norm(w) in STOP for w in a.split())
   and re.findall(r'\d+',a)==re.findall(r'\d+',b)
   and len(phonetic(a)) >= 4 and len(phonetic(b)) >= 4
-  and similarity(a,b) >= (0.65 if norm(b) in {norm(term) for term in terms} else 0.8))
+  and similarity(a,b) >= (0.65 if known_term else 0.8))
 
 def contiguous(words):
  return all(left['start'] <= right['start'] and right['start']-left['end'] <= 0.6
             for left,right in zip(words,words[1:]))
 
-def cascade(g,p,terms=()):
- matcher=difflib.SequenceMatcher(None,[norm(x['text']) for x in g],[norm(x['text']) for x in p],autojunk=False)
- replacements={};rows=[]
- for op,ga,gz,pa,pz in matcher.get_opcodes():
-  if op!='replace':continue
-  options=[]
-  for i in range(ga,gz):
-   for n in (1,2):
-    if i+n>gz:continue
-    if any(w.get('speaker')!=g[i].get('speaker') for w in g[i:i+n]):continue
-    if not contiguous(g[i:i+n]):continue
-    a=' '.join(w['text'] for w in g[i:i+n])
-    for j in range(pa,pz):
-     if abs(g[i]['start']-p[j]['start'])>0.75:continue
-     for m in (1,2):
-      if j+m>pz:continue
-      if not contiguous(p[j:j+m]):continue
-      if abs(g[i+n-1]['end']-p[j+m-1]['end'])>0.75:continue
-      if min(g[i+n-1]['end'],p[j+m-1]['end']) <= max(g[i]['start'],p[j]['start']):continue
-      b=' '.join(w['text'] for w in p[j:j+m])
-      if allowed(a,b,terms):options.append((similarity(a,b),i,n,j,m,a,b))
-  alternatives={}
-  for score,i,n,j,m,a,b in options:
-   scores=alternatives.setdefault((i,n),{})
-   scores[norm(b)]=max(score,scores.get(norm(b),0))
-  usedg=set();usedp=set();selected=[]
-  for score,i,n,j,m,a,b in sorted(options,reverse=True):
-   if any(other >= score-0.1 for text,other in alternatives[i,n].items() if text!=norm(b)):continue
-   if usedg.intersection(range(i,i+n)) or usedp.intersection(range(j,j+m)):continue
-   if any((i-ii)*(j-jj)<0 for ii,jj in selected):continue
-   selected.append((i,j));usedg.update(range(i,i+n));usedp.update(range(j,j+m))
-   replacements[i]=(n,b)
-   rows.append({'start':g[i]['start'],'end':g[i+n-1]['end'],'original':a,'proposed':b,
-                'score':round(score,3),'donor_start':p[j]['start'],'donor_end':p[j+m-1]['end'],
-                'reason':'dictionary' if norm(b) in {norm(term) for term in terms} else 'phonetic'})
- corrected=[];i=0
- while i<len(g):
-  if i in replacements:
-   n,b=replacements[i];corrected.append({**g[i],'end':g[i+n-1]['end'],'text':b});i+=n
-  else:corrected.append(dict(g[i]));i+=1
- return corrected,sorted(rows,key=lambda r:r['start'])
+def propose(g, p, terms=()):
+    """Find alternatives without changing the GigaAM transcript."""
+    known = {norm(term) for term in terms}
+    matcher = difflib.SequenceMatcher(None, [norm(x['text']) for x in g],
+                                    [norm(x['text']) for x in p], autojunk=False)
+    rows = []
+    for op, ga, gz, pa, pz in matcher.get_opcodes():
+        if op != 'replace':
+            continue
+        for i in range(ga, gz):
+            for n in (1, 2):
+                source = g[i:i+n]
+                if i+n > gz or not contiguous(source):
+                    continue
+                if any(w.get('speaker') != source[0].get('speaker') for w in source):
+                    continue
+                a = ' '.join(w['text'] for w in source)
+                for j in range(pa, pz):
+                    if abs(source[0]['start'] - p[j]['start']) > 0.75:
+                        continue
+                    for m in (1, 2):
+                        donor = p[j:j+m]
+                        if j+m > pz or not contiguous(donor):
+                            continue
+                        if abs(source[-1]['end'] - donor[-1]['end']) > 0.75:
+                            continue
+                        overlap = min(source[-1]['end'], donor[-1]['end']) - max(source[0]['start'], donor[0]['start'])
+                        if overlap <= 0:
+                            continue
+                        b = ' '.join(w['text'] for w in donor)
+                        if not allowed(a, b, norm(b) in known):
+                            continue
+                        union = max(source[-1]['end'], donor[-1]['end']) - min(source[0]['start'], donor[0]['start'])
+                        protected = any(norm(w) in STOP for w in a.split())
+                        rows.append(dict(start=source[0]['start'], end=source[-1]['end'],
+                            original=a, proposed=b, score=round(similarity(a, b), 3),
+                            donor_start=donor[0]['start'], donor_end=donor[-1]['end'],
+                            source_indices=[i, i+n], donor_indices=[j, j+m],
+                            time_overlap=round(overlap/union, 3), applied=False,
+                            reason='protected_word' if protected else
+                                'unconfirmed_term' if norm(b) not in known else 'candidate'))
+    return rows
+
+
+def conflicts(a, b):
+    return any(max(a[key][0], b[key][0]) < min(a[key][1], b[key][1])
+               for key in ('source_indices', 'donor_indices'))
+
+
+def cascade(g, p, terms=()):
+    rows = propose(g, p, terms)
+    candidates = [row for row in rows if row['reason'] == 'candidate']
+    selected = []
+    for row in sorted(candidates, key=lambda r: (r['time_overlap'], r['score']), reverse=True):
+        if any(other is not row and conflicts(row, other)
+               and other['score'] >= row['score']-0.1
+               and other['time_overlap'] >= row['time_overlap']-0.1 for other in candidates):
+            row['reason'] = 'ambiguous'
+            continue
+        if any(conflicts(row, other) for other in selected):
+            row['reason'] = 'conflict'
+            continue
+        i, _ = row['source_indices']
+        j, _ = row['donor_indices']
+        if any((i-other['source_indices'][0]) * (j-other['donor_indices'][0]) < 0 for other in selected):
+            row['reason'] = 'crossing_alignment'
+            continue
+        row.update(applied=True, reason='dictionary')
+        selected.append(row)
+    replacements = {row['source_indices'][0]: row for row in selected}
+    corrected = []
+    i = 0
+    while i < len(g):
+        if i in replacements:
+            row = replacements[i]
+            corrected.append({**g[i], 'end': row['end'], 'text': row['proposed']})
+            i = row['source_indices'][1]
+        else:
+            corrected.append(dict(g[i]))
+            i += 1
+    return corrected, sorted(rows, key=lambda r: r['start'])
 

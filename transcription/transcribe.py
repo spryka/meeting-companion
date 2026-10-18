@@ -225,7 +225,8 @@ def validate_outputs(input_path, output_path, segments_json=None, extra_outputs=
 
 
 def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
-                    segments_json=None, on_progress=None, vad=False, parakeet=False, on_warning=None):
+                    segments_json=None, on_progress=None, vad=False, parakeet=False, on_warning=None,
+                    terms=()):
     """Process either source channel; CLI and recording orchestration share this path."""
     input_path, output_path = input_path.resolve(), output_path.resolve()
     segments_json = segments_json.resolve() if segments_json else None
@@ -287,12 +288,14 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
             donor = run_parakeet(input_path, keep, on_progress=on_progress)
             if on_progress:
                 on_progress("correction", 0, 1)
-            corrected, changes = cascade(segments, donor)
+            corrected, suggestions = cascade(segments, donor, terms=terms)
+            changes = [row for row in suggestions if row['applied']]
             write_transcript(corrections_output, [json.dumps({
-                'changes': changes, 'gigaam_segments': original_segments,
+                'changes': changes, 'suggestions': suggestions, 'terms': list(terms),
+                'gigaam_segments': original_segments,
                 'donor_segments': donor}, ensure_ascii=False, allow_nan=False)])
             segments = corrected
-            enhancement_status = f'enabled ({len(changes)} replacements)'
+            enhancement_status = f'enabled ({len(changes)} replacements, {len(suggestions)-len(changes)} suggestions retained in journal)'
             if on_progress:
                 on_progress("correction", 1, 1)
         except Exception as error:

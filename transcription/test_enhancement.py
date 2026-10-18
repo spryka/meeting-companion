@@ -47,7 +47,7 @@ class EnhancementTests(unittest.TestCase):
     def test_cascade_preserves_numbers_timing_and_speaker_and_rejects_distant_donor(self):
         g = [dict(start=1, end=1.5, text='датапе', speaker=2)]
         p = [dict(start=1.1, end=1.5, text='data-api')]
-        corrected, changes = cascade(g, p)
+        corrected, changes = cascade(g, p, terms=['data-api'])
         self.assertEqual(corrected, [dict(start=1, end=1.5, text='data-api', speaker=2)])
         self.assertEqual(g[0]['text'], 'датапе')
         self.assertEqual(len(changes), 1)
@@ -69,23 +69,65 @@ class EnhancementTests(unittest.TestCase):
         self.assertFalse(cascade([word], [dict(start=1, end=4, text='data-api')])[1])
         self.assertFalse(cascade([word], [dict(start=1.6, end=2, text='data-api')])[1])
 
+    def test_confirmed_phrase_is_not_blocked_by_unconfirmed_subword(self):
+        words = [dict(start=1.08, end=1.3, text='дата'), dict(start=1.32, end=1.62, text='Апи')]
+        donor = [dict(start=1, end=1.3, text='data'), dict(start=1.32, end=1.56, text='API')]
+        result, suggestions = cascade(words, donor, terms=['data-api'])
+        self.assertEqual([row['text'] for row in result], ['data API'])
+        self.assertEqual(sum(row['applied'] for row in suggestions), 1)
+
     def test_explicit_dictionary_can_accept_moderate_similarity(self):
         words = [dict(start=1, end=1.3, text='ордерс'), dict(start=1.4, end=1.8, text='гейтвей')]
         donor = [dict(start=1, end=1.8, text='Orders-Gateway')]
-        self.assertFalse(cascade(words, donor)[1])
+        result, suggestions = cascade(words, donor)
+        self.assertEqual(result, words)
+        self.assertTrue(all(row['reason'] == 'unconfirmed_term' for row in suggestions))
         self.assertEqual(cascade(words, donor, terms=['Orders Gateway'])[1][0]['reason'], 'dictionary')
 
     def test_similarly_scored_donor_alternatives_are_not_guessed(self):
         words = [dict(start=1, end=1.5, text='абракадабра')]
         donor = [dict(start=1, end=1.5, text='abrakadabra'),
                  dict(start=1, end=1.5, text='abrakadabraa')]
-        self.assertEqual(cascade(words, donor), (words, []))
+        result, suggestions = cascade(words, donor, terms=['abrakadabra', 'abrakadabraa'])
+        self.assertEqual(result, words)
+        self.assertTrue(suggestions)
+        self.assertTrue(all(row['reason'] == 'ambiguous' for row in suggestions))
+
+    def test_russian_words_are_suggestions_only_even_with_perfect_similarity(self):
+        for source, target in [('данные', 'Danny'), ('лист', 'list')]:
+            words = [dict(start=1, end=1.4, text=source)]
+            result, suggestions = cascade(words, [dict(start=1, end=1.4, text=target)])
+            self.assertEqual(result, words)
+            self.assertEqual(suggestions[0]['reason'], 'unconfirmed_term')
+            self.assertFalse(suggestions[0]['applied'])
+
+    def test_confirmed_term_cannot_consume_pronoun(self):
+        words = [dict(start=1, end=1.2, text='деплой'), dict(start=1.2, end=1.4, text='мне')]
+        donor = [dict(start=1, end=1.4, text='deployment')]
+        result, suggestions = cascade(words, donor, terms=['deployment'])
+        self.assertEqual(result, words)
+        self.assertTrue(any(row['reason'] == 'protected_word' for row in suggestions))
+        self.assertFalse(any(row['applied'] for row in suggestions))
+
+    def test_repeated_source_words_choose_better_time_overlap(self):
+        words = [dict(start=1, end=1.3, text='датапе'), dict(start=1.35, end=1.5, text='датапе')]
+        donor = [dict(start=1, end=1.4, text='data-api')]
+        result, suggestions = cascade(words, donor, terms=['data-api'])
+        self.assertEqual([row['text'] for row in result], ['data-api', 'датапе'])
+        self.assertEqual(sum(row['applied'] for row in suggestions), 1)
+
+    def test_tied_source_spans_are_not_guessed(self):
+        words = [dict(start=1, end=1.3, text='датапе'), dict(start=1.35, end=1.65, text='датапе')]
+        donor = [dict(start=1.15, end=1.5, text='data-api')]
+        result, suggestions = cascade(words, donor, terms=['data-api'])
+        self.assertEqual(result, words)
+        self.assertTrue(any(row['reason'] == 'ambiguous' for row in suggestions))
 
     def test_term_replacement_never_consumes_another_speaker(self):
         words = [dict(start=1, end=1.4, text='ордерс', speaker=1),
                  dict(start=1.5, end=2, text='гритвей', speaker=2)]
         donor = [dict(start=1, end=2, text='Orders-Gateway')]
-        result, changes = cascade(words, donor)
+        result, changes = cascade(words, donor, terms=['Orders Gateway'])
         self.assertEqual([word['speaker'] for word in result], [1, 2])
         self.assertFalse(any(change['end'] == 2 and change['start'] == 1 for change in changes))
 
@@ -129,11 +171,12 @@ class EnhancementTests(unittest.TestCase):
                  patch.object(a, 'run_parakeet', return_value=donor), \
                  patch('soundfile.info', return_value=SimpleNamespace(frames=32000)), \
                  contextlib.redirect_stderr(io.StringIO()):
-                data = t.transcribe_file(source, output, diarize=False, parakeet=True)
+                data = t.transcribe_file(source, output, diarize=False, parakeet=True, terms=['data-api'])
             journal = json.loads(output.with_suffix('.corrections.json').read_text())
             self.assertEqual(journal['gigaam_segments'], data['gigaam_segments'])
             self.assertEqual(journal['donor_segments'], donor)
-            self.assertEqual(journal['changes'][0]['reason'], 'phonetic')
+            self.assertEqual(journal['changes'][0]['reason'], 'dictionary')
+            self.assertEqual(journal['terms'], ['data-api'])
             self.assertEqual(data['segments'][0]['text'], 'data-api')
             self.assertEqual(source.read_bytes(), b'original')
 
@@ -146,6 +189,25 @@ class EnhancementTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 t.transcribe_file(source, output, parakeet=True)
             self.assertEqual(source.read_text(), 'keep audio')
+
+    def test_unconfirmed_suggestions_are_saved_without_changing_transcript(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)/'source.wav'
+            source.write_bytes(b'original')
+            output = Path(directory)/'transcript.txt'
+            words = [dict(start=1, end=1.5, text='данные')]
+            with patch.object(t, 'run_gigaam', return_value={'segments': words}), \
+                 patch.object(a, 'run_parakeet', return_value=[dict(start=1, end=1.5, text='Danny')]), \
+                 patch('soundfile.info', return_value=SimpleNamespace(frames=32000)), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                data = t.transcribe_file(source, output, diarize=False, parakeet=True)
+            self.assertEqual(data['segments'], data['gigaam_segments'])
+            self.assertIn('данные', output.read_text())
+            self.assertNotIn('Danny', output.read_text())
+            journal = json.loads(output.with_suffix('.corrections.json').read_text())
+            self.assertEqual(journal['changes'], [])
+            self.assertEqual(journal['suggestions'][0]['reason'], 'unconfirmed_term')
+            self.assertIn('0 replacements', data['enhancement'])
 
     def test_model_hash_rejects_corrupt_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
