@@ -81,7 +81,7 @@ class EnhancementTests(unittest.TestCase):
         donor = [dict(start=1, end=1.8, text='Orders-Gateway')]
         result, suggestions = cascade(words, donor)
         self.assertEqual(result, words)
-        self.assertTrue(all(row['reason'] == 'unconfirmed_term' for row in suggestions))
+        self.assertFalse(suggestions)
         self.assertEqual(cascade(words, donor, terms=['Orders Gateway'])[1][0]['reason'], 'dictionary')
 
     def test_similarly_scored_donor_alternatives_are_not_guessed(self):
@@ -93,13 +93,20 @@ class EnhancementTests(unittest.TestCase):
         self.assertTrue(suggestions)
         self.assertTrue(all(row['reason'] == 'ambiguous' for row in suggestions))
 
-    def test_russian_words_are_suggestions_only_even_with_perfect_similarity(self):
-        for source, target in [('данные', 'Danny'), ('лист', 'list')]:
-            words = [dict(start=1, end=1.4, text=source)]
-            result, suggestions = cascade(words, [dict(start=1, end=1.4, text=target)])
-            self.assertEqual(result, words)
-            self.assertEqual(suggestions[0]['reason'], 'unconfirmed_term')
-            self.assertFalse(suggestions[0]['applied'])
+    def test_strong_phonetic_match_does_not_require_dictionary(self):
+        words = [dict(start=1, end=1.4, text='Харбор')]
+        result, suggestions = cascade(words, [dict(start=1, end=1.4, text='Harbor')])
+        self.assertEqual(result[0]['text'], 'Harbor')
+        self.assertEqual(suggestions[0]['reason'], 'phonetic')
+        self.assertTrue(suggestions[0]['applied'])
+
+    def test_dictionary_does_not_override_clearly_better_temporal_match(self):
+        words = [dict(start=1, end=1.5, text='абракадабра')]
+        donor = [dict(start=1, end=1.5, text='abrakadabra'),
+                 dict(start=1.4, end=1.8, text='abrakadabraa')]
+        result, suggestions = cascade(words, donor, terms=['abrakadabraa'])
+        self.assertEqual(result[0]['text'], 'abrakadabra')
+        self.assertEqual(sum(row['applied'] for row in suggestions), 1)
 
     def test_confirmed_term_cannot_consume_pronoun(self):
         words = [dict(start=1, end=1.2, text='деплой'), dict(start=1.2, end=1.4, text='мне')]
@@ -190,23 +197,23 @@ class EnhancementTests(unittest.TestCase):
                 t.transcribe_file(source, output, parakeet=True)
             self.assertEqual(source.read_text(), 'keep audio')
 
-    def test_unconfirmed_suggestions_are_saved_without_changing_transcript(self):
+    def test_protected_suggestions_are_saved_without_changing_transcript(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)/'source.wav'
             source.write_bytes(b'original')
             output = Path(directory)/'transcript.txt'
-            words = [dict(start=1, end=1.5, text='данные')]
+            words = [dict(start=1, end=1.2, text='деплой'), dict(start=1.2, end=1.4, text='мне')]
             with patch.object(t, 'run_gigaam', return_value={'segments': words}), \
-                 patch.object(a, 'run_parakeet', return_value=[dict(start=1, end=1.5, text='Danny')]), \
+                 patch.object(a, 'run_parakeet', return_value=[dict(start=1, end=1.4, text='deployment')]), \
                  patch('soundfile.info', return_value=SimpleNamespace(frames=32000)), \
                  contextlib.redirect_stderr(io.StringIO()):
                 data = t.transcribe_file(source, output, diarize=False, parakeet=True)
             self.assertEqual(data['segments'], data['gigaam_segments'])
-            self.assertIn('данные', output.read_text())
-            self.assertNotIn('Danny', output.read_text())
+            self.assertIn('деплой мне', output.read_text())
+            self.assertNotIn('deployment', output.read_text())
             journal = json.loads(output.with_suffix('.corrections.json').read_text())
             self.assertEqual(journal['changes'], [])
-            self.assertEqual(journal['suggestions'][0]['reason'], 'unconfirmed_term')
+            self.assertEqual(journal['suggestions'][0]['reason'], 'protected_word')
             self.assertIn('0 replacements', data['enhancement'])
 
     def test_model_hash_rejects_corrupt_artifact(self):

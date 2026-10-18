@@ -1,4 +1,4 @@
-"""Propose timestamped alternatives; apply only user-confirmed terms."""
+"""Correct timestamped terms using phonetic similarity and an optional glossary."""
 import difflib
 import re
 
@@ -23,6 +23,7 @@ def similarity(a,b):
  return 1-row[-1]/max(len(a),len(b))
 def allowed(a,b,known_term=False):
  # Latin-only donor words; punctuation is ignored, numbers must survive.
+ # shortcut: phonetic similarity cannot distinguish homophones; context needs separate evaluation.
  return (all(re.fullmatch(r'[A-Za-z]+(?:[-’\'][A-Za-z]+)*[.,!?;:]?',s) for s in b.split())
   and re.findall(r'\d+',a)==re.findall(r'\d+',b)
   and len(phonetic(a)) >= 4 and len(phonetic(b)) >= 4
@@ -70,9 +71,8 @@ def propose(g, p, terms=()):
                             original=a, proposed=b, score=round(similarity(a, b), 3),
                             donor_start=donor[0]['start'], donor_end=donor[-1]['end'],
                             source_indices=[i, i+n], donor_indices=[j, j+m],
-                            time_overlap=round(overlap/union, 3), applied=False,
-                            reason='protected_word' if protected else
-                                'unconfirmed_term' if norm(b) not in known else 'candidate'))
+                            time_overlap=round(overlap/union, 3), known_term=norm(b) in known,
+                            applied=False, reason='protected_word' if protected else 'candidate'))
     return rows
 
 
@@ -86,9 +86,14 @@ def cascade(g, p, terms=()):
     candidates = [row for row in rows if row['reason'] == 'candidate']
     selected = []
     for row in sorted(candidates, key=lambda r: (r['time_overlap'], r['score']), reverse=True):
+        # Glossary breaks close ties, but cannot overrule clearly better timing or sound.
         if any(other is not row and conflicts(row, other)
                and other['score'] >= row['score']-0.1
-               and other['time_overlap'] >= row['time_overlap']-0.1 for other in candidates):
+               and other['time_overlap'] >= row['time_overlap']-0.1
+               and not (row['known_term'] and not other['known_term']
+                        and other['score'] <= row['score']+0.1
+                        and other['time_overlap'] <= row['time_overlap']+0.1)
+               for other in candidates):
             row['reason'] = 'ambiguous'
             continue
         if any(conflicts(row, other) for other in selected):
@@ -99,7 +104,7 @@ def cascade(g, p, terms=()):
         if any((i-other['source_indices'][0]) * (j-other['donor_indices'][0]) < 0 for other in selected):
             row['reason'] = 'crossing_alignment'
             continue
-        row.update(applied=True, reason='dictionary')
+        row.update(applied=True, reason='dictionary' if row['known_term'] else 'phonetic')
         selected.append(row)
     replacements = {row['source_indices'][0]: row for row in selected}
     corrected = []
