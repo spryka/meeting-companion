@@ -49,9 +49,13 @@ struct RecorderSettingsView: View {
             Text("В основном окне нажми «Проверить звук», включи звук и скажи несколько слов.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
+            Toggle("Улучшать технические термины (Parakeet)", isOn: $model.improveTerms)
+                .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0)
+            Text("Дополнительная модель около 740 МБ. GigaAM распознаёт основную речь; Parakeet предлагает написание терминов. Исходный текст сохраняется рядом. Возможны ошибочные замены.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Проверить всё") { check(prepare: false) }
-                Button("Скачать модели") { check(prepare: true) }
+                Button("Скачать модели выбранного режима") { check(prepare: true) }
                 if model.diagnosticRunning { ProgressView().controlSize(.small) }
                 if let startedAt = model.diagnosticStartedAt {
                     Text(startedAt, style: .timer).monospacedDigit().font(.caption)
@@ -85,7 +89,7 @@ struct RecorderSettingsView: View {
             }
         }
         .padding(22)
-        .frame(width: 620, height: 820)
+        .frame(width: 620, height: 900)
         .onAppear {
             model.refreshAccess()
             model.calendar.refresh()

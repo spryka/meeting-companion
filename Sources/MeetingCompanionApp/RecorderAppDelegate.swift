@@ -14,17 +14,12 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        TranscriptionNotifications.shared.configure()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() })
         window.center()
-        model.onRecordingSaved = { [weak self] in
-            self?.window.orderOut(nil)
-            self?.model.setWindowVisible(false)
-        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusClicked)
@@ -92,6 +87,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
+        if !model.isRecording { model.dismissCapsule() }
         model.setWindowVisible(false)
         return false
     }

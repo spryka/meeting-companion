@@ -6,7 +6,6 @@ final class AppWindowState: ObservableObject {
     weak var window: NSWindow?
     private var normalFrame: NSRect?
     private let normalSize = NSSize(width: 680, height: 560)
-    private let compactSize = NSSize(width: 288, height: 76)
 
     func attach(_ window: NSWindow) {
         guard self.window !== window else { return }
@@ -17,7 +16,8 @@ final class AppWindowState: ObservableObject {
         window.minSize = normalSize
     }
 
-    func setRecordingMode(_ isRecording: Bool) {
+    func setCapsuleMode(_ isRecording: Bool, processing: Bool = false) {
+        let compactSize = processing ? NSSize(width: 348, height: 140) : NSSize(width: 288, height: 76)
         guard let window else { return }
 
         if isRecording {

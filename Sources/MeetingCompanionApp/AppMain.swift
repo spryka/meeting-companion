@@ -53,9 +53,35 @@ final class RecorderViewModel: ObservableObject {
     @Published var isBusy = false
     @Published var isRecording = false
     @Published var recordingSaveError: String?
-    var onRecordingSaved: (() -> Void)?
 
-    var showsRecordingCapsule: Bool { isRecording || recordingSaveError != nil }
+    @Published var capsuleDismissed = false
+    @Published private(set) var transcriptionWarnings: [String] = []
+    @Published private(set) var lastRecordingTitle = "Запись встречи"
+    @Published var improveTerms = UserDefaults.standard.bool(forKey: "improveTechnicalTerms") {
+        didSet {
+            UserDefaults.standard.set(improveTerms, forKey: "improveTechnicalTerms")
+            transcriptionReady = false
+            let selected = improveTerms
+            Task {
+                let result = try? await Transcription.checkDependencies(availability: true, parakeet: selected)
+                guard improveTerms == selected else { return }
+                transcriptionReady = result?.succeeded ?? false
+            }
+        }
+    }
+    var showsRecordingCapsule: Bool {
+        isRecording || recordingSaveError != nil || (!capsuleDismissed && transcriptionState != .idle)
+    }
+    var showsProcessingCapsule: Bool { !isRecording && recordingSaveError == nil && showsRecordingCapsule }
+
+    func dismissCapsule() {
+        capsuleDismissed = true
+    }
+
+    func revealTranscript() {
+        guard let transcript = lastTranscriptURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([transcript])
+    }
     @Published var elapsed: TimeInterval = 0
     @Published var status = "Готов к записи"
     @Published var lastFileURL: URL?
@@ -234,7 +260,7 @@ final class RecorderViewModel: ObservableObject {
         diagnosticReport = prepare ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
         do {
             try RecorderDiagnostics.checkFolder(outputDirectory)
-            let result = try await Transcription.checkDependencies(prepare: prepare) { [weak self] output in
+            let result = try await Transcription.checkDependencies(prepare: prepare, parakeet: improveTerms) { [weak self] output in
                 Task { @MainActor in
                     guard let self, self.diagnosticRunning else { return }
                     self.diagnosticReport = "Папка записей: OK\n" + output
@@ -280,19 +306,58 @@ final class RecorderViewModel: ObservableObject {
 
     private func transcribe(_ recording: URL) {
         transcriptionJobs += 1
+        capsuleDismissed = false
+        transcriptionWarnings = []
         transcriptionState = .running(nil)
+        let selectedTerms = improveTerms
         Task { [self] in
             defer { transcriptionJobs -= 1 }
             do {
-                let transcript = try await Transcription.run(recording: recording) { [weak self] progress in
+                var useParakeet = selectedTerms
+                let available = try await Transcription.checkDependencies(availability: true, parakeet: useParakeet)
+                if !available.succeeded {
+                    let alert = NSAlert()
+                    alert.messageText = "Выбранный режим ещё не подготовлен"
+                    alert.informativeText = "Запись сохранена. " +
+                        (useParakeet ? "Для выбранного режима нужен Parakeet (около 740 МБ) и основные модели. " : "Основные модели ещё не подготовлены. ") +
+                        "Скачать недостающие файлы? Это может занять несколько минут."
+                    alert.addButton(withTitle: "Скачать")
+                    if useParakeet { alert.addButton(withTitle: "Только GigaAM") }
+                    alert.addButton(withTitle: "Позже")
+                    let answer = alert.runModal()
+                    if useParakeet && answer == .alertSecondButtonReturn {
+                        useParakeet = false
+                        let basic = try await Transcription.checkDependencies(availability: true)
+                        guard basic.succeeded else {
+                            throw NSError(domain: "Transcription", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                                "Основные модели тоже не подготовлены. Запись сохранена; скачайте модели в настройках."])
+                        }
+                    } else if answer == .alertFirstButtonReturn {
+                        let prepared = try await Transcription.checkDependencies(prepare: true, parakeet: useParakeet) { [weak self] output in
+                            Task { @MainActor in self?.diagnosticReport = output }
+                        }
+                        guard prepared.succeeded else {
+                            throw NSError(domain: "Transcription", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                                "Не удалось подготовить модели. Запись сохранена; подробности в настройках и диагностике."])
+                        }
+                        transcriptionReady = true
+                    } else {
+                        if lastFileURL == recording { transcriptionState = .idle }
+                        return
+                    }
+                }
+                let transcript = try await Transcription.run(recording: recording, parakeet: useParakeet) { [weak self] progress in
                     Task { @MainActor in
                         guard let self, self.lastFileURL == recording,
                               case .running = self.transcriptionState else { return }
+                        if let warning = progress.warning {
+                            if !self.transcriptionWarnings.contains(warning) { self.transcriptionWarnings.append(warning) }
+                            return
+                        }
                         let next = TranscriptionState.running(progress)
                         if self.transcriptionState != next { self.transcriptionState = next }
                     }
                 }
-                await TranscriptionNotifications.shared.completed(recording: recording)
                 guard lastFileURL == recording else { return }
                 transcriptionState = .completed(transcript)
             } catch {
@@ -350,6 +415,8 @@ final class RecorderViewModel: ObservableObject {
 
             lastFileURL = outputURL
             transcriptionState = .idle
+            capsuleDismissed = false
+            lastRecordingTitle = meeting?.summary ?? "Запись встречи"
             isRecording = true
             elapsed = 0
             levels.reset()
@@ -376,7 +443,6 @@ final class RecorderViewModel: ObservableObject {
             status = "Сохранение…"
             guard let recorder else { throw RecorderError.notConfigured }
             let result = try await recorder.stop()
-            onRecordingSaved?()
             self.recorder = nil
             isRecording = false
             levels.reset()
@@ -485,8 +551,13 @@ struct ContentView: View {
     var body: some View {
         Group {
             if viewModel.showsRecordingCapsule {
-                CompactRecordingView(viewModel: viewModel)
-                    .frame(width: 288, height: 76)
+                if viewModel.showsProcessingCapsule {
+                    ProcessingCapsuleView(viewModel: viewModel)
+                        .frame(width: 348, height: 140)
+                } else {
+                    CompactRecordingView(viewModel: viewModel)
+                        .frame(width: 288, height: 76)
+                }
             } else {
                 FullRecorderView(viewModel: viewModel, showSettings: showSettings)
                     .frame(width: 680, height: 560)
@@ -497,7 +568,10 @@ struct ContentView: View {
         })
         .onChange(of: viewModel.showsRecordingCapsule) { _, isRecording in
             if !isRecording { viewModel.setWindowVisible(false) }
-            windowState.setRecordingMode(isRecording)
+            windowState.setCapsuleMode(isRecording, processing: viewModel.showsProcessingCapsule)
+        }
+        .onChange(of: viewModel.showsProcessingCapsule) { _, processing in
+            windowState.setCapsuleMode(viewModel.showsRecordingCapsule, processing: processing)
         }
     }
 }
@@ -612,7 +686,7 @@ struct FullRecorderView: View {
 
             if !viewModel.transcriptionStatus.isEmpty {
                 HStack {
-                    if viewModel.transcriptionJobs > 0 { ProgressView().controlSize(.small) }
+                    if viewModel.transcriptionJobs > 0 { Image(systemName: "text.magnifyingglass") }
                     Text(viewModel.transcriptionStatus)
                         .font(.caption).textSelection(.enabled).lineLimit(3)
                 }
@@ -694,6 +768,61 @@ struct CompactRecordingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(MeetingOverlaySurface(capsule: true))
         .padding(4)
+    }
+}
+
+struct ProcessingCapsuleView: View {
+    @ObservedObject var viewModel: RecorderViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(viewModel.lastRecordingTitle).font(.headline).lineLimit(1)
+                Spacer()
+                Button(action: viewModel.dismissCapsule) { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).accessibilityLabel("Скрыть обработку")
+            }
+            switch viewModel.transcriptionState {
+            case .running(let progress):
+                HStack(alignment: .top) {
+                    Image(systemName: "text.magnifyingglass").accessibilityHidden(true)
+                    Text(viewModel.transcriptionStatus).font(.caption).lineLimit(2)
+                    Spacer(minLength: 0)
+                    if let step = progress?.step, let steps = progress?.steps {
+                        Text("\(step)/\(steps)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+                if let progress, progress.total > 1 {
+                    ProgressView(value: Double(progress.completed), total: Double(progress.total))
+                        .accessibilityLabel("Обработано окон")
+                }
+            case .completed:
+                Label(viewModel.transcriptionWarnings.isEmpty ? "Транскрипт готов" : "Текст готов с предупреждениями",
+                      systemImage: viewModel.transcriptionWarnings.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
+                    .font(.caption)
+                Button("Открыть папку", action: viewModel.revealTranscript)
+                    .help(viewModel.transcriptionWarnings.joined(separator: "\n"))
+                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+            case .failed(let message):
+                Text(message).font(.caption).lineLimit(2).foregroundStyle(.red)
+                HStack {
+                    Button("Повторить", action: viewModel.transcribeLastRecording)
+                        .disabled(viewModel.transcriptionJobs > 0)
+                    Button("Открыть папку", action: viewModel.revealLastFile)
+                }
+                .buttonStyle(.bordered)
+            case .idle:
+                Text("Запись сохранена").font(.caption)
+            }
+        }
+        .padding(.horizontal, 22).padding(.vertical, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .modifier(MeetingOverlaySurface())
+        .padding(4)
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
     }
 }
 
