@@ -15,6 +15,13 @@ import Sparkle
         }
         owner.isBusy = { false }
         try owner.updater(updater, mayPerform: .updatesInBackground)
+        // Background network errors leave the recorder independent and allow another check.
+        for code in [NSURLErrorNotConnectedToInternet, NSURLErrorTimedOut, NSURLErrorCannotFindHost] {
+            owner.updater(updater, didFinishUpdateCycleFor: .updatesInBackground,
+                error: NSError(domain: NSURLErrorDomain, code: code))
+            precondition(owner.pendingVersion == nil)
+            try owner.updater(updater, mayPerform: .updatesInBackground)
+        }
         let item = SUAppcastItem(dictionary: ["enclosure": [
             "url": "https://example.invalid/update.zip", "sparkle:version": "19",
             "sparkle:shortVersionString": "1.5.1"

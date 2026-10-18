@@ -6,6 +6,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     private var updater: SPUUpdater?
     private var userDriver: SPUStandardUserDriver?
     private var manualCheck = false
+    private var messageWindows: [NSWindow] = []
     private(set) var pendingVersion: String?
     var isBusy: () -> Bool = { false }
     var menuTitle: String {
@@ -84,9 +85,17 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     }
 
     private func message(_ title: String, _ text: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = text
-        alert.runModal()
+        // A failed update must never enter a modal loop or block recording controls.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 220),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Обновления Meeting Companion"
+        window.isReleasedWhenClosed = false
+        let label = NSTextField(wrappingLabelWithString: title + "\n\n" + text)
+        label.frame = NSRect(x: 20, y: 20, width: 420, height: 180)
+        window.contentView?.addSubview(label)
+        messageWindows.removeAll { !$0.isVisible }
+        messageWindows.append(window)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
     }
 }

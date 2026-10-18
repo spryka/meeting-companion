@@ -46,7 +46,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         Task { await model.calendar.start() }
         appUpdater.isBusy = { [weak self] in self?.model.preventsTermination ?? true }
         do { try appUpdater.start() }
-        catch { model.errorMessage = "Обновления: " + error.localizedDescription }
+        catch { NSLog("Meeting Companion updater unavailable: %@", error.localizedDescription) }
     }
 
     @objc private func statusClicked() {
