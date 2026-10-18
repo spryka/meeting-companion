@@ -39,6 +39,24 @@ struct MeetingChecks {
         let inPerson = MeetingContext(event: event)
         precondition(inPerson.needsReminder(now: now, handled: []))
         precondition(!inPerson.needsReminder(now: now, handled: [], requireCallLink: true))
+        let later = EKEvent(eventStore: store)
+        later.calendar = event.calendar
+        later.title = "Later this week"
+        later.startDate = now.addingTimeInterval(2 * 86400)
+        later.endDate = later.startDate.addingTimeInterval(3600)
+        let ended = EKEvent(eventStore: store)
+        ended.calendar = event.calendar
+        ended.startDate = now.addingTimeInterval(-3600)
+        ended.endDate = now
+        let allDay = EKEvent(eventStore: store)
+        allDay.calendar = event.calendar
+        allDay.startDate = now
+        allDay.endDate = now.addingTimeInterval(86400)
+        allDay.isAllDay = true
+        let visible = MeetingCalendar.visibleMeetings([later, ended, allDay, event], now: now)
+        precondition(visible.map(\.summary) == ["Meeting", "Later this week"])
+        precondition(!visible[1].needsReminder(now: now, handled: []))
+        precondition(MeetingCalendar.visibleMeetings([ended, allDay], now: now).isEmpty)
         event.notes = meeting.agenda
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

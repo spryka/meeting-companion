@@ -102,6 +102,20 @@ struct MeetingPicker: View {
             if !calendar.message.isEmpty {
                 Text(calendar.message).font(.caption).foregroundStyle(.secondary)
             }
+            if calendar.suggestsCalendarSetup {
+                DisclosureGroup("Не видите рабочие встречи?") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("1. Открой приложение «Календарь» на Mac и проверь, видны ли там рабочие встречи.")
+                        Text("2. Если их нет, выбери «Календарь → Добавить учётную запись…» и подключи рабочий аккаунт. Параметры подключения уточни у своей ИТ-команды.")
+                        Text("3. Когда встречи появятся в «Календаре», выбери нужный календарь в настройках Meeting Companion → Календарь.")
+                        Text("Если встреч на этой неделе действительно нет, настраивать ничего не нужно. Запись можно начать без встречи.")
+                        Link("Инструкция Apple", destination: URL(string: "https://support.apple.com/ru-ru/guide/calendar/welcome/mac")!)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .disclosureGroupStyle(FullWidthDisclosureStyle())
+            }
         }
     }
 }

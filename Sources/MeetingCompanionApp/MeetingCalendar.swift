@@ -71,6 +71,7 @@ final class MeetingCalendar: ObservableObject {
     @Published var events: [MeetingContext] = []
     @Published var calendars: [EKCalendar] = []
     @Published var message = ""
+    @Published private(set) var suggestsCalendarSetup = false
     @Published private(set) var selectedCalendarIDs: Set<String>?
     @Published var requireCallLink: Bool {
         didSet {
@@ -115,6 +116,7 @@ final class MeetingCalendar: ObservableObject {
     }
 
     func refresh() {
+        suggestsCalendarSetup = false
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             events = []
             calendars = []
@@ -132,15 +134,36 @@ final class MeetingCalendar: ObservableObject {
         }
         let now = Date()
         handled = handled.filter { now.timeIntervalSince1970 - $0.value < 86400 }
-        let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-300),
-                                                 end: now.addingTimeInterval(12 * 3600), calendars: calendars.filter(isSelected))
-        events = calendars.contains(where: isSelected) ? store.events(matching: predicate).filter { event in
-            !event.isAllDay && event.status != .canceled && event.endDate > now
-                && event.attendees?.first(where: { $0.isCurrentUser })?.participantStatus != .declined
-        }.map(MeetingContext.init(event:)).sorted { $0.start < $1.start } : []
+        let selected = calendars.filter(isSelected)
+        guard !selected.isEmpty else {
+            events = []
+            suggestsCalendarSetup = calendars.isEmpty
+            message = calendars.isEmpty ? "В macOS нет доступных календарей."
+                : "Выбери календарь в настройках Meeting Companion → Календарь."
+            return
+        }
+        func meetings(until end: Date) -> [MeetingContext] {
+            let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-300),
+                                                     end: end, calendars: selected)
+            return Self.visibleMeetings(store.events(matching: predicate), now: now)
+        }
+        events = meetings(until: now.addingTimeInterval(12 * 3600))
+        if events.isEmpty {
+            suggestsCalendarSetup = meetings(until: now.addingTimeInterval(7 * 86400)).isEmpty
+            message = suggestsCalendarSetup
+                ? "В выбранных календарях нет встреч на ближайшие 7 дней. Возможно, рабочий календарь ещё не подключён к macOS."
+                : "В ближайшие 12 часов встреч нет."
+        }
         if let event = events.first(where: { $0.needsReminder(now: now, handled: Set(handled.keys), requireCallLink: requireCallLink) }) {
             onMeeting?(event)
         }
+    }
+
+    static func visibleMeetings(_ events: [EKEvent], now: Date) -> [MeetingContext] {
+        events.filter { event in
+            !event.isAllDay && event.status != .canceled && event.endDate > now
+                && event.attendees?.first(where: { $0.isCurrentUser })?.participantStatus != .declined
+        }.map(MeetingContext.init(event:)).sorted { $0.start < $1.start }
     }
 
     func acknowledge(_ event: MeetingContext) {
