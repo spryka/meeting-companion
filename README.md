@@ -209,6 +209,10 @@ printf '%s\n' 'имя сертификата в Keychain' > .codesign/identity
 
 ## Проверки
 
+GitLab CI запускает Python unit-тесты и проверяет синтаксис shell-скриптов
+на Linux при push и в merge request. Модели для этих тестов не скачиваются.
+Сборка приложения, Swift-проверки и проверка записи выполняются на Mac.
+
 Перед merge request проверь сборку и Python-тесты:
 
 ```bash
@@ -230,6 +234,8 @@ swiftc Sources/MeetingCompanionCore/AudioCapture.swift Sources/MeetingCompanionC
 /tmp/check-source-audio
 swiftc Sources/MeetingCompanionCore/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
 /tmp/check-transcription
+swiftc Sources/MeetingCompanionCore/Transcription.swift scripts/check-transcription-progress.swift -o /tmp/check-transcription-progress
+/tmp/check-transcription-progress
 swiftc Sources/MeetingCompanionApp/MeetingCalendar.swift scripts/check-meeting-context.swift -o /tmp/check-meeting-context
 /tmp/check-meeting-context
 swiftc Sources/MeetingCompanionApp/RecorderDiagnostics.swift scripts/check-diagnostics.swift -o /tmp/check-diagnostics
@@ -293,3 +299,15 @@ swiftc Sources/MeetingCompanionApp/AudioLevels.swift scripts/check-audio-levels.
 swiftc Sources/MeetingCompanionApp/RecordingWindowState.swift scripts/check-recording-window.swift -o /tmp/check-recording-window
 /tmp/check-recording-window
 ```
+
+### Прогресс конвейера
+
+`transcribe-recording.py` вызывает общую функцию `transcribe_file` для обеих
+дорожек в одном процессе. Самостоятельная команда `transcribe.py` сохранена.
+В stdout записи идут строки `MEETING_PROGRESS ` с JSON: `stage`, `channel`
+(`host`/`remote`, отсутствует для объединения), `completed`, `total`.
+Текущие этапы: `gigaam`, `diarization`, `merge`. Счётчики относятся к окнам
+или операциям текущего этапа, а не к проценту общего времени.
+Остальной вывод остаётся логом. Swift разбирает полные строки, сохраняет весь
+лог на диск и обновляет состояние по событиям, без периодического чтения файла.
+Новые этапы должны обновлять этот протокол и его проверку.

@@ -1,7 +1,7 @@
 import importlib.util
 import contextlib
 import io
-import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -69,26 +69,52 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(len(lines), 20)
         self.assertEqual(" ".join(line.split(": ", 1)[1] for line in lines), " ".join(map(str, range(300))))
 
-    def test_runner_merges_word_exports_and_removes_temporary_files(self):
+    def test_recording_uses_shared_pipeline_and_emits_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory) / "recording"
             for source in module.source_paths(base):
                 source.touch()
-            exports = []
-            def run(command, **kwargs):
-                self.assertTrue(kwargs["check"])
-                self.assertIn("--offline", command)
-                target = Path(command[command.index("--segments-json") + 1])
-                exports.append(target)
-                host = "--no-diarize" in command
-                target.write_text(json.dumps(self.data([self.segment(5 if host else 0, "Host" if host else "Remote")])))
+            calls = []
+            def transcribe(source, output, *, diarize, on_progress):
+                self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
+                calls.append((source, diarize))
+                on_progress("gigaam", 1, 2)
+                return self.data([self.segment(0 if diarize else 5, "Remote" if diarize else "Host")],
+                                 "enabled (1 speakers)" if diarize else "disabled (1 speakers)")
+            output = io.StringIO()
             with patch.object(sys, "argv", ["transcribe-recording", "--offline", str(base)]), \
-                 patch.object(module.subprocess, "run", side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+                 patch.object(module, "transcribe_file", side_effect=transcribe), \
+                 patch.dict(os.environ), contextlib.redirect_stdout(output):
                 module.main()
             text = base.with_name("recording.sources.transcript.txt").read_text()
             self.assertIn("[00:00] Speaker 2: Remote\n[00:05] Speaker 1: Host", text)
-            self.assertEqual(len(exports), 2)
-            self.assertTrue(all(not path.exists() for path in exports))
+            self.assertEqual(calls, list(zip(module.source_paths(base.resolve()), (False, True))))
+            self.assertIn('"channel": "host"', output.getvalue())
+            self.assertIn('"channel": "remote"', output.getvalue())
+            self.assertIn('"stage":"merge","completed":1', output.getvalue())
+
+    def test_two_microphone_voices_remain_distinct_from_remote(self):
+        host = self.data([self.segment(0, "First", 1), self.segment(2, "Second", 2)])
+        remote = self.data([self.segment(1, "Remote", 1), self.segment(3, "Other", 2)])
+        lines = module.merge_sources(host, remote)
+        self.assertEqual([line for line in lines if line.startswith("[")], [
+            "[00:00] Speaker 1: First", "[00:01] Speaker 3: Remote",
+            "[00:02] Speaker 2: Second", "[00:03] Speaker 4: Other"])
+        self.assertIn("Speaker 2: Host / microphone source, Nemotron voice; identity unverified.", lines)
+
+    def test_source_failure_preserves_existing_merge_and_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "recording"
+            for source in module.source_paths(base):
+                source.write_bytes(b"original")
+            merged = base.with_name("recording.sources.transcript.txt")
+            merged.write_text("previous")
+            with patch.object(sys, "argv", ["transcribe-recording", str(base)]), \
+                 patch.object(module, "transcribe_file", side_effect=[self.data(), RuntimeError("failure")]):
+                with self.assertRaises(RuntimeError):
+                    module.main()
+            self.assertEqual(merged.read_text(), "previous")
+            self.assertTrue(all(source.read_bytes() == b"original" for source in module.source_paths(base)))
 
 
 if __name__ == "__main__":

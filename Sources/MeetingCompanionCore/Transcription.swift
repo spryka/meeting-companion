@@ -4,7 +4,8 @@ import Darwin
 public enum Transcription {
     private static let queue = DispatchQueue(label: "MeetingCompanion.transcription")
 
-    public static func run(recording: URL) async throws -> URL {
+    public static func run(recording: URL,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
@@ -20,9 +21,17 @@ public enum Transcription {
                     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
                     defer { try? handle.close() }
                     let process = try makeProcess(arguments: ["--recording", "--offline", recording.path])
-                    process.standardOutput = handle
-                    process.standardError = handle
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = pipe
                     try process.run()
+                    do {
+                        try readProgress(from: pipe.fileHandleForReading, log: handle, onProgress: onProgress)
+                    } catch {
+                        if process.isRunning { process.terminate() }
+                        process.waitUntilExit()
+                        throw error
+                    }
                     process.waitUntilExit()
                     let transcript = base.appendingPathExtension("sources.transcript.txt")
                     guard process.terminationStatus == 0,
@@ -73,6 +82,38 @@ public enum Transcription {
         }
     }
 
+    static func readProgress(from handle: FileHandle, log: FileHandle,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) throws {
+        var pending = Data()
+        var discardingLine = false
+        while true {
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { break }
+            try log.write(contentsOf: chunk)
+            let parts = chunk.split(separator: 10, omittingEmptySubsequences: false)
+            for part in parts.dropLast() {
+                if !discardingLine, pending.count + part.count <= 65536 {
+                    pending.append(contentsOf: part)
+                    if let progress = TranscriptionProgress(line: pending) {
+                        onProgress?(progress)
+                    }
+                }
+                pending.removeAll(keepingCapacity: true)
+                discardingLine = false
+            }
+            let tail = parts.last!
+            if !discardingLine {
+                if pending.count + tail.count <= 65536 {
+                    pending.append(contentsOf: tail)
+                } else {
+                    pending.removeAll(keepingCapacity: true)
+                    discardingLine = true
+                }
+            }
+        }
+        if !discardingLine, let progress = TranscriptionProgress(line: pending) { onProgress?(progress) }
+    }
+
     static func readOutput(from handle: FileHandle, onOutput: (@Sendable (String) -> Void)?) -> String {
         var data = Data()
         while true {
@@ -90,4 +131,57 @@ public enum Transcription {
         return String(String(decoding: data, as: UTF8.self).suffix(12000))
     }
 
+}
+
+public struct TranscriptionProgress: Decodable, Equatable, Sendable {
+    public enum Stage: String, Decodable, Sendable {
+        case gigaam, diarization, merge
+    }
+
+    public let stage: Stage
+    public let channel: String?
+    public let completed: Int
+    public let total: Int
+
+    init?(line: Data) {
+        let prefix = Data("MEETING_PROGRESS ".utf8)
+        guard line.starts(with: prefix),
+              let value = try? JSONDecoder().decode(Self.self, from: line.dropFirst(prefix.count)),
+              value.completed >= 0, value.total >= 0, value.completed <= value.total,
+              value.channel == nil || value.channel == "host" || value.channel == "remote" else { return nil }
+        self = value
+    }
+
+    public var text: String {
+        let label: String
+        switch stage {
+        case .gigaam: label = "Распознавание речи"
+        case .diarization: label = "Разделение голосов"
+        case .merge: label = "Объединение дорожек"
+        }
+        let source = channel.map { $0 == "host" ? " · микрофон" : " · системный звук" } ?? ""
+        let count = total > 1 ? " · \(completed)/\(total) окон" : ""
+        return label + source + count + "…"
+    }
+}
+
+public enum TranscriptionState: Equatable, Sendable {
+    case idle
+    case running(TranscriptionProgress?)
+    case completed(URL)
+    case failed(String)
+
+    public var transcript: URL? {
+        if case .completed(let url) = self { return url }
+        return nil
+    }
+
+    public var text: String {
+        switch self {
+        case .idle: return ""
+        case .running(let progress): return progress?.text ?? "Распознавание речи…"
+        case .completed: return "Текст готов"
+        case .failed(let message): return message
+        }
+    }
 }

@@ -126,19 +126,24 @@ def load_gigaam_model():
     return model
 
 
-def run_gigaam(audio_path: Path):
+def run_gigaam(audio_path: Path, on_progress=None):
     """GigaAM v3 RNNT on CPU, 25 s chunks with 1 s overlap."""
     model = load_gigaam_model()
     samples, sr = load_audio(audio_path)
     if sr != 16000 or samples.ndim != 1:
         raise RuntimeError("GigaAM requires 16 kHz mono audio")
     segments = []
-    for start in range(0, len(samples), 24 * sr):
+    total = (max(0, len(samples) - 25 * sr) + 24 * sr - 1) // (24 * sr) + 1 if len(samples) else 0
+    if on_progress:
+        on_progress("gigaam", 0, total)
+    for index, start in enumerate(range(0, len(samples), 24 * sr), 1):
         end = min(start + 25 * sr, len(samples))
         result = model.recognize(samples[start:end], sample_rate=sr)
         lower = 0 if start == 0 else start / sr + 0.5
         upper = end / sr + 0.1 if end == len(samples) else start / sr + 24.5
         segments.extend(gigaam_words(result, start / sr, end / sr, lower, upper))
+        if on_progress:
+            on_progress("gigaam", index, total)
         if end == len(samples):
             break
     return {"segments": segments, "text": " ".join(s["text"] for s in segments)}
@@ -211,46 +216,25 @@ def group_turns(segments: list, breaks=()):
     return turns
 
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("audio_path", type=Path, help="Path to source audio")
-    parser.add_argument("output_path", type=Path, nargs="?", help="Path to transcript")
-    parser.add_argument("--no-diarize", action="store_true", help="Microphone source: one speaker")
-    parser.add_argument("--offline", action="store_true", help="Use cached models only")
-    parser.add_argument("--segments-json", type=Path, help="Write word timestamps for merging source channels")
-    args = parser.parse_args()
-    model_name = "gigaam-v3-e2e-rnnt"
-    if args.offline:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-
-    input_path = args.audio_path.resolve()
-    if not input_path.is_file():
-        print(f"Error: input audio not found: {input_path}", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-    if args.output_path:
-        output_path = args.output_path.resolve()
-    else:
-        output_path = input_path.parent / f"{input_path.stem}.local.transcript.txt"
-
-    outputs = [output_path]
-    if args.segments_json:
-        outputs.append(args.segments_json.resolve())
+def validate_outputs(input_path, output_path, segments_json=None):
+    outputs = [output_path] + ([segments_json] if segments_json else [])
     for index, output in enumerate(outputs):
         for other in [input_path, *outputs[:index]]:
             if output == other or (output.exists() and other.exists() and output.samefile(other)):
-                parser.error("output paths must differ from input audio and each other")
+                raise ValueError("output paths must differ from input audio and each other")
         if not output.parent.is_dir():
-            parser.error(f"output directory not found: {output.parent}")
+            raise ValueError(f"output directory not found: {output.parent}")
 
+
+def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
+                    segments_json=None, on_progress=None):
+    """Process either source channel; CLI and recording orchestration share this path."""
+    input_path, output_path = input_path.resolve(), output_path.resolve()
+    segments_json = segments_json.resolve() if segments_json else None
+    validate_outputs(input_path, output_path, segments_json)
     print(f"Transcribing: {input_path.name}", file=sys.stderr, flush=True)
     start_time = time.time()
-    try:
-        result = run_gigaam(input_path)
-    except Exception as e:
-        print(f"Transcription error: {e}", file=sys.stderr, flush=True)
-        sys.exit(2)
+    result = run_gigaam(input_path, on_progress=on_progress)
 
     t_elapsed = time.time() - start_time
     segments = result.get("segments", [])
@@ -259,7 +243,9 @@ def main():
     # Speaker Diarization
     num_detected_speakers = 1
     diarization_status = "disabled"
-    if not args.no_diarize:
+    if diarize:
+        if on_progress:
+            on_progress("diarization", 0, 1)
         try:
             diar_segments, num_detected_speakers = run_nemotron_diarization(input_path)
             segments, num_detected_speakers = assign_speakers(segments, diar_segments)
@@ -271,11 +257,13 @@ def main():
             for seg in segments:
                 seg["speaker"] = 1
 
-    if args.segments_json:
-        write_transcript(args.segments_json.resolve(), [json.dumps({
-            "segments": segments,
-            "diarization": f"Diarization: {diarization_status} ({num_detected_speakers} speakers)",
-        }, ensure_ascii=False, allow_nan=False)])
+        if on_progress:
+            on_progress("diarization", 1, 1)
+
+    data = {"segments": segments,
+            "diarization": f"Diarization: {diarization_status} ({num_detected_speakers} speakers)"}
+    if segments_json:
+        write_transcript(segments_json, [json.dumps(data, ensure_ascii=False, allow_nan=False)])
     segments = group_turns(segments)
 
     total_elapsed = time.time() - start_time
@@ -283,7 +271,7 @@ def main():
     lines = [
         f"Transcript: {input_path.name}",
         f"Audio: {input_path}",
-        f"Model: {model_name} (ONNX / CPU)",
+        "Model: gigaam-v3-e2e-rnnt (ONNX / CPU)",
         f"Diarization: {diarization_status} ({num_detected_speakers} speakers)",
         "Diarization backend: nemotron",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -321,6 +309,41 @@ def main():
         file=sys.stderr,
         flush=True,
     )
+    return data
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("audio_path", type=Path, help="Path to source audio")
+    parser.add_argument("output_path", type=Path, nargs="?", help="Path to transcript")
+    parser.add_argument("--no-diarize", action="store_true", help="Treat the input as one speaker")
+    parser.add_argument("--offline", action="store_true", help="Use cached models only")
+    parser.add_argument("--segments-json", type=Path, help="Write word timestamps for merging source channels")
+    args = parser.parse_args()
+    if args.offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
+    input_path = args.audio_path.resolve()
+    if not input_path.is_file():
+        print(f"Error: input audio not found: {input_path}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    if args.output_path:
+        output_path = args.output_path.resolve()
+    else:
+        output_path = input_path.parent / f"{input_path.stem}.local.transcript.txt"
+
+    segments_json = args.segments_json.resolve() if args.segments_json else None
+    try:
+        validate_outputs(input_path, output_path, segments_json)
+    except ValueError as error:
+        parser.error(str(error))
+    try:
+        transcribe_file(input_path, output_path, diarize=not args.no_diarize,
+                        segments_json=segments_json)
+    except Exception as error:
+        print(f"Transcription error: {error}", file=sys.stderr, flush=True)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

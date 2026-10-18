@@ -59,12 +59,13 @@ final class RecorderViewModel: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var status = "Готов к записи"
     @Published var lastFileURL: URL?
-    @Published var lastTranscriptURL: URL?
+    @Published private(set) var transcriptionState: TranscriptionState = .idle
+    var lastTranscriptURL: URL? { transcriptionState.transcript }
     @Published var transcriptionJobs = 0
     @Published var transcriptionReady = UserDefaults.standard.bool(forKey: "transcriptionPrepared") {
         didSet { UserDefaults.standard.set(transcriptionReady, forKey: "transcriptionPrepared") }
     }
-    @Published var transcriptionStatus = ""
+    var transcriptionStatus: String { transcriptionState.text }
     @Published var captureBackend = AudioCaptureBackend(rawValue: UserDefaults.standard.string(forKey: "captureBackend") ?? "") ?? .screenCaptureKit {
         didSet {
             UserDefaults.standard.set(captureBackend.rawValue, forKey: "captureBackend")
@@ -217,7 +218,7 @@ final class RecorderViewModel: ObservableObject {
                 try RecorderDiagnostics.resetCache(in: directory, recordings: recordings)
             }.value
             preparationProgress = nil
-            transcriptionStatus = "Модели не установлены"
+            transcriptionState = .idle
             diagnosticReport = "Кэш сброшен. Нажмите «Скачать модели» перед транскрибацией."
         } catch {
             diagnosticReport = "Ошибка сброса кэша: " + error.localizedDescription
@@ -279,18 +280,24 @@ final class RecorderViewModel: ObservableObject {
 
     private func transcribe(_ recording: URL) {
         transcriptionJobs += 1
-        transcriptionStatus = "Распознавание речи…"
-        Task {
+        transcriptionState = .running(nil)
+        Task { [self] in
             defer { transcriptionJobs -= 1 }
             do {
-                let transcript = try await Transcription.run(recording: recording)
+                let transcript = try await Transcription.run(recording: recording) { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self, self.lastFileURL == recording,
+                              case .running = self.transcriptionState else { return }
+                        let next = TranscriptionState.running(progress)
+                        if self.transcriptionState != next { self.transcriptionState = next }
+                    }
+                }
                 await TranscriptionNotifications.shared.completed(recording: recording)
                 guard lastFileURL == recording else { return }
-                lastTranscriptURL = transcript
-                transcriptionStatus = "Текст готов"
+                transcriptionState = .completed(transcript)
             } catch {
                 guard lastFileURL == recording else { return }
-                transcriptionStatus = error.localizedDescription
+                transcriptionState = .failed(error.localizedDescription)
             }
         }
     }
@@ -342,13 +349,12 @@ final class RecorderViewModel: ObservableObject {
             self.recorder = recorder
 
             lastFileURL = outputURL
-            lastTranscriptURL = nil
+            transcriptionState = .idle
             isRecording = true
             elapsed = 0
             levels.reset()
             startedAt = Date()
             status = "Идёт запись"
-            transcriptionStatus = ""
             if let meeting {
                 calendar.acknowledge(meeting)
                 do { try meeting.save(beside: outputURL) }

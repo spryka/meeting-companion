@@ -120,10 +120,35 @@ class TranscriberTests(unittest.TestCase):
     def test_failed_atomic_write_preserves_existing_transcript(self):
         self.output.write_text("previous transcript")
         with patch.object(Path, "replace", side_effect=OSError("disk failure")):
-            with self.assertRaises(OSError):
+            with self.assertRaises(SystemExit) as error:
                 self.run_main("--no-diarize", self.audio, self.output)
+            self.assertEqual(error.exception.code, 2)
         self.assertEqual(self.output.read_text(), "previous transcript")
         self.assertEqual(list(self.root.glob(".out.txt.*")), [])
+
+    def test_shared_pipeline_has_word_exports_and_diarization_events(self):
+        words = [{"start": 0, "end": 1, "text": "One"}, {"start": 1, "end": 2, "text": "Two"}]
+        events = []
+        with patch.object(t, "run_gigaam", return_value={"segments": words}), \
+             patch.object(t, "run_nemotron_diarization", return_value=(
+                 [SimpleNamespace(start=0, end=1, speaker=0), SimpleNamespace(start=1, end=2, speaker=1)], 2)), \
+             contextlib.redirect_stderr(io.StringIO()):
+            data = t.transcribe_file(self.audio, self.output, on_progress=lambda *event: events.append(event))
+        self.assertEqual([s["speaker"] for s in data["segments"]], [1, 2])
+        self.assertEqual(events, [("diarization", 0, 1), ("diarization", 1, 1)])
+        self.assertEqual(self.audio.read_bytes(), b"original audio")
+
+    def test_gigaam_progress_counts_actual_windows_without_changing_seams(self):
+        import numpy as np
+        for seconds, total in ((0, 0), (24, 1), (25, 1), (26, 2), (49, 2), (50, 3)):
+            events = []
+            model = SimpleNamespace(recognize=lambda *a, **k: SimpleNamespace(tokens=[" word"], timestamps=[1.0]))
+            with self.subTest(seconds=seconds), \
+                 patch.object(t, "load_audio", return_value=(np.zeros(seconds*16000, dtype="float32"), 16000)), \
+                 patch.object(t, "load_gigaam_model", return_value=model):
+                data = t.run_gigaam(self.audio, lambda *event: events.append(event))
+            self.assertEqual(events, [("gigaam", n, total) for n in range(total+1)])
+            self.assertEqual([w["start"] for w in data["segments"]], [24*n+1 for n in range(total)])
 
     def test_removed_sherpa_options_are_rejected(self):
         for option, value in (("--num-speakers", "2"), ("--diarization-provider", "coreml"),

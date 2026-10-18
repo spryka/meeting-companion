@@ -4,17 +4,20 @@ import argparse
 import json
 import math
 from pathlib import Path
-import subprocess
-import tempfile
+import os
 
-from transcribe import format_timestamp, group_turns, write_transcript
+from transcribe import format_timestamp, group_turns, transcribe_file, write_transcript
 
 
 def merge_sources(host_data: dict, remote_data: dict) -> list[str]:
     channels = []
-    remote_speakers = set()
+    source_speakers = [set(), set()]
+    remote_offset = 1
     for channel, data in enumerate((host_data, remote_data)):
         words = []
+        status = data.get("diarization", "")
+        if not isinstance(status, str) or not status.startswith("Diarization: "):
+            raise ValueError("Source transcript has no diarization status")
         for seg in data["segments"]:
             if not (math.isfinite(seg["start"]) and math.isfinite(seg["end"])
                     and 0 <= seg["start"] <= seg["end"]
@@ -23,25 +26,34 @@ def merge_sources(host_data: dict, remote_data: dict) -> list[str]:
                 raise ValueError(f"Invalid transcript segment: {seg}")
             if not seg["text"].strip():
                 continue
-            speaker = 1 if channel == 0 else seg.get("speaker", 1) + 1
-            if channel:
-                remote_speakers.add(speaker)
+            speaker = seg.get("speaker", 1) + (remote_offset if channel else 0)
+            if channel == 0:
+                remote_offset = max(remote_offset, speaker)
+            source_speakers[channel].add(speaker)
             words.append({**seg, "speaker": speaker})
         channels.append(sorted(words, key=lambda word: word["start"]))
-    status = remote_data.get("diarization", "")
-    if not isinstance(status, str) or not status.startswith("Diarization: "):
-        raise ValueError("Remote transcript has no diarization status")
     # Keep overlapping utterances intact, but split each channel at the other's turn starts.
     breaks = [turn["start"] for words in channels for turn in group_turns(words)]
     turns = [turn for words in channels for turn in group_turns(words, breaks)]
-    lines = ["Host attribution: microphone source", f"Remote {status}", ""]
+    host_status = ("Host attribution: microphone source" if host_data["diarization"].startswith("Diarization: disabled")
+                   else "Host " + host_data["diarization"])
+    lines = [host_status, "Remote " + remote_data["diarization"], ""]
     lines.extend(f'[{format_timestamp(turn["start"])}] Speaker {turn["speaker"]}: {turn["text"]}'
                  for turn in sorted(turns, key=lambda turn: (turn["start"], turn["speaker"])))
-    lines.extend(["", "Speaker guide:", "Speaker 1: Host / microphone source."])
-    for speaker in sorted(remote_speakers):
-        guide = ("Nemotron voice; identity unverified" if status.startswith("Diarization: enabled")
-                 else "placeholder; remote voice attribution unavailable")
-        lines.append(f"Speaker {speaker}: Remote / system audio, {guide}.")
+    if host_data["diarization"].startswith("Diarization: disabled"):
+        source_speakers[0].add(1)
+    lines.extend(["", "Speaker guide:"])
+    for label, data, speakers in zip(("Host / microphone source", "Remote / system audio"),
+                                      (host_data, remote_data), source_speakers):
+        for speaker in sorted(speakers):
+            status = data["diarization"]
+            if status.startswith("Diarization: disabled") and label.startswith("Host"):
+                lines.append(f"Speaker {speaker}: {label}.")
+            else:
+                guide = ("Nemotron voice; identity unverified" if status.startswith("Diarization: enabled")
+                         else ("placeholder; remote voice attribution unavailable" if label.startswith("Remote")
+                               else "placeholder; microphone voice attribution unavailable"))
+                lines.append(f"Speaker {speaker}: {label}, {guide}.")
     return lines
 
 
@@ -68,17 +80,20 @@ def main():
         for source in (host, remote, args.recording.resolve()):
             if output.exists() and source.exists() and output.samefile(source):
                 parser.error(f"Transcript output aliases source audio: {output}")
-    runner = Path(__file__).with_name("run.sh")
-    options = ["--offline"] if args.offline else []
-    with tempfile.TemporaryDirectory(prefix="meeting-transcript-") as directory:
-        host_json, remote_json = (Path(directory) / name for name in ("host.json", "remote.json"))
-        subprocess.run([str(runner), *options, "--no-diarize", "--segments-json", str(host_json),
-                        str(host), str(host_output)], check=True)
-        subprocess.run([str(runner), *options, "--segments-json", str(remote_json),
-                        str(remote), str(remote_output)], check=True)
-        lines = [f"Transcript: {base.name} — separate sources", f"Host audio: {host}", f"Remote audio: {remote}"]
-        lines.extend(merge_sources(json.loads(host_json.read_text()), json.loads(remote_json.read_text())))
+    if args.offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    results = []
+    for channel, source, output in (("host", host, host_output), ("remote", remote, remote_output)):
+        def progress(stage, completed, total):
+            print("MEETING_PROGRESS " + json.dumps({"stage": stage, "channel": channel,
+                  "completed": completed, "total": total}), flush=True)
+        # shortcut: preserve the host preset until dual-source diarization is enabled.
+        results.append(transcribe_file(source, output, diarize=channel != "host", on_progress=progress))
+    print('MEETING_PROGRESS {"stage":"merge","completed":0,"total":1}', flush=True)
+    lines = [f"Transcript: {base.name} — separate sources", f"Host audio: {host}", f"Remote audio: {remote}"]
+    lines.extend(merge_sources(*results))
     write_transcript(merged_output, lines)
+    print('MEETING_PROGRESS {"stage":"merge","completed":1,"total":1}', flush=True)
     print(f"Saved: {merged_output}")
 
 
