@@ -14,6 +14,10 @@ required to record or transcribe. Keep changes small; use existing platform APIs
   Silero VAD, optional Parakeet term correction, timestamp merge, runtime/model preparation and Python tests.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
 
+Before changing transcription or term correction, read
+[`docs/transcription-pipeline.md`](docs/transcription-pipeline.md) for the algorithm,
+artifact layout, failure behavior and evaluation method.
+
 ## Invariants
 
 - Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths

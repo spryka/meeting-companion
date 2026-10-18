@@ -1,4 +1,4 @@
-"""Correct timestamped terms using phonetic similarity and an optional glossary."""
+"""Correct timestamped terms using phonetic similarity and local time guards."""
 import difflib
 import re
 

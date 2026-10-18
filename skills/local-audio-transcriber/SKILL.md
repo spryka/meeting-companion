@@ -29,6 +29,14 @@ Use `--root PATH` for an explicitly supplied recordings folder. Read the returne
 recording's status. Do not silently use an older meeting or rerun recognition.
 Retry transcription only when requested, using Meeting Companion's «Получить текст» action.
 
+The meeting folder holds the final transcript, context and combined audio.
+`raw/` holds source WAVs, per-source transcripts and logs. With Parakeet enabled,
+`raw/NAME.sources.gigaam.transcript.txt` preserves the baseline before term corrections;
+consult it for disputed wording, without replacing the final transcript.
+`raw/*.corrections.json` records both models' words and correction decisions;
+inspect it only when investigating a disputed term. Neither version is ground truth;
+use source audio or user confirmation when the distinction matters.
+
 ## Context and speakers
 
 Read `NAME.context.json` when present for the meeting title, agenda, attendees
