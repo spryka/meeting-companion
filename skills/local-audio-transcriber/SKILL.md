@@ -15,20 +15,30 @@ Use the folder or transcript supplied by the user. Otherwise read
 if unset, use `~/Downloads/Meetings`. Ask for the folder if it is unavailable.
 Recordings use `YYYY-MM/DD/NAME/` folders and the Mac's local time; older versions used `YYYY-MM/DD/`.
 
-For the latest recording, select the newest `meeting_YYYY-MM-DD_HH-mm-ss`
-by its filename timestamp, not file modification time. Read that recording's
-`NAME.sources.transcript.txt`. If it is missing, inspect
-`raw/NAME.transcription.log` (or beside the audio for older recordings) and report its status; do not silently use an older
-meeting or rerun recognition. Retry transcription only when requested, using
-Meeting Companion's «Получить текст» action.
+For the latest recording, resolve this skill directory as `SKILL_DIR` and run:
+
+```bash
+python3 SKILL_DIR/scripts/find-recording.py
+```
+
+The helper reads the optional plist key without `defaults read`, falls back to
+`~/Downloads/Meetings`, and returns paths as JSON. It selects the filename timestamp,
+ignores modification times and experiments, and supports legacy flat recordings.
+Use `--root PATH` for an explicitly supplied recordings folder. Read the returned
+`transcript` when `ready` is true; otherwise inspect `log` and report that latest
+recording's status. Do not silently use an older meeting or rerun recognition.
+Retry transcription only when requested, using Meeting Companion's «Получить текст» action.
 
 ## Context and speakers
 
 Read `NAME.context.json` when present for the selected event, title, agenda,
-attendees and links. If useful and authorized, match the recording to an event
-through an available calendar connector using start time, overlap and topic.
-Ask when several events fit. Without calendar access, use the saved context
-and transcript; do not require a particular provider or connector.
+attendees and links.
+Read the transcript and saved context first. Use an available calendar connector
+only when the user explicitly asks to compare the schedule/agenda, or missing
+meeting context is necessary to answer the request. A podcast or a recording with
+clear introductions does not need a calendar lookup. Match by start time, overlap
+and topic; ask when several events fit. Calendar access failures follow the
+agent's MCP policy; saved context is not a substitute for a requested calendar check.
 Follow agenda links only when needed, accessible and authorized.
 
 Use the transcript's Speaker guide to map voices to microphone or system audio.
