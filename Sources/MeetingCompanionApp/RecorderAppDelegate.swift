@@ -11,6 +11,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private var statusItem: NSStatusItem!
     private var reminder: NSPanel?
     private var recordingObserver: AnyCancellable?
+    private let appUpdater = AppUpdater()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -43,6 +44,9 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         showWindow()
         Task { await model.calendar.start() }
+        appUpdater.isBusy = { [weak self] in self?.model.preventsTermination ?? true }
+        do { try appUpdater.start() }
+        catch { NSLog("Meeting Companion updater unavailable: %@", error.localizedDescription) }
     }
 
     @objc private func statusClicked() {
@@ -53,6 +57,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             let login = menu.addItem(withTitle: "Запускать при входе", action: #selector(toggleLogin), keyEquivalent: "")
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             menu.addItem(.separator())
+            menu.addItem(withTitle: appUpdater.menuTitle, action: #selector(checkForUpdates), keyEquivalent: "")
             menu.addItem(withTitle: "Выйти", action: #selector(quit), keyEquivalent: "")
             for item in menu.items { item.target = self }
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
@@ -117,6 +122,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+    @objc func checkForUpdates() { appUpdater.check() }
 
     @objc private func showWindow() {
         if window.styleMask.contains(.titled) { NSApp.setActivationPolicy(.regular) }
@@ -164,7 +170,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0 {
+        if model.preventsTermination {
             showWindow()
             let alert = NSAlert()
             alert.messageText = "Meeting Companion ещё работает"

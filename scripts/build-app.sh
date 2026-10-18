@@ -17,8 +17,14 @@ trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/Meeting Companion.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/transcription"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+if [[ "${RELEASE_UPDATES:-0}" == 1 ]]; then
+  /usr/libexec/PlistBuddy -c 'Set :MCEnableUpdates true' "$APP/Contents/Info.plist"
+fi
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp "$BIN_DIR/MeetingCompanionApp" "$APP/Contents/MacOS/MeetingCompanion"
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+cp "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
 for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py run.sh uv-LICENSE-MIT; do
   cp "transcription/$name" "$APP/Contents/Resources/transcription/"
 done

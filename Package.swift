@@ -11,6 +11,9 @@ let package = Package(
         .executable(name: "meeting-companion", targets: ["MeetingCompanionCLI"]),
         .executable(name: "MeetingCompanionApp", targets: ["MeetingCompanionApp"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6")
+    ],
     targets: [
         .target(
             name: "MeetingCompanionCore",
@@ -26,12 +29,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "MeetingCompanionApp",
-            dependencies: ["MeetingCompanionCore"],
+            dependencies: ["MeetingCompanionCore", .product(name: "Sparkle", package: "Sparkle")],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("EventKit"),
-                .linkedFramework("ServiceManagement")
+                .linkedFramework("ServiceManagement"),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
             ]
         )
     ]

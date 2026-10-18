@@ -13,6 +13,9 @@ struct MeetingCompanionApp: App {
                     Button("Настройки…") { delegate.showSettings() }
                         .keyboardShortcut(",", modifiers: .command)
                 }
+                CommandGroup(after: .appInfo) {
+                    Button("Проверить обновления…") { delegate.checkForUpdates() }
+                }
             }
     }
 }
@@ -117,6 +120,9 @@ final class RecorderViewModel: ObservableObject {
         }
     }
     let levels = AudioLevels()
+    var preventsTermination: Bool {
+        isRecording || isBusy || diagnosticRunning || transcriptionJobs > 0 || isResettingCache || isCheckingAudio
+    }
 
     private var isWindowVisible = false
     private var isAudioCheckVisible = false

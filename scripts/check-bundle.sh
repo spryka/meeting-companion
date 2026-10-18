@@ -11,6 +11,10 @@ grep -Eq "^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" "$ROOT_DIR/CH
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" == AppIcon ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
 [[ -x "$APP/Contents/MacOS/MeetingCompanion" ]]
+[[ -x "$APP/Contents/Frameworks/Sparkle.framework/Sparkle" ]]
+[[ -s "$APP/Contents/Resources/Sparkle-LICENSE" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")" == 'oD6scmX5XipE+YSBIw8CfnrhPIlxQPHSrcsrEYNGKHE=' ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUVerifyUpdateBeforeExtraction' "$APP/Contents/Info.plist")" == true ]]
 for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py run.sh uv uv-LICENSE-MIT; do
   [[ -s "$APP/Contents/Resources/transcription/$name" ]]
 done
