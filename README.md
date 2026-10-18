@@ -4,7 +4,58 @@
 с временными метками и разделением голосов. Apple Silicon, macOS 15+.
 Распознавание речи — русский язык.
 
-## Установка из репозитория
+## Установка
+
+Нужен Mac с процессором M-серии (Apple Silicon) и macOS 15+.
+Intel не поддерживается. Для готовой сборки не нужны Xcode, Swift, Python,
+агент или скил. Python и модели приложение подготовит само при первом запуске.
+Для доступа к GitLab может понадобиться корпоративная сеть или VPN.
+
+### Через Homebrew
+
+Если [Homebrew](https://brew.sh) уже установлен, один раз подключи tap и установи приложение:
+
+```sh
+brew update
+brew tap bulat/apps https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap.git
+brew install --cask bulat/apps/meeting-companion
+```
+
+Для обновления сначала заверши Meeting Companion через меню в строке меню:
+
+```sh
+brew update
+brew upgrade --cask bulat/apps/meeting-companion
+```
+
+Если идентичная версия уже установлена вручную, её можно передать Homebrew:
+
+```sh
+brew install --cask --adopt bulat/apps/meeting-companion
+```
+
+Homebrew скачивает готовое приложение в ZIP, проверяет SHA-256 и устанавливает
+его в `/Applications`. Приложение не обновляется в фоне само по себе.
+Подробнее: [инструкция tap](https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap).
+
+### Вручную через DMG
+
+1. Скачай [DMG последней версии](https://gitlab.lamoda.tech/bulat.fayzulin/meeting-companion/-/releases/permalink/latest/downloads/Meeting-Companion-arm64.dmg)
+   или выбери версию на [странице релизов](https://gitlab.lamoda.tech/bulat.fayzulin/meeting-companion/-/releases).
+2. Открой DMG и перетащи Meeting Companion в Applications («Программы»).
+3. Запусти приложение из «Программ» и выполни шаги раздела «Первая запись».
+4. Извлеки образ диска в Finder.
+
+Для ручного обновления заверши приложение через меню в строке меню, скачай новый
+DMG и замени приложение в «Программах». Записи и модели хранятся отдельно.
+Если установил через Homebrew, обновляй через Homebrew, чтобы он учитывал версию.
+
+Готовая сборка пока без Apple notarization. Если macOS заблокирует первый запуск,
+после попытки открытия зайди в «Системные настройки → Конфиденциальность и безопасность»
+и выбери «Всё равно открыть». Не отключай Gatekeeper. На корпоративном Mac запуск
+может ограничиваться политикой компании.
+
+## Сборка из исходников и свои изменения
 
 Нужны Mac с Apple Silicon, macOS 15+ и Swift 6 — он входит в Xcode 16+
 или соответствующие Command Line Tools. Для сборки нужен
@@ -306,22 +357,36 @@ swift run -c release meeting-companion --help
 
 CLI использует конвейер и модели установленного приложения.
 
-## Передача готовой сборки
+## Подготовка сборки для распространения
 
-Если получатель не хочет собирать исходники, можно передать ZIP приложения:
+Собери приложение на Mac с Apple Silicon, затем упакуй DMG для ручной установки:
 
-```bash
+```sh
 ./scripts/build-app.sh
-ditto -c -k --sequesterRsrc --keepParent "dist/Meeting Companion.app" "dist/Meeting Companion-arm64.zip"
+./scripts/build-dmg.sh
 ```
 
-Получатель распаковывает ZIP, переносит приложение в «Программы» и выполняет
-шаги из раздела «Первая запись». uv и скрипты уже внутри; Python, пакеты
-и модели скачиваются при первом запуске подготовки на его Mac.
+Файлы появятся в `dist/`: `Meeting Companion.app` и
+`Meeting-Companion-VERSION-arm64.dmg`, где `VERSION` берётся из Info.plist приложения.
+DMG содержит приложение и ссылку на Applications. Скрипт проверяет bundle, подпись
+и образ диска и отказывается перезаписывать существующий DMG той же версии.
+Для ZIP, который используется Homebrew:
 
-Текущая сборка не проходит проверку Apple для распространения (notarization).
-macOS может заблокировать скачанное приложение; разрешить его запуск можно
-в «Системные настройки → Конфиденциальность и безопасность».
+```sh
+ditto -c -k --sequesterRsrc --keepParent "dist/Meeting Companion.app" "dist/Meeting-Companion-VERSION-arm64.zip"
+shasum -a 256 "dist/Meeting-Companion-VERSION-arm64.zip"
+```
+
+Загрузи оба архива в Generic Package Registry проекта (`meeting-companion`, версия
+`VERSION`), добавь ссылки в GitLab Release и обнови версию и SHA-256 ZIP в
+[homebrew-tap](https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap).
+Не перезаписывай опубликованные архивы и сохраняй прежний сертификат подписи:
+смена сертификата может потребовать заново выдать разрешения macOS.
+
+Готовые архивы содержат uv и конвейер обработки. Python, пакеты и модели
+скачиваются при первоначальной подготовке на Mac получателя.
+Сборка `.app` и DMG требует macOS; Linux runner может проверять Python,
+публиковать готовые архивы и обновлять рецепт Homebrew.
 
 Сторонние компоненты и модели: [THIRD_PARTY.md](THIRD_PARTY.md).
 
