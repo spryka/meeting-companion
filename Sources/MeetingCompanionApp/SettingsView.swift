@@ -4,118 +4,49 @@ import MeetingCompanionCore
 
 struct RecorderSettingsView: View {
     @ObservedObject var model: RecorderViewModel
+    let page: Page
     let showRecorder: () -> Void
 
-    var body: some View {
-        TabView {
-            settingsPage {
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("Захват системного звука", selection: $model.captureBackend) {
-                        Text("ScreenCaptureKit").tag(AudioCaptureBackend.screenCaptureKit)
-                        Text("Core Audio Tap (экспериментальный)").tag(AudioCaptureBackend.coreAudioTap)
-                    }
-                    .disabled(model.isRecording || model.isBusy || model.isCheckingAudio || model.diagnosticRunning)
-                    Text(model.captureBackend == .screenCaptureKit
-                        ? "Только звук, без видеозаписи. Стандартный режим macOS."
-                        : "Без захвата экрана. Возможны сбои аудиоустройств; длительные записи пока не проверены.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Папка записей").font(.headline)
-                        Text(model.outputDirectory.path).lineLimit(2).textSelection(.enabled)
-                    }
-                    Spacer()
-                    Button("Выбрать…", action: model.chooseFolder)
-                        .disabled(model.isRecording || model.isBusy || model.diagnosticRunning)
-                }
-                Picker("Микрофон", selection: $model.selectedMicrophoneID) {
-                    Text("По умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
-                    ForEach(model.microphones) { microphone in
-                        Text(microphone.name).tag(microphone.id)
-                    }
-                }
-                .disabled(model.isRecording || model.isBusy)
-                .onChange(of: model.selectedMicrophoneID) { _, _ in model.restartLevelMonitor() }
-                Button("Обновить микрофоны", action: model.refreshMicrophones)
-                    .disabled(model.isRecording || model.isBusy)
+    enum Page: String, CaseIterable {
+        case recording = "Запись", transcription = "Транскрибация"
+        case calendar = "Календарь", diagnostics = "Диагностика"
+
+        var symbol: String {
+            switch self {
+            case .recording: "mic"
+            case .transcription: "text.alignleft"
+            case .calendar: "calendar"
+            case .diagnostics: "stethoscope"
             }
-            .tabItem { Label("Запись", systemImage: "mic") }
-            settingsPage {
-                Toggle("Улучшать технические термины (Parakeet)", isOn: $model.improveTerms)
-                    .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0)
-                Text("Дополнительная модель около 740 МБ. GigaAM распознаёт основную речь; Parakeet предлагает написание терминов. Исходный текст сохраняется рядом. Возможны ошибочные замены.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Проверить всё") { check(prepare: false) }
-                    Button("Скачать модели выбранного режима") { check(prepare: true) }
-                    if model.diagnosticRunning { ProgressView().controlSize(.small) }
-                    if let startedAt = model.diagnosticStartedAt {
-                        Text(startedAt, style: .timer).monospacedDigit().font(.caption)
-                    }
-                }
-                .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
-                Button("Сбросить кэш…") { Task { await model.resetCache() } }
-                    .disabled(!model.canResetCache)
-                Text("Первоначальная загрузка может занять несколько минут, при медленном соединении — дольше. После неё распознавание русской речи работает без интернета; записи никуда не отправляются.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(model.transcriptionReady ? "Транскрибация готова" : "Модели требуют проверки или подготовки")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let progress = model.preparationProgress {
-                    HStack {
-                        Text("Файлы подготовки: " + ByteCountFormatter.string(fromByteCount: progress.bytes, countStyle: .file))
-                        Spacer()
-                        if let changed = progress.lastModified {
-                            Text("Последнее изменение:")
-                            Text(changed, style: .relative)
-                        }
-                    }
-                    .font(.caption).monospacedDigit()
-                }
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(model.diagnosticReport).font(.system(.caption, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                            .id("diagnostic-log")
-                    }
-                    .frame(height: 150)
-                    .onChange(of: model.diagnosticReport) { _, _ in
-                        proxy.scrollTo("diagnostic-log", anchor: .bottom)
-                    }
-                }
-            }
-            .tabItem { Label("Транскрибация", systemImage: "text.alignleft") }
-            settingsPage {
-                CalendarSettingsView(calendar: model.calendar)
-            }
-            .tabItem { Label("Календарь", systemImage: "calendar") }
-            settingsPage {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(model.diagnosticAccess) { access in
-                        HStack {
-                            Circle().fill(access.state == .granted ? Color.green : access.state == .pending ? .orange : .red)
-                                .frame(width: 9, height: 9).accessibilityHidden(true)
-                            Text(access.name + ": " + access.message).textSelection(.enabled)
-                        }
-                    }
-                }
-                HStack {
-                    Button("Разрешения macOS") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security")!)
-                    }
-                    Button("Проверить уровни звука", action: showRecorder)
-                }
-                Text("В основном окне нажми «Проверить звук», включи звук и скажи несколько слов.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("Проверить транскрибацию") { check(prepare: false) }
-                    .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
-                Text(model.diagnosticReport).font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-            }
-            .tabItem { Label("Диагностика", systemImage: "stethoscope") }
         }
-        .padding(12)
+    }
+
+    @MainActor static func makeController(model: RecorderViewModel,
+        showRecorder: @escaping () -> Void) -> NSTabViewController {
+        let controller = NSTabViewController()
+        controller.tabStyle = .toolbar
+        for page in Page.allCases {
+            let view = RecorderSettingsView(model: model, page: page, showRecorder: showRecorder)
+            let item = NSTabViewItem(viewController: NSHostingController(rootView: view))
+            item.label = page.rawValue
+            item.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: page.rawValue)
+            controller.addTabViewItem(item)
+        }
+        return controller
+    }
+
+    var body: some View {
+        Form {
+            switch page {
+            case .recording: recording
+            case .transcription: transcription
+            case .calendar: CalendarSettingsView(calendar: model.calendar)
+            case .diagnostics: diagnostics
+            }
+        }
+        .formStyle(.grouped)
         .frame(minWidth: 580, idealWidth: 620, minHeight: 400, idealHeight: 520)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
         .onAppear {
             model.refreshAccess()
             model.refreshMicrophones()
@@ -127,11 +58,118 @@ struct RecorderSettingsView: View {
         }
     }
 
-    private func settingsPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16, content: content)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
+    private var recording: some View {
+        Group {
+            Section {
+                Picker("Системный звук", selection: $model.captureBackend) {
+                    Text("ScreenCaptureKit").tag(AudioCaptureBackend.screenCaptureKit)
+                    Text("Core Audio Tap (экспериментальный)").tag(AudioCaptureBackend.coreAudioTap)
+                }
+                .disabled(model.isRecording || model.isBusy || model.isCheckingAudio || model.diagnosticRunning)
+                Picker("Микрофон", selection: $model.selectedMicrophoneID) {
+                    Text("По умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
+                    ForEach(model.microphones) { microphone in
+                        Text(microphone.name).tag(microphone.id)
+                    }
+                }
+                .disabled(model.isRecording || model.isBusy)
+                .onChange(of: model.selectedMicrophoneID) { _, _ in model.restartLevelMonitor() }
+                Button("Обновить микрофоны", action: model.refreshMicrophones)
+                    .disabled(model.isRecording || model.isBusy)
+            } header: {
+                Text("Источники звука")
+            } footer: {
+                Text(model.captureBackend == .screenCaptureKit
+                    ? "Записывается только звук, без видео."
+                    : "Захват без экрана. Возможны сбои аудиоустройств; длительные записи пока не проверены.")
+            }
+            Section("Сохранение") {
+                LabeledContent("Папка записей") {
+                    Text(model.outputDirectory.path).lineLimit(2).textSelection(.enabled)
+                    Button("Выбрать…", action: model.chooseFolder)
+                        .disabled(model.isRecording || model.isBusy || model.diagnosticRunning)
+                }
+            }
+        }
+    }
+
+    private var transcription: some View {
+        Group {
+            Section {
+                Toggle("Улучшать технические термины", isOn: $model.improveTerms)
+                    .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0)
+            } header: {
+                Text("Распознавание")
+            } footer: {
+                Text("Parakeet — дополнительная модель, около 740 МБ. Возможны неверные замены; исходный текст GigaAM сохраняется в raw/.")
+            }
+            Section {
+                LabeledContent("Состояние", value: model.diagnosticRunning ? "Идёт подготовка…" :
+                    model.transcriptionReady ? "Готово" : "Требуется проверка или подготовка")
+                HStack {
+                    Button("Проверить") { check(prepare: false) }
+                    Button("Скачать модели") { check(prepare: true) }
+                }
+                .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
+                if let progress = model.preparationProgress {
+                    LabeledContent("Файлы подготовки", value: ByteCountFormatter.string(fromByteCount: progress.bytes, countStyle: .file))
+                    if let changed = progress.lastModified {
+                        LabeledContent("Последнее изменение") { Text(changed, style: .relative) }
+                    }
+                }
+                DisclosureGroup("Подробности") { diagnosticLog }
+            } header: {
+                Text("Модели")
+            } footer: {
+                Text("Загрузка может занять несколько минут. Затем транскрибация работает офлайн; записи никуда не отправляются.")
+            }
+            Section {
+                Button("Сбросить кэш…") { Task { await model.resetCache() } }
+                    .disabled(!model.canResetCache)
+            } footer: {
+                Text("Удаляются только модели и Python-окружение приложения. Записи сохраняются.")
+            }
+        }
+    }
+
+    private var diagnostics: some View {
+        Group {
+            Section("Разрешения") {
+                ForEach(model.diagnosticAccess) { access in
+                    LabeledContent(access.name) {
+                        Circle().fill(access.state == .granted ? Color.green : access.state == .pending ? .orange : .red)
+                            .frame(width: 9, height: 9).accessibilityHidden(true)
+                        Text(access.message).textSelection(.enabled)
+                    }
+                }
+                Button("Разрешения macOS") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security")!)
+                }
+            }
+            Section {
+                Button("Проверить звук…", action: showRecorder)
+                Button("Проверить транскрибацию") { check(prepare: false) }
+                    .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
+                DisclosureGroup("Подробности") { diagnosticLog }
+            } header: {
+                Text("Проверки")
+            } footer: {
+                Text("Проверка звука открывает основное окно. Нажми «Проверить звук» и включи воспроизведение.")
+            }
+        }
+    }
+
+    private var diagnosticLog: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                Text(model.diagnosticReport).font(.system(.caption, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    .id("diagnostic-log")
+            }
+            .frame(height: 150)
+            .onChange(of: model.diagnosticReport) { _, _ in
+                proxy.scrollTo("diagnostic-log", anchor: .bottom)
+            }
         }
     }
 
@@ -144,28 +182,25 @@ private struct CalendarSettingsView: View {
     @ObservedObject var calendar: MeetingCalendar
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Календари встреч").font(.headline)
+        Section("Календари встреч") {
             if calendar.calendars.isEmpty {
                 Text(calendar.message.isEmpty ? "Нет доступных календарей." : calendar.message)
-                    .font(.caption).foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(calendar.calendars, id: \.calendarIdentifier) { item in
-                            Toggle(item.title + " · " + item.source.title, isOn: Binding(
-                                get: { calendar.isSelected(item) },
-                                set: { calendar.select(item, enabled: $0) }
-                            ))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(calendar.calendars, id: \.calendarIdentifier) { item in
+                    Toggle(item.title + " · " + item.source.title, isOn: Binding(
+                        get: { calendar.isSelected(item) },
+                        set: { calendar.select(item, enabled: $0) }
+                    ))
                 }
-                .frame(height: 100)
             }
-            Toggle("Напоминать только о встречах со ссылкой на созвон", isOn: $calendar.requireCallLink)
+        }
+        Section {
+            Toggle("Только встречи со ссылкой на созвон", isOn: $calendar.requireCallLink)
+        } header: {
+            Text("Напоминания")
+        } footer: {
             Text("Ссылки ищутся в URL, месте и описании встречи. Для очных встреч отключи фильтр или начни запись вручную.")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

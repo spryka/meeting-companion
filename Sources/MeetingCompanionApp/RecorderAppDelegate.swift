@@ -61,7 +61,8 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             settings.title = "Настройки"
             settings.isReleasedWhenClosed = false
             settings.delegate = self
-            settings.contentView = NSHostingView(rootView: RecorderSettingsView(model: model) { [weak self] in self?.showWindow() })
+            settings.contentViewController = RecorderSettingsView.makeController(model: model) { [weak self] in self?.showWindow() }
+            settings.toolbarStyle = .preference
             settings.center()
             settingsWindow = settings
         }
