@@ -32,9 +32,8 @@ def contiguous(words):
  return all(left['start'] <= right['start'] and right['start']-left['end'] <= 0.6
             for left,right in zip(words,words[1:]))
 
-def propose(g, p, terms=()):
+def propose(g, p):
     """Find alternatives without changing the GigaAM transcript."""
-    known = {norm(term) for term in terms}
     matcher = difflib.SequenceMatcher(None, [norm(x['text']) for x in g],
                                     [norm(x['text']) for x in p], autojunk=False)
     rows = []
@@ -70,7 +69,7 @@ def propose(g, p, terms=()):
                             original=a, proposed=b, score=round(similarity(a, b), 3),
                             donor_start=donor[0]['start'], donor_end=donor[-1]['end'],
                             source_indices=[i, i+n], donor_indices=[j, j+m],
-                            time_overlap=round(overlap/union, 3), known_term=norm(b) in known,
+                            time_overlap=round(overlap/union, 3),
                             applied=False, reason='protected_word' if protected else 'candidate'))
     return rows
 
@@ -80,8 +79,8 @@ def conflicts(a, b):
                for key in ('source_indices', 'donor_indices'))
 
 
-def cascade(g, p, terms=()):
-    rows = propose(g, p, terms)
+def cascade(g, p):
+    rows = propose(g, p)
     candidates = [row for row in rows if row['reason'] == 'candidate']
     selected = []
     # Keep the original score-first selection; time checks already gate each proposal.
