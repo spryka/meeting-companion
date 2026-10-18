@@ -45,6 +45,7 @@ struct RecorderSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .disclosureGroupStyle(FullWidthDisclosureStyle())
         .frame(minWidth: 580, idealWidth: 620, minHeight: 400, idealHeight: 520)
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
         .onAppear {
@@ -137,9 +138,12 @@ struct RecorderSettingsView: View {
             Section("Разрешения") {
                 ForEach(model.diagnosticAccess) { access in
                     LabeledContent(access.name) {
-                        Circle().fill(access.state == .granted ? Color.green : access.state == .pending ? .orange : .red)
-                            .frame(width: 9, height: 9).accessibilityHidden(true)
-                        Text(access.message).textSelection(.enabled)
+                        HStack(spacing: 8) {
+                            Text(access.message).multilineTextAlignment(.trailing).textSelection(.enabled)
+                            Circle().fill(access.state == .granted ? Color.green : access.state == .pending ? .orange : .red)
+                                .frame(width: 9, height: 9).accessibilityHidden(true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
                 Button("Разрешения macOS") {
@@ -201,6 +205,29 @@ private struct CalendarSettingsView: View {
             Text("Напоминания")
         } footer: {
             Text("Ссылки ищутся в URL, месте и описании встречи. Для очных встреч отключи фильтр или начни запись вручную.")
+        }
+    }
+}
+
+private struct FullWidthDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                configuration.isExpanded.toggle()
+            } label: {
+                HStack {
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(width: 12).accessibilityHidden(true)
+                    configuration.label
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "Развёрнуто" : "Свёрнуто")
+            if configuration.isExpanded { configuration.content }
         }
     }
 }
