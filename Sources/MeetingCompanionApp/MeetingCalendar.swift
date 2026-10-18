@@ -176,23 +176,10 @@ final class MeetingCalendar: ObservableObject {
         }
     }
 
-    // Re-read the local store more often around a start; this never forces account sync.
-    static func refreshDelay(events: [MeetingContext], now: Date) -> TimeInterval {
-        var delay: TimeInterval = 300
-        for event in events {
-            let untilStart = event.start.timeIntervalSince(now)
-            if untilStart > -300 && untilStart <= 300 {
-                delay = min(delay, 30)
-            } else if untilStart > 300 {
-                delay = min(delay, untilStart - 300)
-            }
-        }
-        return max(1, delay)
-    }
-
-    private func scheduleRefresh(now: Date) {
+    private func scheduleRefresh() {
         guard started else { return }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshDelay(events: events, now: now), repeats: false) { [weak self] _ in
+        // Fallback for missed notifications; reading EventKit does not force account sync.
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
     }
@@ -216,7 +203,7 @@ final class MeetingCalendar: ObservableObject {
         refreshTimer?.invalidate()
         reminderTimer?.invalidate()
         let now = Date()
-        defer { scheduleRefresh(now: now) }
+        defer { scheduleRefresh() }
         suggestsCalendarSetup = false
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             events = []
