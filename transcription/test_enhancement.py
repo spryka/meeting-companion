@@ -53,6 +53,14 @@ class EnhancementTests(unittest.TestCase):
         self.assertFalse(cascade(g, [{**p[0], 'start': 10}])[1])
         self.assertFalse(cascade([dict(start=1, end=2, text='2')], [dict(start=1, end=2, text='two')])[1])
 
+    def test_term_replacement_never_consumes_another_speaker(self):
+        words = [dict(start=1, end=1.4, text='ордерс', speaker=1),
+                 dict(start=1.5, end=2, text='гритвей', speaker=2)]
+        donor = [dict(start=1, end=2, text='Orders-Gateway')]
+        result, changes = cascade(words, donor)
+        self.assertEqual([word['speaker'] for word in result], [1, 2])
+        self.assertFalse(any(change['end'] == 2 and change['start'] == 1 for change in changes))
+
     def test_optional_failures_keep_gigaam_and_report_warnings(self):
         with tempfile.TemporaryDirectory() as directory:
             audio = Path(directory)/'source.wav'

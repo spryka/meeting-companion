@@ -36,6 +36,7 @@ def cascade(g,p):
   for i in range(ga,gz):
    for n in (1,2):
     if i+n>gz:continue
+    if any(w.get('speaker')!=g[i].get('speaker') for w in g[i:i+n]):continue
     a=' '.join(w['text'] for w in g[i:i+n])
     for j in range(pa,pz):
      if abs(g[i]['start']-p[j]['start'])>2:continue
