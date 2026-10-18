@@ -58,7 +58,9 @@ def merge_sources(host_data: dict, remote_data: dict) -> list[str]:
 
 
 def source_paths(base: Path):
-    return tuple(base.with_name(base.name + f".{source}_record.wav") for source in ("host", "remote"))
+    raw = base.parent / "raw"
+    source_base = raw / base.name if raw.is_dir() else base
+    return tuple(source_base.with_name(base.name + f".{source}_record.wav") for source in ("host", "remote"))
 
 
 def main():
@@ -77,7 +79,7 @@ def main():
     host_output = host.with_suffix(".local.transcript.txt")
     remote_output = remote.with_suffix(".local.transcript.txt")
     merged_output = base.with_name(base.name + ".sources.transcript.txt")
-    original_output = base.with_name(base.name + ".sources.gigaam.transcript.txt")
+    original_output = host.parent / (base.name + ".sources.gigaam.transcript.txt")
     outputs = [host_output, remote_output, merged_output]
     if args.parakeet:
         outputs += [original_output, host_output.with_suffix(".gigaam.txt"), remote_output.with_suffix(".gigaam.txt")]

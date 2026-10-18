@@ -10,9 +10,12 @@ public enum Transcription {
             queue.async {
                 do {
                     let base = recording.deletingPathExtension()
-                    var log = base.appendingPathExtension("transcription.log")
+                    let raw = recording.deletingLastPathComponent().appendingPathComponent("raw")
+                    let logBase = FileManager.default.fileExists(atPath: raw.path)
+                        ? raw.appendingPathComponent(base.lastPathComponent) : base
+                    var log = logBase.appendingPathExtension("transcription.log")
                     if FileManager.default.fileExists(atPath: log.path) {
-                        log = base.appendingPathExtension("transcription-" + UUID().uuidString + ".log")
+                        log = logBase.appendingPathExtension("transcription-" + UUID().uuidString + ".log")
                     }
                     let descriptor = Darwin.open(log.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
                     guard descriptor >= 0 else {

@@ -13,10 +13,13 @@ final class SourceAudioFiles {
     let archiveURLs: [URL]
 
     init(outputURL: URL, archiveAudio: Bool = false) throws {
-        host = try SourceAudioFile(url: outputURL.deletingPathExtension().appendingPathExtension("host_record.wav"))
-        remote = try SourceAudioFile(url: outputURL.deletingPathExtension().appendingPathExtension("remote_record.wav"))
+        let raw = outputURL.deletingLastPathComponent().appendingPathComponent("raw")
+        try FileManager.default.createDirectory(at: raw, withIntermediateDirectories: true)
+        let base = raw.appendingPathComponent(outputURL.deletingPathExtension().lastPathComponent)
+        host = try SourceAudioFile(url: base.appendingPathExtension("host_record.wav"))
+        remote = try SourceAudioFile(url: base.appendingPathExtension("remote_record.wav"))
         archiveURLs = archiveAudio ? ["host", "remote"].map {
-            outputURL.deletingPathExtension().appendingPathExtension($0 + ".capture.caf")
+            base.appendingPathExtension($0 + ".capture.caf")
         } : []
         archive = try archiveURLs.map { try SourceAudioFile(url: $0, sampleRate: 48000, channels: 2) }
     }

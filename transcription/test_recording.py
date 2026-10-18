@@ -32,6 +32,23 @@ class RecordingTests(unittest.TestCase):
                 path.touch()
             self.assertEqual(module.source_paths(base), new)
 
+    def test_new_meeting_sources_use_raw_and_keep_final_transcript_outside(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)/"meeting"
+            raw = base.parent/"raw"
+            raw.mkdir()
+            sources = module.source_paths(base)
+            self.assertTrue(all(source.parent == raw for source in sources))
+            for source in sources: source.touch()
+            data = {**self.data(), "gigaam_segments": []}
+            with patch.object(sys, "argv", ["recording", str(base), "--parakeet"]), \
+                 patch.object(module, "transcribe_file", return_value=data), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                module.main()
+            self.assertTrue((base.parent/"meeting.sources.transcript.txt").is_file())
+            self.assertTrue((raw/"meeting.sources.gigaam.transcript.txt").is_file())
+            self.assertFalse((base.parent/"meeting.sources.gigaam.transcript.txt").exists())
+
     def test_overlap_and_multiple_remote_voices(self):
         host = self.data([self.segment(13, "Host interruption"), self.segment(3601, "Later")])
         remote = self.data([self.segment(11, "Remote"), self.segment(13, "Other", 2)])
