@@ -1,6 +1,6 @@
 ---
 name: local-audio-transcriber
-description: Find and summarize ready Meeting Companion transcripts, extract decisions and action items, and compare the discussion with saved meeting context or an available calendar. Use for requests about the latest recording, meeting notes, agenda coverage, or speaker attribution.
+description: Find and summarize ready Meeting Companion transcripts, extract decisions and action items, and compare the discussion with saved meeting context. Use for requests about the latest recording, meeting notes, agenda coverage, or speaker attribution.
 ---
 
 # Meeting Companion transcripts
@@ -31,15 +31,9 @@ Retry transcription only when requested, using Meeting Companion's «Получ�
 
 ## Context and speakers
 
-Read `NAME.context.json` when present for the selected event, title, agenda,
-attendees and links.
-Read the transcript and saved context first. Use an available calendar connector
-only when the user explicitly asks to compare the schedule/agenda, or missing
-meeting context is necessary to answer the request. A podcast or a recording with
-clear introductions does not need a calendar lookup. Match by start time, overlap
-and topic; ask when several events fit. Calendar access failures follow the
-agent's MCP policy; saved context is not a substitute for a requested calendar check.
-Follow agenda links only when needed, accessible and authorized.
+Read `NAME.context.json` when present for the meeting title, agenda, attendees
+and links saved by Meeting Companion. Without it, work from the transcript alone.
+Do not query external calendars or require a calendar connector.
 
 Use the transcript's Speaker guide to map voices to microphone or system audio.
 Either source can contain several people; do not infer the source from a speaker number.
