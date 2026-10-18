@@ -55,14 +55,17 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     @objc func showSettings() {
         if settingsWindow == nil {
-            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 740),
-                styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            settings.title = "Настройки и диагностика"
+            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
+                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            settings.contentMinSize = NSSize(width: 580, height: 400)
+            settings.title = "Настройки"
             settings.isReleasedWhenClosed = false
+            settings.delegate = self
             settings.contentView = NSHostingView(rootView: RecorderSettingsView(model: model) { [weak self] in self?.showWindow() })
             settings.center()
             settingsWindow = settings
         }
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -80,6 +83,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func showWindow() {
+        if window.styleMask.contains(.titled) { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         updatePreviewVisibility()
@@ -87,12 +91,16 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
-        if !model.isRecording { model.dismissCapsule() }
-        model.setWindowVisible(false)
+        if sender === window {
+            if !model.isRecording { model.dismissCapsule() }
+            model.setWindowVisible(false)
+        }
+        AppWindowState.refreshActivationPolicy()
         return false
     }
 
     private func updatePreviewVisibility() {
+        AppWindowState.refreshActivationPolicy()
         model.setWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
     }
 

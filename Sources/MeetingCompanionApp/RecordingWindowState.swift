@@ -7,6 +7,16 @@ final class AppWindowState: ObservableObject {
     private var normalFrame: NSRect?
     private let normalSize = NSSize(width: 680, height: 560)
 
+    static func activationPolicy(for windows: [NSWindow]) -> NSApplication.ActivationPolicy {
+        windows.contains { $0.styleMask.contains(.titled) && ($0.isVisible || $0.isMiniaturized) }
+            ? .regular : .accessory
+    }
+
+    static func refreshActivationPolicy() {
+        let policy = activationPolicy(for: NSApp.windows)
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+    }
+
     func attach(_ window: NSWindow) {
         guard self.window !== window else { return }
         self.window = window
@@ -19,6 +29,7 @@ final class AppWindowState: ObservableObject {
     func setCapsuleMode(_ isRecording: Bool, processing: Bool = false) {
         let compactSize = processing ? NSSize(width: 348, height: 140) : NSSize(width: 288, height: 76)
         guard let window else { return }
+        defer { Self.refreshActivationPolicy() }
 
         if isRecording {
             if normalFrame == nil {
