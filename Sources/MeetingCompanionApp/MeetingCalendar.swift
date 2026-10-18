@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import EventKit
 import Foundation
@@ -71,6 +72,8 @@ final class MeetingCalendar: ObservableObject {
     @Published var events: [MeetingContext] = []
     @Published var calendars: [EKCalendar] = []
     @Published var message = ""
+    @Published private(set) var isLoadingCalendars = false
+    @Published private(set) var suggestsCalendarSetup = false
     @Published private(set) var selectedCalendarIDs: Set<String>?
     @Published var requireCallLink: Bool {
         didSet {
@@ -80,7 +83,13 @@ final class MeetingCalendar: ObservableObject {
     }
     private let defaults: UserDefaults
     private let store = EKEventStore()
-    private var timer: Timer?
+    private var refreshTimer: Timer?
+    private var reminderTimer: Timer?
+    private var subscriptions = Set<AnyCancellable>()
+    private var catalogTask: Task<Void, Never>?
+    private var started = false
+    private var mainWindowVisible = false
+    private var calendarSettingsVisible = false
     private var handled: [String: Double]
     var onMeeting: ((MeetingContext) -> Void)?
 
@@ -105,42 +114,132 @@ final class MeetingCalendar: ObservableObject {
     }
 
     func start() async {
+        guard !started else { return }
+        started = true
+        NotificationCenter.default.publisher(for: .EKEventStoreChanged, object: store)
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.refresh()
+                    self?.loadCalendarsIfVisible()
+                }
+            }.store(in: &subscriptions)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.refresh()
+                    self?.loadCalendarsIfVisible()
+                }
+            }.store(in: &subscriptions)
         do {
             guard try await store.requestFullAccessToEvents() else {
                 message = "Разреши доступ к календарю в настройках macOS для напоминаний."
                 return
             }
             refresh()
+            loadCalendarsIfVisible()
         } catch { message = "Календарь: " + error.localizedDescription }
     }
 
+    func setMainWindowVisible(_ visible: Bool) {
+        guard mainWindowVisible != visible else { return }
+        mainWindowVisible = visible
+        if visible { refresh() }
+        else { suggestsCalendarSetup = false }
+    }
+
+    func setCalendarSettingsVisible(_ visible: Bool) {
+        guard calendarSettingsVisible != visible else { return }
+        calendarSettingsVisible = visible
+        if visible { loadCalendarsIfVisible() }
+        else {
+            catalogTask?.cancel()
+            isLoadingCalendars = false
+        }
+    }
+
+    private func loadCalendarsIfVisible() {
+        guard calendarSettingsVisible else { return }
+        catalogTask?.cancel()
+        isLoadingCalendars = true
+        catalogTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            defer { self.isLoadingCalendars = false }
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                self.calendars = []
+                return
+            }
+            self.calendars = self.store.calendars(for: .event).sorted {
+                ($0.source.title, $0.title) < ($1.source.title, $1.title)
+            }
+        }
+    }
+
+    private func scheduleRefresh() {
+        guard started else { return }
+        // Fallback for missed notifications; reading EventKit does not force account sync.
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    private func checkReminders() {
+        reminderTimer?.invalidate()
+        let now = Date()
+        if let event = events.first(where: { $0.needsReminder(now: now, handled: Set(handled.keys), requireCallLink: requireCallLink) }) {
+            onMeeting?(event)
+        }
+        guard started, let next = events.first(where: {
+            $0.start > now && !handled.keys.contains($0.id)
+                && (!requireCallLink || $0.links.contains(where: MeetingContext.isCallLink))
+        }) else { return }
+        reminderTimer = Timer.scheduledTimer(withTimeInterval: max(0.1, next.start.timeIntervalSinceNow), repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.checkReminders() }
+        }
+    }
+
     func refresh() {
+        refreshTimer?.invalidate()
+        reminderTimer?.invalidate()
+        let now = Date()
+        defer { scheduleRefresh() }
+        suggestsCalendarSetup = false
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             events = []
             calendars = []
             message = "Нет доступа к календарю; запись доступна вручную."
             return
         }
-        message = ""
-        calendars = store.calendars(for: .event).sorted {
-            ($0.source.title, $0.title) < ($1.source.title, $1.title)
+        handled = handled.filter { now.timeIntervalSince1970 - $0.value < 86400 }
+        // nil preserves the default of all calendars without loading their catalog.
+        let selected = selectedCalendarIDs.map { $0.compactMap { store.calendar(withIdentifier: $0) } }
+        if let selected, selected.isEmpty {
+            events = []
+            message = "Выбери календарь в настройках Meeting Companion → Календарь."
+            return
         }
-        if timer == nil {
-            timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.refresh() }
+        func meetings(until end: Date) -> [MeetingContext] {
+            let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-300),
+                                                     end: end, calendars: selected)
+            return Self.visibleMeetings(store.events(matching: predicate), now: now)
+        }
+        events = meetings(until: now.addingTimeInterval(12 * 3600))
+        message = events.isEmpty ? "В ближайшие 12 часов встреч нет." : ""
+        if mainWindowVisible && events.isEmpty {
+            suggestsCalendarSetup = meetings(until: now.addingTimeInterval(7 * 86400)).isEmpty
+            if suggestsCalendarSetup {
+                message = "В выбранных календарях нет встреч на ближайшие 7 дней. Возможно, рабочий календарь ещё не подключён к macOS."
             }
         }
-        let now = Date()
-        handled = handled.filter { now.timeIntervalSince1970 - $0.value < 86400 }
-        let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-300),
-                                                 end: now.addingTimeInterval(12 * 3600), calendars: calendars.filter(isSelected))
-        events = calendars.contains(where: isSelected) ? store.events(matching: predicate).filter { event in
+        checkReminders()
+    }
+
+    static func visibleMeetings(_ events: [EKEvent], now: Date) -> [MeetingContext] {
+        events.filter { event in
             !event.isAllDay && event.status != .canceled && event.endDate > now
                 && event.attendees?.first(where: { $0.isCurrentUser })?.participantStatus != .declined
-        }.map(MeetingContext.init(event:)).sorted { $0.start < $1.start } : []
-        if let event = events.first(where: { $0.needsReminder(now: now, handled: Set(handled.keys), requireCallLink: requireCallLink) }) {
-            onMeeting?(event)
-        }
+        }.map(MeetingContext.init(event:)).sorted { $0.start < $1.start }
     }
 
     func acknowledge(_ event: MeetingContext) {

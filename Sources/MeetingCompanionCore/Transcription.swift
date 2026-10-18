@@ -4,14 +4,18 @@ import Darwin
 public enum Transcription {
     private static let queue = DispatchQueue(label: "MeetingCompanion.transcription")
 
-    public static func run(recording: URL) async throws -> URL {
+    public static func run(recording: URL, parakeet: Bool = false,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     let base = recording.deletingPathExtension()
-                    var log = base.appendingPathExtension("transcription.log")
+                    let raw = recording.deletingLastPathComponent().appendingPathComponent("raw")
+                    let logBase = FileManager.default.fileExists(atPath: raw.path)
+                        ? raw.appendingPathComponent(base.lastPathComponent) : base
+                    var log = logBase.appendingPathExtension("transcription.log")
                     if FileManager.default.fileExists(atPath: log.path) {
-                        log = base.appendingPathExtension("transcription-" + UUID().uuidString + ".log")
+                        log = logBase.appendingPathExtension("transcription-" + UUID().uuidString + ".log")
                     }
                     let descriptor = Darwin.open(log.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
                     guard descriptor >= 0 else {
@@ -19,10 +23,19 @@ public enum Transcription {
                     }
                     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
                     defer { try? handle.close() }
-                    let process = try makeProcess(arguments: ["--recording", "--offline", recording.path])
-                    process.standardOutput = handle
-                    process.standardError = handle
+                    let process = try makeProcess(arguments: ["--recording", "--offline"] +
+                        (parakeet ? ["--parakeet"] : []) + [recording.path])
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = pipe
                     try process.run()
+                    do {
+                        try readProgress(from: pipe.fileHandleForReading, log: handle, onProgress: onProgress)
+                    } catch {
+                        if process.isRunning { process.terminate() }
+                        process.waitUntilExit()
+                        throw error
+                    }
                     process.waitUntilExit()
                     let transcript = base.appendingPathExtension("sources.transcript.txt")
                     guard process.terminationStatus == 0,
@@ -55,12 +68,13 @@ public enum Transcription {
         return process
     }
 
-    public static func checkDependencies(prepare: Bool = false,
+    public static func checkDependencies(prepare: Bool = false, availability: Bool = false, parakeet: Bool = false,
         onOutput: (@Sendable (String) -> Void)? = nil) async throws -> (output: String, succeeded: Bool) {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
-                    let process = try makeProcess(arguments: [prepare ? "--prepare" : "--check"])
+                    let process = try makeProcess(arguments: [prepare ? "--prepare" : availability ? "--availability" : "--check"] +
+                        (parakeet ? ["--parakeet"] : []))
                     let pipe = Pipe()
                     process.standardOutput = pipe
                     process.standardError = pipe
@@ -71,6 +85,49 @@ public enum Transcription {
                 } catch { continuation.resume(throwing: error) }
             }
         }
+    }
+
+    static func readProgress(from handle: FileHandle, log: FileHandle,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) throws {
+        var pending = Data()
+        var discardingLine = false
+        var previous: TranscriptionProgress?
+        var lastPublished = ContinuousClock.now
+        func publish(_ progress: TranscriptionProgress) {
+            let now = ContinuousClock.now
+            if let previous, previous.stage == progress.stage, previous.channel == progress.channel,
+               previous.step == progress.step, progress.warning == nil,
+               progress.completed != progress.total, now - lastPublished < .milliseconds(500) { return }
+            previous = progress
+            lastPublished = now
+            onProgress?(progress)
+        }
+        while true {
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { break }
+            try log.write(contentsOf: chunk)
+            let parts = chunk.split(separator: 10, omittingEmptySubsequences: false)
+            for part in parts.dropLast() {
+                if !discardingLine, pending.count + part.count <= 65536 {
+                    pending.append(contentsOf: part)
+                    if let progress = TranscriptionProgress(line: pending) {
+                        publish(progress)
+                    }
+                }
+                pending.removeAll(keepingCapacity: true)
+                discardingLine = false
+            }
+            let tail = parts.last!
+            if !discardingLine {
+                if pending.count + tail.count <= 65536 {
+                    pending.append(contentsOf: tail)
+                } else {
+                    pending.removeAll(keepingCapacity: true)
+                    discardingLine = true
+                }
+            }
+        }
+        if !discardingLine, let progress = TranscriptionProgress(line: pending) { publish(progress) }
     }
 
     static func readOutput(from handle: FileHandle, onOutput: (@Sendable (String) -> Void)?) -> String {
@@ -90,4 +147,67 @@ public enum Transcription {
         return String(String(decoding: data, as: UTF8.self).suffix(12000))
     }
 
+}
+
+public struct TranscriptionProgress: Decodable, Equatable, Sendable {
+    public enum Stage: String, Decodable, Sendable {
+        case gigaam, diarization, vad, parakeet, correction, merge, warning
+    }
+
+    public let stage: Stage
+    public let channel: String?
+    public let completed: Int
+    public let total: Int
+    public let step: Int?
+    public let steps: Int?
+    public let warning: String?
+
+    init?(line: Data) {
+        let prefix = Data("MEETING_PROGRESS ".utf8)
+        guard line.starts(with: prefix),
+              let value = try? JSONDecoder().decode(Self.self, from: line.dropFirst(prefix.count)),
+              value.completed >= 0, value.total >= 0, value.completed <= value.total,
+              value.channel == nil || value.channel == "host" || value.channel == "remote" else { return nil }
+        guard (value.step == nil && value.steps == nil) ||
+              (value.step != nil && value.steps != nil && value.step! > 0 && value.step! <= value.steps!) else { return nil }
+        if value.stage == .warning && value.warning == nil { return nil }
+        self = value
+    }
+
+    public var text: String {
+        let label: String
+        switch stage {
+        case .gigaam: label = "Распознавание GigaAM"
+        case .vad: label = "Поиск речи"
+        case .parakeet: label = "Распознавание Parakeet"
+        case .correction: label = "Уточнение терминов"
+        case .warning: label = warning ?? "Предупреждение"
+        case .diarization: label = "Разделение голосов"
+        case .merge: label = "Объединение дорожек"
+        }
+        let source = channel.map { $0 == "host" ? " · микрофон" : " · системный звук" } ?? ""
+        let count = total > 1 ? " · \(completed)/\(total) окон" : ""
+        return label + source + count + "…"
+    }
+}
+
+public enum TranscriptionState: Equatable, Sendable {
+    case idle
+    case running(TranscriptionProgress?)
+    case completed(URL)
+    case failed(String)
+
+    public var transcript: URL? {
+        if case .completed(let url) = self { return url }
+        return nil
+    }
+
+    public var text: String {
+        switch self {
+        case .idle: return ""
+        case .running(let progress): return progress?.text ?? "Подготовка транскрибации…"
+        case .completed: return "Текст готов"
+        case .failed(let message): return message
+        }
+    }
 }

@@ -5,8 +5,24 @@ import Combine
 final class AppWindowState: ObservableObject {
     weak var window: NSWindow?
     private var normalFrame: NSRect?
-    private let normalSize = NSSize(width: 680, height: 560)
-    private let compactSize = NSSize(width: 288, height: 76)
+    private var normalToolbar: NSToolbar?
+    private let normalSize = NSSize(width: 620, height: 460)
+
+    static func activationPolicy(for windows: [NSWindow]) -> NSApplication.ActivationPolicy {
+        windows.contains { $0.styleMask.contains(.titled) && ($0.isVisible || $0.isMiniaturized) }
+            ? .regular : .accessory
+    }
+
+    static func settingsPageVisible(window: NSWindow?, pageSelected: Bool, applicationHidden: Bool) -> Bool {
+        guard let window else { return false }
+        return pageSelected && !applicationHidden && window.isVisible && !window.isMiniaturized
+            && window.occlusionState.contains(.visible)
+    }
+
+    static func refreshActivationPolicy() {
+        let policy = activationPolicy(for: NSApp.windows)
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+    }
 
     func attach(_ window: NSWindow) {
         guard self.window !== window else { return }
@@ -17,15 +33,19 @@ final class AppWindowState: ObservableObject {
         window.minSize = normalSize
     }
 
-    func setRecordingMode(_ isRecording: Bool) {
+    func setCapsuleMode(_ isRecording: Bool, processing: Bool = false) {
+        let compactSize = processing ? NSSize(width: 348, height: 140) : NSSize(width: 288, height: 76)
         guard let window else { return }
+        defer { Self.refreshActivationPolicy() }
 
         if isRecording {
             if normalFrame == nil {
                 normalFrame = window.frame
+                normalToolbar = window.toolbar
             }
 
             window.styleMask = [.borderless]
+            window.toolbar?.isVisible = false
             window.isOpaque = false
             window.backgroundColor = .clear
             window.hasShadow = false
@@ -53,6 +73,8 @@ final class AppWindowState: ObservableObject {
             window.standardWindowButton(.miniaturizeButton)?.isHidden = false
             window.standardWindowButton(.zoomButton)?.isHidden = false
             window.minSize = normalSize
+            window.toolbar = normalToolbar
+            window.toolbar?.isVisible = true
 
             if let normalFrame {
                 let restoredFrame = NSRect(

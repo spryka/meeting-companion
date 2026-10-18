@@ -8,11 +8,15 @@ required to record or transcribe. Keep changes small; use existing platform APIs
 - `Sources/MeetingCompanionCore`: ScreenCaptureKit / Core Audio Tap audio capture, synchronized source
   WAV files, subprocess transcription.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
-  reminders and completion notifications.
+  reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
 - `transcription/`: GigaAM ONNX speech recognition, Nemotron MLX diarization,
-  timestamp merge, runtime/model preparation and Python tests.
+  Silero VAD, optional Parakeet term correction, timestamp merge, runtime/model preparation and Python tests.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
+
+Before changing transcription or term correction, read
+[`docs/transcription-pipeline.md`](docs/transcription-pipeline.md) for the algorithm,
+artifact layout, failure behavior and evaluation method.
 
 ## Invariants
 
@@ -23,9 +27,14 @@ required to record or transcribe. Keep changes small; use existing platform APIs
   only at the user's explicit request, with `scripts/reset-permissions.sh` after
   the app quits. Never reset permissions automatically during build/install.
 - Keep host and remote WAVs on the same timeline: 16 kHz mono PCM16, silence
-  included. Host is the microphone owner; do not hardcode a person's name.
+  included. Host is the microphone source and can contain multiple voices; do not hardcode identities.
 - Transcription must work offline after preparation. Never upload audio.
 - Merge channels by word timestamps before grouping turns; preserve overlaps.
+- New recordings use `YYYY-MM/DD/NAME/`; final transcript, context and mixed audio stay
+  there, intermediate files and source audio go in `raw/`. Keep reading legacy flat recordings.
+- VAD gates whole existing ASR windows; keep absolute timestamps and original audio.
+  Only a detection copy is amplified. Preserve baseline GigaAM text with Parakeet enabled.
+- Keep processing UI event-driven and discrete; no continuous animation for transcription.
 - On transcription failure keep audio and logs, and allow retry.
 - Do not quit/install over an active recording, preparation or transcription.
 - Do not commit certificates/keys, `.codesign/`, `.build/`, `dist/`, recordings,

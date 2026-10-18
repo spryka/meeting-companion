@@ -1,6 +1,6 @@
 ---
 name: local-audio-transcriber
-description: Find and summarize ready Meeting Companion transcripts, extract decisions and action items, and compare the discussion with saved meeting context or an available calendar. Use for requests about the latest recording, meeting notes, agenda coverage, or speaker attribution.
+description: Find and summarize ready Meeting Companion transcripts, extract decisions and action items, and compare the discussion with saved meeting context. Use for requests about the latest recording, meeting notes, agenda coverage, or speaker attribution.
 ---
 
 # Meeting Companion transcripts
@@ -13,30 +13,40 @@ This export does not include a standalone speech recognition pipeline.
 Use the folder or transcript supplied by the user. Otherwise read
 `recordingsDirectory` from `~/Library/Preferences/local.meeting-companion.plist`;
 if unset, use `~/Downloads/Meetings`. Ask for the folder if it is unavailable.
-Recordings use `YYYY-MM/DD/` folders and the Mac's local time.
+Recordings use `YYYY-MM/DD/NAME/` folders and the Mac's local time; older versions used `YYYY-MM/DD/`.
 
-For the latest recording, select the newest `meeting_YYYY-MM-DD_HH-mm-ss`
-by its filename timestamp, not file modification time. Read that recording's
-`NAME.sources.transcript.txt`. If it is missing, inspect
-`NAME.transcription.log` and report its status; do not silently use an older
-meeting or rerun recognition. Retry transcription only when requested, using
-Meeting Companion's «Получить текст» action.
+For the latest recording, resolve this skill directory as `SKILL_DIR` and run:
+
+```bash
+python3 SKILL_DIR/scripts/find-recording.py
+```
+
+The helper reads the optional plist key without `defaults read`, falls back to
+`~/Downloads/Meetings`, and returns paths as JSON. It selects the filename timestamp,
+ignores modification times and experiments, and supports legacy flat recordings.
+Use `--root PATH` for an explicitly supplied recordings folder. Read the returned
+`transcript` when `ready` is true; otherwise inspect `log` and report that latest
+recording's status. Do not silently use an older meeting or rerun recognition.
+Retry transcription only when requested, using Meeting Companion's «Получить текст» action.
+
+The meeting folder holds the final transcript, context and combined audio.
+`raw/` holds source WAVs, per-source transcripts and logs. With Parakeet enabled,
+`raw/NAME.sources.gigaam.transcript.txt` preserves the baseline before term corrections;
+consult it for disputed wording, without replacing the final transcript.
+`raw/*.corrections.json` records both models' words and correction decisions;
+inspect it only when investigating a disputed term. Neither version is ground truth;
+use source audio or user confirmation when the distinction matters.
 
 ## Context and speakers
 
-Read `NAME.context.json` when present for the selected event, title, agenda,
-attendees and links. If useful and authorized, match the recording to an event
-through an available calendar connector using start time, overlap and topic.
-Ask when several events fit. Without calendar access, use the saved context
-and transcript; do not require a particular provider or connector.
-Follow agenda links only when needed, accessible and authorized.
+Read `NAME.context.json` when present for the meeting title, agenda, attendees
+and links saved by Meeting Companion. Without it, work from the transcript alone.
+Do not query external calendars or require a calendar connector.
 
-In merged source transcripts, Speaker 1 / Host is the microphone owner.
-Use their name only when known from user context or confirmation.
-Speaker 2+ / Remote are system-audio voices. Assign names only from explicit
-introductions, clear transcript evidence or user confirmation. Calendar
-attendees alone do not identify a voice. Do not apply this channel mapping
-to transcripts produced by diarizing a single mixed audio file.
+Use the transcript's Speaker guide to map voices to microphone or system audio.
+Either source can contain several people; do not infer the source from a speaker number.
+Assign names only from explicit introductions, clear transcript evidence or user
+confirmation. Calendar attendees alone do not identify a voice.
 
 ## Summarize
 

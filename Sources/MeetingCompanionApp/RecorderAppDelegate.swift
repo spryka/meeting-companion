@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 @MainActor
-final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
     private let model = RecorderViewModel()
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
@@ -14,17 +14,18 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        TranscriptionNotifications.shared.configure()
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.delegate = self
+        let toolbar = NSToolbar(identifier: "RecorderToolbar")
+        toolbar.delegate = self
+        toolbar.allowsUserCustomization = false
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() })
         window.center()
-        model.onRecordingSaved = { [weak self] in
-            self?.window.orderOut(nil)
-            self?.model.setWindowVisible(false)
-        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusClicked)
@@ -60,17 +61,50 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     @objc func showSettings() {
         if settingsWindow == nil {
-            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 740),
-                styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            settings.title = "Настройки и диагностика"
+            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
+                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            settings.contentMinSize = NSSize(width: 580, height: 400)
+            settings.title = "Настройки"
             settings.isReleasedWhenClosed = false
-            settings.contentView = NSHostingView(rootView: RecorderSettingsView(model: model) { [weak self] in self?.showWindow() })
+            settings.delegate = self
+            let controller = RecorderSettingsView.makeController(model: model)
+            controller.onSelectionChange = { [weak self] in self?.updatePreviewVisibility() }
+            settings.contentViewController = controller
+            settings.toolbarStyle = .preference
             settings.center()
             settingsWindow = settings
         }
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        updatePreviewVisibility()
     }
+
+    private static let recordingsItem = NSToolbarItem.Identifier("Recordings")
+    private static let settingsItem = NSToolbarItem.Identifier("Settings")
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, Self.recordingsItem, Self.settingsItem]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard identifier == Self.recordingsItem || identifier == Self.settingsItem else { return nil }
+        let recordings = identifier == Self.recordingsItem
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = recordings ? "Записи" : "Настройки"
+        item.toolTip = item.label
+        item.image = NSImage(systemSymbolName: recordings ? "folder" : "gearshape", accessibilityDescription: item.label)
+        item.target = self
+        item.action = recordings ? #selector(openRecordings) : #selector(showSettings)
+        return item
+    }
+
+    @objc private func openRecordings() { model.openFolder() }
 
     @objc private func toggleLogin() {
         do {
@@ -85,6 +119,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func showWindow() {
+        if window.styleMask.contains(.titled) { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         updatePreviewVisibility()
@@ -92,12 +127,27 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
-        model.setWindowVisible(false)
+        if sender === window {
+            if !model.isRecording { model.dismissCapsule() }
+            model.setWindowVisible(false)
+        }
+        updatePreviewVisibility()
         return false
     }
 
     private func updatePreviewVisibility() {
+        AppWindowState.refreshActivationPolicy()
+        let selected = (settingsWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex
+        model.setAudioCheckVisible(AppWindowState.settingsPageVisible(window: settingsWindow,
+            pageSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .diagnostics),
+            applicationHidden: NSApp.isHidden))
         model.setWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
+        model.calendar.setMainWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized
+            && window.occlusionState.contains(.visible) && window.styleMask.contains(.titled)
+            && !model.showsRecordingCapsule && !model.showsProcessingCapsule)
+        model.calendar.setCalendarSettingsVisible(AppWindowState.settingsPageVisible(window: settingsWindow,
+            pageSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .calendar),
+            applicationHidden: NSApp.isHidden))
     }
 
     func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }

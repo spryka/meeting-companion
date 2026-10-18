@@ -7,7 +7,7 @@ import unittest
 
 
 class LauncherTests(unittest.TestCase):
-    def run_launcher(self, option):
+    def run_launcher(self, option, *extra):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             shutil.copy2(Path(__file__).with_name("run.sh"), folder / "run.sh")
@@ -20,7 +20,7 @@ printf '%s\\n' "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$HF_HOME" "$HF_HUB_CACH
             environment.pop("UV_OFFLINE", None)
             environment.pop("HF_HUB_OFFLINE", None)
             environment.update(HF_HOME="/shared-models", UV_CACHE_DIR="/shared-packages")
-            return subprocess.run([str(folder / "run.sh"), option], env=environment,
+            return subprocess.run([str(folder / "run.sh"), option, *extra], env=environment,
                                   text=True, capture_output=True, check=True).stdout.splitlines()
 
     def test_check_uses_private_storage_and_stays_offline(self):
@@ -31,6 +31,13 @@ printf '%s\\n' "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$HF_HOME" "$HF_HUB_CACH
         self.assertEqual(lines[5:7], ["1", "1"])
         self.assertIn("only-managed", lines)
         self.assertTrue(any(line.endswith("/check-local.py") for line in lines))
+
+    def test_optional_parakeet_is_only_added_when_selected(self):
+        base = self.run_launcher("--availability")
+        enhanced = self.run_launcher("--availability", "--parakeet")
+        self.assertNotIn("transcribe-cpp==0.2.3", base)
+        self.assertIn("transcribe-cpp==0.2.3", enhanced)
+        self.assertEqual(enhanced[5:7], ["1", "1"])
 
     def test_prepare_can_download(self):
         lines = self.run_launcher("--prepare")

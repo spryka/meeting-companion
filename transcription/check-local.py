@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 from transcribe import load_gigaam_model, load_nemotron_model
+from model_assets import model_path
 
 
 def check(name, operation):
@@ -20,7 +21,7 @@ def check(name, operation):
 
 def scripts():
     folder = Path(__file__).parent
-    for name in ("transcribe.py", "transcribe-recording.py", "run.sh"):
+    for name in ("transcribe.py", "transcribe-recording.py", "model_assets.py", "audio_enhancement.py", "term_correction.py", "run.sh"):
         path = folder / name
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -50,12 +51,29 @@ def main():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--availability", action="store_true")
+    parser.add_argument("--parakeet", action="store_true")
     args = parser.parse_args()
     if not args.prepare or args.offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
-    outcomes = [check("Файлы приложения", scripts),
-                check("Распознавание речи", gigaam),
-                check("Разделение голосов", nemotron)]
+    names = ['gigaam', 'nemotron', 'vad'] + (['parakeet'] if args.parakeet else [])
+    outcomes = [check("Файлы приложения", scripts)]
+    for name in names:
+        outcomes.append(check(name, lambda name=name: model_path(name, download=args.prepare)))
+    if not args.availability:
+        outcomes.extend([check("Распознавание речи", gigaam), check("Разделение голосов", nemotron)])
+        from audio_enhancement import load_vad
+        outcomes.append(check("Детектор речи", load_vad))
+        if args.parakeet:
+            def parakeet():
+                import numpy as np
+                import transcribe_cpp as tc
+                from model_assets import MODELS
+                tc.set_log_callback(None)
+                with tc.Model(model_path('parakeet') / MODELS['parakeet']['files'][0], backend='metal') as model:
+                    with tc.Session(model, n_threads=4) as session:
+                        session.run(np.zeros(16000, dtype='float32'), timestamps='word')
+            outcomes.append(check("Parakeet / Metal", parakeet))
     return 0 if all(outcomes) else 1
 
 

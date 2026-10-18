@@ -25,8 +25,8 @@ struct SourceAudioFilesChecks {
         files.append(tone(seconds: 0.2), timestamp: epoch, microphone: true)
         files.append(tone(seconds: 0.2), timestamp: CMTimeAdd(epoch, CMTime(seconds: 0.5, preferredTimescale: 48000)), microphone: false)
         try files.finish(duration: 1)
-        let host = try read(output.deletingPathExtension().appendingPathExtension("host_record.wav"))
-        let remote = try read(output.deletingPathExtension().appendingPathExtension("remote_record.wav"))
+        let host = try read(directory.appendingPathComponent("raw/mix.host_record.wav"))
+        let remote = try read(directory.appendingPathComponent("raw/mix.remote_record.wav"))
         precondition(host.frameLength == 16000 && remote.frameLength == host.frameLength)
         precondition(rms(remote, start: 0.1, end: 0.4) < 0.005)
         precondition(rms(remote, start: 0.52, end: 0.65) > 0.1)
@@ -169,9 +169,13 @@ struct SourceAudioFilesChecks {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM/dd/'meeting_'yyyy-MM-dd_HH-mm-ss'.m4a'"
+        formatter.dateFormat = "yyyy-MM/dd/'meeting_'yyyy-MM-dd_HH-mm-ss/'meeting_'yyyy-MM-dd_HH-mm-ss'.m4a'"
         precondition(path.path == directory.appendingPathComponent(formatter.string(from: date)).path)
         precondition(FileManager.default.fileExists(atPath: path.deletingLastPathComponent().path))
+        do {
+            _ = try RecordingPaths.makeOutputURL(outputDirectory: directory, date: date)
+            preconditionFailure("Existing meeting directory accepted")
+        } catch {}
     }
 
     private func tone(seconds: Double) -> AVAudioPCMBuffer {
