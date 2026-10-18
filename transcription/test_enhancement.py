@@ -54,44 +54,57 @@ class EnhancementTests(unittest.TestCase):
         self.assertFalse(cascade(g, [{**p[0], 'start': 10}])[1])
         self.assertFalse(cascade([dict(start=1, end=2, text='2')], [dict(start=1, end=2, text='two')])[1])
 
-    def test_noise_does_not_translate_sound_check_or_bridge_silence(self):
+    def test_noise_can_change_local_word_but_cannot_bridge_silence(self):
         words = [dict(start=2, end=2.4, text='Стартуем.'),
                  dict(start=3, end=3.2, text='три.'),
                  dict(start=260, end=260.5, text='Интересно.')]
         donor = [dict(start=2, end=2.4, text='Start'),
                  dict(start=3, end=3.4, text='doing'), dict(start=3.4, end=3.7, text='press')]
-        self.assertEqual(cascade(words, donor), (words, []))
+        result, rows = cascade(words, donor)
+        self.assertEqual(result[1:], words[1:])
+        self.assertEqual(result[0]['text'], 'Start')
+        self.assertTrue(all(row['end']-row['start'] < 1 for row in rows))
         separated = [dict(start=1, end=1.4, text='дата'), dict(start=260, end=260.4, text='апи')]
-        self.assertFalse(cascade(separated, [dict(start=1, end=1.5, text='data-api')])[1])
+        result, rows = cascade(separated, [dict(start=1, end=1.5, text='data-api')])
+        self.assertEqual(result[-1], separated[-1])
+        self.assertFalse(any(row['source_indices'] == [0, 2] for row in rows))
+
+    def test_donor_phrase_cannot_bridge_pause_even_with_matching_outer_times(self):
+        source = [dict(start=1, end=3, text='датаапи')]
+        donor = [dict(start=1, end=1.2, text='data'), dict(start=2.5, end=3, text='API')]
+        result, rows = cascade(source, donor)
+        self.assertFalse(any(row['donor_indices'] == [0, 2] for row in rows))
 
     def test_term_requires_matching_end_and_overlap(self):
         word = dict(start=1, end=1.5, text='датапе')
         self.assertFalse(cascade([word], [dict(start=1, end=4, text='data-api')])[1])
         self.assertFalse(cascade([word], [dict(start=1.6, end=2, text='data-api')])[1])
 
-    def test_confirmed_phrase_is_not_blocked_by_unconfirmed_subword(self):
+    def test_adjacent_terms_are_corrected_without_reusing_words(self):
         words = [dict(start=1.08, end=1.3, text='дата'), dict(start=1.32, end=1.62, text='Апи')]
         donor = [dict(start=1, end=1.3, text='data'), dict(start=1.32, end=1.56, text='API')]
         result, suggestions = cascade(words, donor, terms=['data-api'])
-        self.assertEqual([row['text'] for row in result], ['data API'])
-        self.assertEqual(sum(row['applied'] for row in suggestions), 1)
+        self.assertEqual(' '.join(row['text'] for row in result), 'data API')
+        selected = [row for row in suggestions if row['applied']]
+        for key in ('source_indices', 'donor_indices'):
+            used = [i for row in selected for i in range(*row[key])]
+            self.assertEqual(len(used), len(set(used)))
 
-    def test_explicit_dictionary_can_accept_moderate_similarity(self):
+    def test_moderate_similarity_does_not_require_dictionary(self):
         words = [dict(start=1, end=1.3, text='ордерс'), dict(start=1.4, end=1.8, text='гейтвей')]
         donor = [dict(start=1, end=1.8, text='Orders-Gateway')]
         result, suggestions = cascade(words, donor)
-        self.assertEqual(result, words)
-        self.assertFalse(suggestions)
-        self.assertEqual(cascade(words, donor, terms=['Orders Gateway'])[1][0]['reason'], 'dictionary')
+        self.assertEqual(result[0]['text'], 'Orders-Gateway')
+        self.assertEqual(result, cascade(words, donor, terms=['Orders Gateway'])[0])
+        self.assertTrue(any(row['applied'] for row in suggestions))
 
-    def test_similarly_scored_donor_alternatives_are_not_guessed(self):
+    def test_overlapping_donor_alternatives_apply_only_once(self):
         words = [dict(start=1, end=1.5, text='абракадабра')]
         donor = [dict(start=1, end=1.5, text='abrakadabra'),
                  dict(start=1, end=1.5, text='abrakadabraa')]
         result, suggestions = cascade(words, donor, terms=['abrakadabra', 'abrakadabraa'])
-        self.assertEqual(result, words)
-        self.assertTrue(suggestions)
-        self.assertTrue(all(row['reason'] == 'ambiguous' for row in suggestions))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(sum(row['applied'] for row in suggestions), 1)
 
     def test_strong_phonetic_match_does_not_require_dictionary(self):
         words = [dict(start=1, end=1.4, text='Харбор')]
@@ -112,9 +125,9 @@ class EnhancementTests(unittest.TestCase):
         words = [dict(start=1, end=1.2, text='деплой'), dict(start=1.2, end=1.4, text='мне')]
         donor = [dict(start=1, end=1.4, text='deployment')]
         result, suggestions = cascade(words, donor, terms=['deployment'])
-        self.assertEqual(result, words)
+        self.assertEqual(result[-1], words[-1])
         self.assertTrue(any(row['reason'] == 'protected_word' for row in suggestions))
-        self.assertFalse(any(row['applied'] for row in suggestions))
+        self.assertFalse(any(row['applied'] and row['source_indices'][1] == 2 for row in suggestions))
 
     def test_repeated_source_words_choose_better_time_overlap(self):
         words = [dict(start=1, end=1.3, text='датапе'), dict(start=1.35, end=1.5, text='датапе')]
@@ -123,12 +136,12 @@ class EnhancementTests(unittest.TestCase):
         self.assertEqual([row['text'] for row in result], ['data-api', 'датапе'])
         self.assertEqual(sum(row['applied'] for row in suggestions), 1)
 
-    def test_tied_source_spans_are_not_guessed(self):
+    def test_close_source_spans_apply_donor_only_once(self):
         words = [dict(start=1, end=1.3, text='датапе'), dict(start=1.35, end=1.65, text='датапе')]
         donor = [dict(start=1.15, end=1.5, text='data-api')]
         result, suggestions = cascade(words, donor, terms=['data-api'])
-        self.assertEqual(result, words)
-        self.assertTrue(any(row['reason'] == 'ambiguous' for row in suggestions))
+        self.assertEqual(len(result), 2)
+        self.assertEqual(sum(row['applied'] for row in suggestions), 1)
 
     def test_term_replacement_never_consumes_another_speaker(self):
         words = [dict(start=1, end=1.4, text='ордерс', speaker=1),
@@ -182,7 +195,7 @@ class EnhancementTests(unittest.TestCase):
             journal = json.loads(output.with_suffix('.corrections.json').read_text())
             self.assertEqual(journal['gigaam_segments'], data['gigaam_segments'])
             self.assertEqual(journal['donor_segments'], donor)
-            self.assertEqual(journal['changes'][0]['reason'], 'dictionary')
+            self.assertEqual(journal['changes'][0]['reason'], 'phonetic')
             self.assertEqual(journal['terms'], ['data-api'])
             self.assertEqual(data['segments'][0]['text'], 'data-api')
             self.assertEqual(source.read_bytes(), b'original')
@@ -202,15 +215,15 @@ class EnhancementTests(unittest.TestCase):
             source = Path(directory)/'source.wav'
             source.write_bytes(b'original')
             output = Path(directory)/'transcript.txt'
-            words = [dict(start=1, end=1.2, text='деплой'), dict(start=1.2, end=1.4, text='мне')]
+            words = [dict(start=1, end=1.2, text='для'), dict(start=1.2, end=1.4, text='меня')]
             with patch.object(t, 'run_gigaam', return_value={'segments': words}), \
-                 patch.object(a, 'run_parakeet', return_value=[dict(start=1, end=1.4, text='deployment')]), \
+                 patch.object(a, 'run_parakeet', return_value=[dict(start=1, end=1.4, text='delamenya')]), \
                  patch('soundfile.info', return_value=SimpleNamespace(frames=32000)), \
                  contextlib.redirect_stderr(io.StringIO()):
                 data = t.transcribe_file(source, output, diarize=False, parakeet=True)
             self.assertEqual(data['segments'], data['gigaam_segments'])
-            self.assertIn('деплой мне', output.read_text())
-            self.assertNotIn('deployment', output.read_text())
+            self.assertIn('для меня', output.read_text())
+            self.assertNotIn('delamenya', output.read_text())
             journal = json.loads(output.with_suffix('.corrections.json').read_text())
             self.assertEqual(journal['changes'], [])
             self.assertEqual(journal['suggestions'][0]['reason'], 'protected_word')

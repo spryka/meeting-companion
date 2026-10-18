@@ -21,13 +21,12 @@ def similarity(a,b):
   for j,y in enumerate(b,1):nxt.append(min(nxt[-1]+1,row[j]+1,row[j-1]+(x!=y)))
   row=nxt
  return 1-row[-1]/max(len(a),len(b))
-def allowed(a,b,known_term=False):
+def allowed(a,b):
  # Latin-only donor words; punctuation is ignored, numbers must survive.
  # shortcut: phonetic similarity cannot distinguish homophones; context needs separate evaluation.
  return (all(re.fullmatch(r'[A-Za-z]+(?:[-’\'][A-Za-z]+)*[.,!?;:]?',s) for s in b.split())
   and re.findall(r'\d+',a)==re.findall(r'\d+',b)
-  and len(phonetic(a)) >= 4 and len(phonetic(b)) >= 4
-  and similarity(a,b) >= (0.65 if known_term else 0.8))
+  and similarity(a,b) >= 0.4)
 
 def contiguous(words):
  return all(left['start'] <= right['start'] and right['start']-left['end'] <= 0.6
@@ -51,7 +50,7 @@ def propose(g, p, terms=()):
                     continue
                 a = ' '.join(w['text'] for w in source)
                 for j in range(pa, pz):
-                    if abs(source[0]['start'] - p[j]['start']) > 0.75:
+                    if abs(source[0]['start'] - p[j]['start']) > 2:
                         continue
                     for m in (1, 2):
                         donor = p[j:j+m]
@@ -63,7 +62,7 @@ def propose(g, p, terms=()):
                         if overlap <= 0:
                             continue
                         b = ' '.join(w['text'] for w in donor)
-                        if not allowed(a, b, norm(b) in known):
+                        if not allowed(a, b):
                             continue
                         union = max(source[-1]['end'], donor[-1]['end']) - min(source[0]['start'], donor[0]['start'])
                         protected = any(norm(w) in STOP for w in a.split())
@@ -85,17 +84,11 @@ def cascade(g, p, terms=()):
     rows = propose(g, p, terms)
     candidates = [row for row in rows if row['reason'] == 'candidate']
     selected = []
-    for row in sorted(candidates, key=lambda r: (r['time_overlap'], r['score']), reverse=True):
-        # Glossary breaks close ties, but cannot overrule clearly better timing or sound.
-        if any(other is not row and conflicts(row, other)
-               and other['score'] >= row['score']-0.1
-               and other['time_overlap'] >= row['time_overlap']-0.1
-               and not (row['known_term'] and not other['known_term']
-                        and other['score'] <= row['score']+0.1
-                        and other['time_overlap'] <= row['time_overlap']+0.1)
-               for other in candidates):
-            row['reason'] = 'ambiguous'
-            continue
+    # Keep the original score-first selection; time checks already gate each proposal.
+    for row in sorted(candidates, key=lambda r: (
+            similarity(r['original'], r['proposed']), r['time_overlap'], r['source_indices'][0],
+            r['source_indices'][1]-r['source_indices'][0], r['donor_indices'][0],
+            r['donor_indices'][1]-r['donor_indices'][0]), reverse=True):
         if any(conflicts(row, other) for other in selected):
             row['reason'] = 'conflict'
             continue
@@ -104,7 +97,7 @@ def cascade(g, p, terms=()):
         if any((i-other['source_indices'][0]) * (j-other['donor_indices'][0]) < 0 for other in selected):
             row['reason'] = 'crossing_alignment'
             continue
-        row.update(applied=True, reason='dictionary' if row['known_term'] else 'phonetic')
+        row.update(applied=True, reason='phonetic')
         selected.append(row)
     replacements = {row['source_indices'][0]: row for row in selected}
     corrected = []
