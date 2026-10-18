@@ -50,6 +50,20 @@ Homebrew скачивает готовое приложение в ZIP, пров
 DMG и замени приложение в «Программах». Записи и модели хранятся отдельно.
 Если установил через Homebrew, обновляй через Homebrew, чтобы он учитывал версию.
 
+Начиная с 1.5.0, готовая сборка из DMG поддерживает обновления через Sparkle.
+При втором запуске можно разрешить автоматическую проверку и скачивание.
+Также в меню приложения и меню значка есть "Проверить обновления…".
+Обновление готовится отдельно и устанавливается после выхода через "Выйти".
+Закрытие окна оставляет приложение работающим, поэтому установку не запускает.
+Следующий запуск откроет новую версию. Во время записи и обработки проверка
+откладывается, работающая копия приложения не заменяется.
+
+Для перехода с 1.4.1 и более старых версий нужна одна ручная установка новой версии.
+Homebrew-установки обновляются через `brew upgrade`, встроенный updater для них
+не запускается. Автоматическое определение Homebrew учитывает стандартные
+`/opt/homebrew` и `/usr/local`. При другом префиксе используй сборку из исходников
+с выключенными автообновлениями.
+
 Готовая сборка пока без Apple notarization. Если macOS заблокирует первый запуск,
 после попытки открытия зайди в «Системные настройки → Конфиденциальность и безопасность»
 и выбери «Всё равно открыть». Не отключай Gatekeeper. На корпоративном Mac запуск
@@ -86,6 +100,8 @@ open "/Applications/Meeting Companion.app"
 `install-app.sh` сам собирает приложение и устанавливает его в `/Applications`.
 Если Meeting Companion уже запущен, сначала заверши его через меню значка
 в строке меню: закрытие окна оставляет приложение работающим.
+В сборках из исходников автообновления выключены, локальные изменения сохранятся.
+Первая сборка скачает закреплённую версию Sparkle через Swift Package Manager.
 
 ## Первая запись
 
@@ -362,7 +378,7 @@ CLI использует конвейер и модели установленн
 Собери приложение на Mac с Apple Silicon, затем упакуй DMG для ручной установки:
 
 ```sh
-./scripts/build-app.sh
+RELEASE_UPDATES=1 ./scripts/build-app.sh
 ./scripts/build-dmg.sh
 ```
 
@@ -373,13 +389,24 @@ DMG содержит приложение и ссылку на Applications. С�
 Для ZIP, который используется Homebrew:
 
 ```sh
-ditto -c -k --sequesterRsrc --keepParent "dist/Meeting Companion.app" "dist/Meeting-Companion-VERSION-arm64.zip"
-shasum -a 256 "dist/Meeting-Companion-VERSION-arm64.zip"
+./scripts/prepare-update.sh
+shasum -a 256 dist/updates/VERSION/Meeting-Companion-VERSION-arm64.zip
 ```
 
-Загрузи оба архива в Generic Package Registry проекта (`meeting-companion`, версия
+ZIP и `appcast.xml` с подписью архива появятся в `dist/updates/VERSION/`.
+Скрипт использует приватный ключ Sparkle из Keychain, account
+`local.meeting-companion`, и проверяет совпадение публичного ключа со сборкой.
+Ключ не входит в репозиторий и архив. Для публикации нужны доступ к этому ключу
+и прежний сертификат подписи приложения. Не создавай новый ключ для каждого релиза.
+Для своего форка создай отдельный ключ через Sparkle `generate_keys`, замени
+публичный ключ, feed URL и проверки сборки. Обычной локальной сборке ключ не нужен.
+
+Загрузи ZIP и DMG в Generic Package Registry проекта (`meeting-companion`, версия
 `VERSION`), добавь ссылки в GitLab Release и обнови версию и SHA-256 ZIP в
 [homebrew-tap](https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap).
+Только после публикации ZIP скопируй подготовленный `appcast.xml` в корень
+репозитория и внеси его в `master`. Этот файл указывает Sparkle на доступное
+обновление. Пустой feed означает, что обновлений пока нет.
 Не перезаписывай опубликованные архивы и сохраняй прежний сертификат подписи:
 смена сертификата может потребовать заново выдать разрешения macOS.
 
@@ -389,6 +416,21 @@ shasum -a 256 "dist/Meeting-Companion-VERSION-arm64.zip"
 публиковать готовые архивы и обновлять рецепт Homebrew.
 
 Сторонние компоненты и модели: [THIRD_PARTY.md](THIRD_PARTY.md).
+
+Проверка определения установок Homebrew:
+
+```sh
+swiftc Sources/MeetingCompanionApp/AppUpdatePolicy.swift scripts/check-app-updates.swift -o /tmp/check-app-updates
+/tmp/check-app-updates
+```
+
+Проверка запрета проверки во время работы и отсутствия принудительного выхода:
+
+```sh
+SPARKLE_DIR="$PWD/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"
+swiftc -F "$SPARKLE_DIR" -framework Sparkle -Xlinker -rpath -Xlinker "$SPARKLE_DIR" Sources/MeetingCompanionApp/AppUpdatePolicy.swift Sources/MeetingCompanionApp/AppUpdater.swift scripts/check-update-lifecycle.swift -o /tmp/check-update-lifecycle
+/tmp/check-update-lifecycle
+```
 
 ## Версии и изменения
 

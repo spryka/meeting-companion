@@ -4,6 +4,9 @@
 входят только скрипты и uv. Их лицензии и условия действуют отдельно от кода
 Meeting Companion.
 
+- [Sparkle 2.9.6](https://github.com/sparkle-project/Sparkle/releases/tag/2.9.6),
+  MIT, встроенная проверка и установка обновлений. Лицензия включена в приложение
+  как `Contents/Resources/Sparkle-LICENSE`.
 - [uv](https://github.com/astral-sh/uv) — встроенный менеджер Python;
   MIT notice: `transcription/uv-LICENSE-MIT`.
 - [onnx-asr](https://github.com/istupakov/onnx-asr),
