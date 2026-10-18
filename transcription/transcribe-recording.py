@@ -82,7 +82,8 @@ def main():
     original_output = host.parent / (base.name + ".sources.gigaam.transcript.txt")
     outputs = [host_output, remote_output, merged_output]
     if args.parakeet:
-        outputs += [original_output, host_output.with_suffix(".gigaam.txt"), remote_output.with_suffix(".gigaam.txt")]
+        outputs += [original_output, host_output.with_suffix(".gigaam.txt"), remote_output.with_suffix(".gigaam.txt"),
+                    host_output.with_suffix(".corrections.json"), remote_output.with_suffix(".corrections.json")]
     for output in outputs:
         for source in (host, remote, args.recording.resolve()):
             if output.exists() and source.exists() and output.samefile(source):

@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,14 +45,41 @@ class EnhancementTests(unittest.TestCase):
         self.assertEqual([word['start'] for word in words], [25.0])
 
     def test_cascade_preserves_numbers_timing_and_speaker_and_rejects_distant_donor(self):
-        g = [dict(start=1, end=1.5, text='гритвей', speaker=2)]
-        p = [dict(start=1.1, end=1.5, text='gateway')]
+        g = [dict(start=1, end=1.5, text='датапе', speaker=2)]
+        p = [dict(start=1.1, end=1.5, text='data-api')]
         corrected, changes = cascade(g, p)
-        self.assertEqual(corrected, [dict(start=1, end=1.5, text='gateway', speaker=2)])
-        self.assertEqual(g[0]['text'], 'гритвей')
+        self.assertEqual(corrected, [dict(start=1, end=1.5, text='data-api', speaker=2)])
+        self.assertEqual(g[0]['text'], 'датапе')
         self.assertEqual(len(changes), 1)
         self.assertFalse(cascade(g, [{**p[0], 'start': 10}])[1])
         self.assertFalse(cascade([dict(start=1, end=2, text='2')], [dict(start=1, end=2, text='two')])[1])
+
+    def test_noise_does_not_translate_sound_check_or_bridge_silence(self):
+        words = [dict(start=2, end=2.4, text='Стартуем.'),
+                 dict(start=3, end=3.2, text='три.'),
+                 dict(start=260, end=260.5, text='Интересно.')]
+        donor = [dict(start=2, end=2.4, text='Start'),
+                 dict(start=3, end=3.4, text='doing'), dict(start=3.4, end=3.7, text='press')]
+        self.assertEqual(cascade(words, donor), (words, []))
+        separated = [dict(start=1, end=1.4, text='дата'), dict(start=260, end=260.4, text='апи')]
+        self.assertFalse(cascade(separated, [dict(start=1, end=1.5, text='data-api')])[1])
+
+    def test_term_requires_matching_end_and_overlap(self):
+        word = dict(start=1, end=1.5, text='датапе')
+        self.assertFalse(cascade([word], [dict(start=1, end=4, text='data-api')])[1])
+        self.assertFalse(cascade([word], [dict(start=1.6, end=2, text='data-api')])[1])
+
+    def test_explicit_dictionary_can_accept_moderate_similarity(self):
+        words = [dict(start=1, end=1.3, text='ордерс'), dict(start=1.4, end=1.8, text='гейтвей')]
+        donor = [dict(start=1, end=1.8, text='Orders-Gateway')]
+        self.assertFalse(cascade(words, donor)[1])
+        self.assertEqual(cascade(words, donor, terms=['Orders Gateway'])[1][0]['reason'], 'dictionary')
+
+    def test_similarly_scored_donor_alternatives_are_not_guessed(self):
+        words = [dict(start=1, end=1.5, text='абракадабра')]
+        donor = [dict(start=1, end=1.5, text='abrakadabra'),
+                 dict(start=1, end=1.5, text='abrakadabraa')]
+        self.assertEqual(cascade(words, donor), (words, []))
 
     def test_term_replacement_never_consumes_another_speaker(self):
         words = [dict(start=1, end=1.4, text='ордерс', speaker=1),
@@ -89,6 +117,35 @@ class EnhancementTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 t.transcribe_file(root/"audio.wav", output, parakeet=True)
             self.assertEqual(output.read_text(), "keep")
+
+    def test_correction_journal_preserves_inputs_and_explains_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)/'source.wav'
+            source.write_bytes(b'original')
+            output = Path(directory)/'transcript.txt'
+            words = [dict(start=1, end=1.5, text='датапе')]
+            donor = [dict(start=1.1, end=1.5, text='data-api')]
+            with patch.object(t, 'run_gigaam', return_value={'segments':words}), \
+                 patch.object(a, 'run_parakeet', return_value=donor), \
+                 patch('soundfile.info', return_value=SimpleNamespace(frames=32000)), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                data = t.transcribe_file(source, output, diarize=False, parakeet=True)
+            journal = json.loads(output.with_suffix('.corrections.json').read_text())
+            self.assertEqual(journal['gigaam_segments'], data['gigaam_segments'])
+            self.assertEqual(journal['donor_segments'], donor)
+            self.assertEqual(journal['changes'][0]['reason'], 'phonetic')
+            self.assertEqual(data['segments'][0]['text'], 'data-api')
+            self.assertEqual(source.read_bytes(), b'original')
+
+    def test_correction_journal_cannot_alias_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)/'source.wav'
+            source.write_text('keep audio')
+            output = Path(directory)/'transcript.txt'
+            output.with_suffix('.corrections.json').hardlink_to(source)
+            with self.assertRaises(ValueError):
+                t.transcribe_file(source, output, parakeet=True)
+            self.assertEqual(source.read_text(), 'keep audio')
 
     def test_model_hash_rejects_corrupt_artifact(self):
         with tempfile.TemporaryDirectory() as directory:

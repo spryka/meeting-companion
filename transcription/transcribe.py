@@ -230,8 +230,9 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
     input_path, output_path = input_path.resolve(), output_path.resolve()
     segments_json = segments_json.resolve() if segments_json else None
     original_output = output_path.with_suffix(".gigaam.txt")
+    corrections_output = output_path.with_suffix(".corrections.json")
     validate_outputs(input_path, output_path, segments_json,
-                     [original_output] if parakeet else [])
+                     [original_output, corrections_output] if parakeet else [])
     print(f"Transcribing: {input_path.name}", file=sys.stderr, flush=True)
     start_time = time.time()
     warnings = []
@@ -286,7 +287,11 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
             donor = run_parakeet(input_path, keep, on_progress=on_progress)
             if on_progress:
                 on_progress("correction", 0, 1)
-            segments, changes = cascade(segments, donor)
+            corrected, changes = cascade(segments, donor)
+            write_transcript(corrections_output, [json.dumps({
+                'changes': changes, 'gigaam_segments': original_segments,
+                'donor_segments': donor}, ensure_ascii=False, allow_nan=False)])
+            segments = corrected
             enhancement_status = f'enabled ({len(changes)} replacements)'
             if on_progress:
                 on_progress("correction", 1, 1)
