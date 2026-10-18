@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 @MainActor
-final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
     private let model = RecorderViewModel()
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
@@ -14,10 +14,16 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.delegate = self
+        let toolbar = NSToolbar(identifier: "RecorderToolbar")
+        toolbar.delegate = self
+        toolbar.allowsUserCustomization = false
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() })
         window.center()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -61,7 +67,9 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             settings.title = "Настройки"
             settings.isReleasedWhenClosed = false
             settings.delegate = self
-            settings.contentViewController = RecorderSettingsView.makeController(model: model) { [weak self] in self?.showWindow() }
+            let controller = RecorderSettingsView.makeController(model: model)
+            controller.onSelectionChange = { [weak self] in self?.updatePreviewVisibility() }
+            settings.contentViewController = controller
             settings.toolbarStyle = .preference
             settings.center()
             settingsWindow = settings
@@ -69,7 +77,34 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        updatePreviewVisibility()
     }
+
+    private static let recordingsItem = NSToolbarItem.Identifier("Recordings")
+    private static let settingsItem = NSToolbarItem.Identifier("Settings")
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, Self.recordingsItem, Self.settingsItem]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard identifier == Self.recordingsItem || identifier == Self.settingsItem else { return nil }
+        let recordings = identifier == Self.recordingsItem
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = recordings ? "Записи" : "Настройки"
+        item.toolTip = item.label
+        item.image = NSImage(systemSymbolName: recordings ? "folder" : "gearshape", accessibilityDescription: item.label)
+        item.target = self
+        item.action = recordings ? #selector(openRecordings) : #selector(showSettings)
+        return item
+    }
+
+    @objc private func openRecordings() { model.openFolder() }
 
     @objc private func toggleLogin() {
         do {
@@ -96,12 +131,16 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             if !model.isRecording { model.dismissCapsule() }
             model.setWindowVisible(false)
         }
-        AppWindowState.refreshActivationPolicy()
+        updatePreviewVisibility()
         return false
     }
 
     private func updatePreviewVisibility() {
         AppWindowState.refreshActivationPolicy()
+        let selected = (settingsWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex
+        model.setAudioCheckVisible(AppWindowState.audioCheckVisible(window: settingsWindow,
+            diagnosticsSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .diagnostics),
+            applicationHidden: NSApp.isHidden))
         model.setWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
     }
 

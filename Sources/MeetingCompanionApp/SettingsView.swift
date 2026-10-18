@@ -5,7 +5,6 @@ import MeetingCompanionCore
 struct RecorderSettingsView: View {
     @ObservedObject var model: RecorderViewModel
     let page: Page
-    let showRecorder: () -> Void
 
     enum Page: String, CaseIterable {
         case recording = "Запись", transcription = "Транскрибация"
@@ -21,13 +20,13 @@ struct RecorderSettingsView: View {
         }
     }
 
-    @MainActor static func makeController(model: RecorderViewModel,
-        showRecorder: @escaping () -> Void) -> NSTabViewController {
-        let controller = NSTabViewController()
+    @MainActor static func makeController(model: RecorderViewModel) -> SettingsTabViewController {
+        let controller = SettingsTabViewController()
         controller.tabStyle = .toolbar
         for page in Page.allCases {
-            let view = RecorderSettingsView(model: model, page: page, showRecorder: showRecorder)
+            let view = RecorderSettingsView(model: model, page: page)
             let item = NSTabViewItem(viewController: NSHostingController(rootView: view))
+            item.identifier = page.rawValue
             item.label = page.rawValue
             item.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: page.rawValue)
             controller.addTabViewItem(item)
@@ -151,14 +150,19 @@ struct RecorderSettingsView: View {
                 }
             }
             Section {
-                Button("Проверить звук…", action: showRecorder)
+                Button(model.isCheckingAudio ? "Завершить проверку звука" : "Проверить звук", action: model.toggleAudioCheck)
+                    .disabled(model.isRecording || model.isBusy || model.diagnosticRunning)
+                if model.isCheckingAudio { LevelMetersView(levels: model.levels) }
+                if let error = model.errorMessage {
+                    Text(error).foregroundStyle(.red).textSelection(.enabled)
+                }
                 Button("Проверить транскрибацию") { check(prepare: false) }
                     .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
                 DisclosureGroup("Подробности") { diagnosticLog }
             } header: {
                 Text("Проверки")
             } footer: {
-                Text("Проверка звука открывает основное окно. Нажми «Проверить звук» и включи воспроизведение.")
+                Text("Включи звук и скажи несколько слов. Проверка выключится через 30 секунд, при уходе из диагностики или закрытии настроек.")
             }
         }
     }
@@ -229,5 +233,15 @@ private struct FullWidthDisclosureStyle: DisclosureGroupStyle {
             .accessibilityValue(configuration.isExpanded ? "Развёрнуто" : "Свёрнуто")
             if configuration.isExpanded { configuration.content }
         }
+    }
+}
+
+@MainActor
+final class SettingsTabViewController: NSTabViewController {
+    var onSelectionChange: (() -> Void)?
+
+    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: tabViewItem)
+        onSelectionChange?()
     }
 }

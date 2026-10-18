@@ -3,9 +3,11 @@ import AppKit
 @main struct Check {
     @MainActor static func main() {
         _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 680, height: 560),
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 620, height: 460),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.toolbar = NSToolbar(identifier: "CheckRecorderToolbar")
+        window.toolbarStyle = .unified
         precondition(AppWindowState.activationPolicy(for: [window]) == .accessory)
         window.orderFront(nil)
         precondition(AppWindowState.activationPolicy(for: [window]) == .regular)
@@ -17,10 +19,18 @@ import AppKit
         state.attach(window)
         state.setCapsuleMode(true)
         precondition(window.styleMask == .borderless)
+        precondition(window.toolbar?.isVisible != true)
         precondition(AppWindowState.activationPolicy(for: [window]) == .accessory)
-        settings.orderFront(nil)
+        settings.orderFrontRegardless()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        precondition(AppWindowState.audioCheckVisible(window: settings, diagnosticsSelected: true, applicationHidden: false)
+            == settings.occlusionState.contains(.visible))
+        precondition(!AppWindowState.audioCheckVisible(window: settings, diagnosticsSelected: false, applicationHidden: false))
+        precondition(!AppWindowState.audioCheckVisible(window: settings, diagnosticsSelected: true, applicationHidden: true))
+        precondition(!AppWindowState.audioCheckVisible(window: nil, diagnosticsSelected: true, applicationHidden: false))
         precondition(AppWindowState.activationPolicy(for: [window, settings]) == .regular)
         settings.orderOut(nil)
+        precondition(!AppWindowState.audioCheckVisible(window: settings, diagnosticsSelected: true, applicationHidden: false))
         precondition(AppWindowState.activationPolicy(for: [window, settings]) == .accessory)
         precondition(window.level == .floating && window.isVisible)
         precondition(window.frame.size == NSSize(width: 288, height: 76))
@@ -30,6 +40,7 @@ import AppKit
         state.setCapsuleMode(false)
         precondition(!window.isVisible, "Saving must never reopen the main window")
         precondition(window.styleMask.contains(.titled) && window.level == .normal)
+        precondition(window.toolbar?.isVisible == true)
         precondition(window.frame == original)
         state.setCapsuleMode(true)
         state.setCapsuleMode(false)

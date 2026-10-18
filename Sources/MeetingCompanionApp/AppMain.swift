@@ -51,7 +51,7 @@ final class RecorderViewModel: ObservableObject {
     let calendar = MeetingCalendar()
     @Published var selectedMeeting: MeetingContext?
     @Published var isBusy = false
-    @Published var isRecording = false
+    @Published var isRecording = false { didSet { updateLevelVisibility() } }
     @Published var recordingSaveError: String?
 
     @Published var capsuleDismissed = false
@@ -119,7 +119,9 @@ final class RecorderViewModel: ObservableObject {
     let levels = AudioLevels()
 
     private var isWindowVisible = false
-    @Published private(set) var isCheckingAudio = false
+    private var isAudioCheckVisible = false
+    private var isLevelDisplayActive = false
+    @Published private(set) var isCheckingAudio = false { didSet { updateLevelVisibility() } }
     private var audioCheckTimeout: Task<Void, Never>?
     private var recorder: Recorder?
     private var levelMonitor: AudioLevelMonitor?
@@ -155,14 +157,27 @@ final class RecorderViewModel: ObservableObject {
     func setWindowVisible(_ visible: Bool) {
         guard isWindowVisible != visible else { return }
         isWindowVisible = visible
-        levels.setActive(visible)
-        Task {
-            if !visible { await endAudioCheck() }
+        updateLevelVisibility()
+    }
+
+    func setAudioCheckVisible(_ visible: Bool) {
+        guard isAudioCheckVisible != visible else { return }
+        isAudioCheckVisible = visible
+        updateLevelVisibility()
+        if !visible {
+            Task { if !isAudioCheckVisible { await endAudioCheck() } }
         }
     }
 
+    private func updateLevelVisibility() {
+        let active = (isRecording && isWindowVisible) || (isCheckingAudio && isAudioCheckVisible)
+        guard active != isLevelDisplayActive else { return }
+        isLevelDisplayActive = active
+        levels.setActive(active)
+    }
+
     func toggleAudioCheck() {
-        guard !isRecording, !isBusy, !diagnosticRunning, isWindowVisible else { return }
+        guard !isRecording, !isBusy, !diagnosticRunning, isAudioCheckVisible else { return }
         if isCheckingAudio {
             isCheckingAudio = false
             Task { await endAudioCheck() }
@@ -467,7 +482,7 @@ final class RecorderViewModel: ObservableObject {
         let task = Task { @MainActor [self] in
             await previous?.value
             await stopCurrentLevelMonitor()
-            guard !Task.isCancelled, isCheckingAudio, !isRecording, !isBusy, recordingSaveError == nil, isWindowVisible else { return }
+            guard !Task.isCancelled, isCheckingAudio, !isRecording, !isBusy, recordingSaveError == nil, isAudioCheckVisible else { return }
 
             assert(levelMonitor == nil, "Previous audio preview must stop before another starts")
             do {
@@ -478,7 +493,7 @@ final class RecorderViewModel: ObservableObject {
                         Task { @MainActor in
                             guard let self else { return }
                             if system.isFinite { self.updateCaptureCheck(succeeded: true) }
-                            guard self.isWindowVisible else { return }
+                            guard self.isAudioCheckVisible else { return }
                             self.levels.receive(mic: mic, system: system)
                         }
                     }
@@ -560,7 +575,7 @@ struct ContentView: View {
                 }
             } else {
                 FullRecorderView(viewModel: viewModel, showSettings: showSettings)
-                    .frame(width: 680, height: 560)
+                    .frame(width: 620, height: 460)
             }
         }
         .background(WindowAccessor { window in
@@ -573,140 +588,6 @@ struct ContentView: View {
         .onChange(of: viewModel.showsProcessingCapsule) { _, processing in
             windowState.setCapsuleMode(viewModel.showsRecordingCapsule, processing: processing)
         }
-    }
-}
-
-struct FullRecorderView: View {
-    @ObservedObject var viewModel: RecorderViewModel
-    let showSettings: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Meeting Companion")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    Text(viewModel.status)
-                        .foregroundStyle(viewModel.isRecording ? .red : .secondary)
-                }
-
-                Spacer()
-
-                Text(viewModel.elapsedText)
-                    .font(.system(size: 34, weight: .semibold, design: .monospaced))
-            }
-
-            HStack(spacing: 12) {
-                Button(action: viewModel.toggleRecording) {
-                    Text(viewModel.isRecording ? "Стоп" : "Записать")
-                        .frame(width: 96)
-                }
-                .keyboardShortcut(.space, modifiers: [])
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(viewModel.isRecording ? .red : .accentColor)
-                .disabled(viewModel.isBusy || viewModel.diagnosticRunning)
-
-                Button("Записи", action: viewModel.openFolder)
-                    .controlSize(.large)
-
-                Button("Настройки…", action: showSettings)
-                    .controlSize(.large)
-            }
-
-            if viewModel.diagnosticRunning {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(viewModel.isResettingCache ? "Сброс кэша…" : "Подготовка транскрибации…").foregroundStyle(.secondary)
-                }
-            } else if !viewModel.transcriptionReady {
-                HStack {
-                    Text("Для транскрибации скачай модели один раз.").font(.caption)
-                    Spacer()
-                    Button("Скачать модели") {
-                        Task { await viewModel.checkTranscription(prepare: true) }
-                    }
-                    .disabled(viewModel.isBusy || viewModel.transcriptionJobs > 0)
-                }
-            }
-
-            MeetingPicker(viewModel: viewModel, calendar: viewModel.calendar)
-
-            Button(viewModel.isCheckingAudio ? "Завершить проверку звука" : "Проверить звук", action: viewModel.toggleAudioCheck)
-                .disabled(viewModel.isBusy || viewModel.diagnosticRunning)
-            if viewModel.isCheckingAudio {
-                LevelMetersView(levels: viewModel.levels)
-                Text("Проверка выключится через 30 секунд.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Микрофон")
-                    .font(.headline)
-
-                HStack {
-                    Picker("Микрофон", selection: $viewModel.selectedMicrophoneID) {
-                        Text("По умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
-                        ForEach(viewModel.microphones) { microphone in
-                            Text(microphone.name).tag(microphone.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-                    .disabled(viewModel.isRecording)
-                    .onChange(of: viewModel.selectedMicrophoneID) { _, _ in
-                        viewModel.restartLevelMonitor()
-                    }
-
-                    Button("Обновить", action: viewModel.refreshMicrophones)
-                        .disabled(viewModel.isRecording)
-                }
-            }
-
-            if let lastFileURL = viewModel.lastFileURL {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Последняя запись").font(.headline)
-                        Spacer()
-                        Button("Показать файл", action: viewModel.revealLastFile)
-                        if viewModel.lastTranscriptURL != nil {
-                            Button("Открыть текст", action: viewModel.openTranscript)
-                        } else if viewModel.transcriptionJobs == 0 && viewModel.transcriptionReady {
-                            Button("Получить текст", action: viewModel.transcribeLastRecording)
-                                .disabled(viewModel.isBusy || viewModel.diagnosticRunning)
-                        }
-                    }
-                    Text(lastFileURL.lastPathComponent)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-            }
-
-            if !viewModel.transcriptionStatus.isEmpty {
-                HStack {
-                    if viewModel.transcriptionJobs > 0 { Image(systemName: "text.magnifyingglass") }
-                    Text(viewModel.transcriptionStatus)
-                        .font(.caption).textSelection(.enabled).lineLimit(3)
-                }
-            }
-
-            if let errorMessage = viewModel.errorMessage {
-                Text(errorMessage)
-                    .foregroundStyle(.red)
-                    .lineLimit(3)
-            }
-
-            Spacer()
-            HStack {
-                Spacer()
-                Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(22)
     }
 }
 
@@ -905,29 +786,5 @@ struct ThinMeter: View {
             }
         }
         .frame(height: 8)
-    }
-}
-
-struct MeetingPicker: View {
-    @ObservedObject var viewModel: RecorderViewModel
-    @ObservedObject var calendar: MeetingCalendar
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Picker("Встреча", selection: $viewModel.selectedMeeting) {
-                Text("Без встречи").tag(Optional<MeetingContext>.none)
-                ForEach(calendar.events) { event in
-                    Text(event.start.formatted(date: .omitted, time: .shortened) + " · " + event.summary)
-                        .tag(Optional(event))
-                }
-                if let selected = viewModel.selectedMeeting, !calendar.events.contains(selected) {
-                    Text(selected.summary).tag(Optional(selected))
-                }
-            }
-            .disabled(viewModel.isBusy || viewModel.isRecording)
-            if !calendar.message.isEmpty {
-                Text(calendar.message).font(.caption).foregroundStyle(.secondary)
-            }
-        }
     }
 }
