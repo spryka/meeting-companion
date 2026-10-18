@@ -64,6 +64,7 @@ def source_paths(base: Path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path, help="Combined recording path or its filename stem")
+    parser.add_argument("--parakeet", action="store_true", help="Improve technical terms")
     parser.add_argument("--offline", action="store_true", help="Use cached models and packages")
     args = parser.parse_args()
     base = args.recording.resolve()
@@ -76,24 +77,39 @@ def main():
     host_output = host.with_suffix(".local.transcript.txt")
     remote_output = remote.with_suffix(".local.transcript.txt")
     merged_output = base.with_name(base.name + ".sources.transcript.txt")
-    for output in (host_output, remote_output, merged_output):
+    original_output = base.with_name(base.name + ".sources.gigaam.transcript.txt")
+    outputs = [host_output, remote_output, merged_output]
+    if args.parakeet:
+        outputs += [original_output, host_output.with_suffix(".gigaam.txt"), remote_output.with_suffix(".gigaam.txt")]
+    for output in outputs:
         for source in (host, remote, args.recording.resolve()):
             if output.exists() and source.exists() and output.samefile(source):
                 parser.error(f"Transcript output aliases source audio: {output}")
     if args.offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
     results = []
-    for channel, source, output in (("host", host, host_output), ("remote", remote, remote_output)):
+    stages = ["diarization", "vad", "gigaam"] + (["parakeet", "correction"] if args.parakeet else [])
+    steps = 2 * len(stages) + 1
+    for channel_index, (channel, source, output) in enumerate((("host", host, host_output), ("remote", remote, remote_output))):
         def progress(stage, completed, total):
             print("MEETING_PROGRESS " + json.dumps({"stage": stage, "channel": channel,
-                  "completed": completed, "total": total}), flush=True)
-        # shortcut: preserve the host preset until dual-source diarization is enabled.
-        results.append(transcribe_file(source, output, diarize=channel != "host", on_progress=progress))
-    print('MEETING_PROGRESS {"stage":"merge","completed":0,"total":1}', flush=True)
+                  "completed": completed, "total": total,
+                  "step": channel_index * len(stages) + stages.index(stage) + 1, "steps": steps}), flush=True)
+        def warning(message):
+            print('MEETING_PROGRESS ' + json.dumps(dict(stage='warning', completed=0, total=1,
+                  warning=message[:1000], channel=channel)), flush=True)
+        results.append(transcribe_file(source, output, vad=True, parakeet=args.parakeet,
+                                       on_progress=progress, on_warning=warning))
+    print("MEETING_PROGRESS " + json.dumps(dict(stage="merge", completed=0, total=1, step=steps, steps=steps)), flush=True)
     lines = [f"Transcript: {base.name} — separate sources", f"Host audio: {host}", f"Remote audio: {remote}"]
     lines.extend(merge_sources(*results))
+    for result in results:
+        lines.extend("Warning: " + message for message in result.get("warnings", []))
+    if args.parakeet:
+        originals = [{**data, "segments": data["gigaam_segments"]} for data in results]
+        write_transcript(original_output, [f"Transcript: {base.name} — original GigaAM", *merge_sources(*originals)])
     write_transcript(merged_output, lines)
-    print('MEETING_PROGRESS {"stage":"merge","completed":1,"total":1}', flush=True)
+    print("MEETING_PROGRESS " + json.dumps(dict(stage="merge", completed=1, total=1, step=steps, steps=steps)), flush=True)
     print(f"Saved: {merged_output}")
 
 

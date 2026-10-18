@@ -11,7 +11,7 @@ grep -Eq "^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" "$ROOT_DIR/CH
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" == AppIcon ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
 [[ -x "$APP/Contents/MacOS/MeetingCompanion" ]]
-for name in transcribe.py transcribe-recording.py check-local.py run.sh uv uv-LICENSE-MIT; do
+for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py run.sh uv uv-LICENSE-MIT; do
   [[ -s "$APP/Contents/Resources/transcription/$name" ]]
 done
 [[ -x "$APP/Contents/Resources/transcription/run.sh" ]]

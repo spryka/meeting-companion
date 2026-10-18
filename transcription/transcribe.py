@@ -43,23 +43,11 @@ def format_duration(seconds: float) -> str:
 
 
 def load_nemotron_model():
-    from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import LocalEntryNotFoundError
     from mlx_audio.vad import load
-
-    repo = "mlx-community/Nemotron-3-Diarization"
-    revision = "59ed2dbfc1346dcea9d423c71306a3a2499c568f"
-    options = dict(revision=revision, allow_patterns=["config.json", "model.safetensors"])
-    try:
-        model_path = snapshot_download(repo, local_files_only=True, **options)
-    except LocalEntryNotFoundError:
-        if os.environ.get("HF_HUB_OFFLINE") == "1":
-            raise
-        print("Nemotron (голоса): скачивание модели…", file=sys.stderr, flush=True)
-        model_path = snapshot_download(repo, **options)
-
+    from model_assets import model_path
+    path = model_path('nemotron', download=os.environ.get('HF_HUB_OFFLINE') != '1')
     print("Nemotron: загрузка в память…", file=sys.stderr, flush=True)
-    model = load(Path(model_path), strict=True)
+    model = load(path, strict=True)
     model.set_streaming_config("offline")
     return model
 
@@ -108,44 +96,35 @@ def gigaam_words(result, start: float, end: float, lower: float, upper: float):
 
 def load_gigaam_model():
     import onnx_asr
-    from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import LocalEntryNotFoundError
-
-    options = dict(revision="322c3b29492673eb7d0b434bfa9dfb8653e34d02",
-                   allow_patterns=["config.json", "v3_e2e_rnnt_encoder.onnx", "v3_e2e_rnnt_decoder.onnx",
-                                   "v3_e2e_rnnt_joint.onnx", "v3_e2e_rnnt_vocab.txt"])
-    try:
-        path = snapshot_download("istupakov/gigaam-v3-onnx", local_files_only=True, **options)
-    except LocalEntryNotFoundError:
-        if os.environ.get("HF_HUB_OFFLINE") == "1":
-            raise
-        print("GigaAM (речь): скачивание модели…", file=sys.stderr, flush=True)
-        path = snapshot_download("istupakov/gigaam-v3-onnx", **options)
+    from model_assets import model_path
+    path = model_path('gigaam', download=os.environ.get('HF_HUB_OFFLINE') != '1')
     print("GigaAM: загрузка в память…", file=sys.stderr, flush=True)
-    model = onnx_asr.load_model("gigaam-v3-e2e-rnnt", path=Path(path), providers=["CPUExecutionProvider"]).with_timestamps()
-    return model
+    return onnx_asr.load_model("gigaam-v3-e2e-rnnt", path=path, providers=["CPUExecutionProvider"]).with_timestamps()
 
 
-def run_gigaam(audio_path: Path, on_progress=None):
+def run_gigaam(audio_path: Path, on_progress=None, keep=None):
     """GigaAM v3 RNNT on CPU, 25 s chunks with 1 s overlap."""
     model = load_gigaam_model()
     samples, sr = load_audio(audio_path)
     if sr != 16000 or samples.ndim != 1:
         raise RuntimeError("GigaAM requires 16 kHz mono audio")
+    from audio_enhancement import windows
+    grid = list(windows(len(samples), sr))
+    keep = [True] * len(grid) if keep is None else keep
+    if len(keep) != len(grid):
+        raise ValueError("GigaAM window mask does not match audio")
     segments = []
-    total = (max(0, len(samples) - 25 * sr) + 24 * sr - 1) // (24 * sr) + 1 if len(samples) else 0
+    total = len(grid)
     if on_progress:
         on_progress("gigaam", 0, total)
-    for index, start in enumerate(range(0, len(samples), 24 * sr), 1):
-        end = min(start + 25 * sr, len(samples))
-        result = model.recognize(samples[start:end], sample_rate=sr)
-        lower = 0 if start == 0 else start / sr + 0.5
-        upper = end / sr + 0.1 if end == len(samples) else start / sr + 24.5
-        segments.extend(gigaam_words(result, start / sr, end / sr, lower, upper))
+    for index, ((start, end), speech) in enumerate(zip(grid, keep), 1):
+        if speech:
+            result = model.recognize(samples[start:end], sample_rate=sr)
+            lower = 0 if start == 0 else start / sr + 0.5
+            upper = end / sr + 0.1 if end == len(samples) else start / sr + 24.5
+            segments.extend(gigaam_words(result, start / sr, end / sr, lower, upper))
         if on_progress:
             on_progress("gigaam", index, total)
-        if end == len(samples):
-            break
     return {"segments": segments, "text": " ".join(s["text"] for s in segments)}
 
 
@@ -216,8 +195,27 @@ def group_turns(segments: list, breaks=()):
     return turns
 
 
-def validate_outputs(input_path, output_path, segments_json=None):
-    outputs = [output_path] + ([segments_json] if segments_json else [])
+def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text=""):
+    lines = [f"Transcript: {input_path.name}", f"Audio: {input_path}",
+             "Model: gigaam-v3-e2e-rnnt (ONNX / CPU)",
+             f"Diarization: {diarization_status} ({speaker_count} speakers)",
+             "Diarization backend: nemotron", f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
+    turns = group_turns(segments)
+    if turns:
+        lines.extend(f'[{format_timestamp(turn["start"])}] Speaker {turn.get("speaker", 1)}: {turn["text"]}'
+                     for turn in turns)
+    else:
+        lines.append(f"[00:00] Speaker 1: {str(fallback_text).strip()}")
+    lines.extend(["", "Speaker guide:"])
+    guide = ("Inferred from local nemotron diarization; identities are unverified."
+             if diarization_status == "enabled" else
+             f"Speaker attribution unavailable: diarization {diarization_status}; Speaker 1 is a placeholder.")
+    lines.extend(f'Speaker {index}: "{guide}"' for index in range(1, speaker_count + 1))
+    return lines
+
+
+def validate_outputs(input_path, output_path, segments_json=None, extra_outputs=()):
+    outputs = [output_path] + ([segments_json] if segments_json else []) + list(extra_outputs)
     for index, output in enumerate(outputs):
         for other in [input_path, *outputs[:index]]:
             if output == other or (output.exists() and other.exists() and output.samefile(other)):
@@ -227,85 +225,94 @@ def validate_outputs(input_path, output_path, segments_json=None):
 
 
 def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
-                    segments_json=None, on_progress=None):
+                    segments_json=None, on_progress=None, vad=False, parakeet=False, on_warning=None):
     """Process either source channel; CLI and recording orchestration share this path."""
     input_path, output_path = input_path.resolve(), output_path.resolve()
     segments_json = segments_json.resolve() if segments_json else None
-    validate_outputs(input_path, output_path, segments_json)
+    original_output = output_path.with_suffix(".gigaam.txt")
+    validate_outputs(input_path, output_path, segments_json,
+                     [original_output] if parakeet else [])
     print(f"Transcribing: {input_path.name}", file=sys.stderr, flush=True)
     start_time = time.time()
-    result = run_gigaam(input_path, on_progress=on_progress)
-
-    t_elapsed = time.time() - start_time
-    segments = result.get("segments", [])
-    print(f"Transcription finished: {len(segments)} segments in {format_duration(t_elapsed)}", file=sys.stderr, flush=True)
-
-    # Speaker Diarization
+    warnings = []
+    def warn(message):
+        warnings.append(message)
+        print('Warning: ' + message, file=sys.stderr, flush=True)
+        if on_warning:
+            on_warning(message)
     num_detected_speakers = 1
     diarization_status = "disabled"
+    diar_segments = []
     if diarize:
         if on_progress:
             on_progress("diarization", 0, 1)
         try:
             diar_segments, num_detected_speakers = run_nemotron_diarization(input_path)
-            segments, num_detected_speakers = assign_speakers(segments, diar_segments)
             diarization_status = "enabled" if diar_segments else "no speech detected"
-        except Exception as e:
+        except Exception as error:
             diarization_status = "failed"
-            num_detected_speakers = 1
-            print(f"Warning: Diarization failed ({e}); falling back to single speaker.", file=sys.stderr, flush=True)
-            for seg in segments:
-                seg["speaker"] = 1
-
+            warn(f'Разделение голосов не выполнено: {error}')
         if on_progress:
             on_progress("diarization", 1, 1)
 
-    data = {"segments": segments,
+    keep = None
+    if vad:
+        if on_progress:
+            on_progress("vad", 0, 1)
+        try:
+            from audio_enhancement import load_vad, speech_windows
+            samples, rate = load_audio(input_path)
+            keep = speech_windows(samples, rate, load_vad())
+            del samples
+        except Exception as error:
+            warn(f'Пропуск тишины недоступен; распознаём весь звук: {error}')
+        if on_progress:
+            on_progress("vad", 1, 1)
+    result = run_gigaam(input_path, on_progress=on_progress, keep=keep)
+    segments = result.get("segments", [])
+    if diarize:
+        segments, num_detected_speakers = assign_speakers(segments, diar_segments)
+    original_segments = [dict(word) for word in segments]
+    enhancement_status = "disabled"
+    if parakeet:
+        write_transcript(original_output, transcript_lines(input_path, original_segments,
+                         diarization_status, num_detected_speakers, fallback_text=result.get("text", "")))
+        try:
+            from audio_enhancement import run_parakeet, windows
+            from term_correction import cascade
+            if keep is None:
+                import soundfile as sf
+                keep = [True] * len(list(windows(sf.info(input_path).frames)))
+            donor = run_parakeet(input_path, keep, on_progress=on_progress)
+            if on_progress:
+                on_progress("correction", 0, 1)
+            segments, changes = cascade(segments, donor)
+            enhancement_status = f'enabled ({len(changes)} replacements)'
+            if on_progress:
+                on_progress("correction", 1, 1)
+        except Exception as error:
+            enhancement_status = "failed; original GigaAM retained"
+            warn(f'Parakeet не выполнен; сохранён исходный текст GigaAM: {error}')
+
+    data = {"segments": segments, "gigaam_segments": original_segments,
+            "enhancement": enhancement_status, "warnings": warnings,
             "diarization": f"Diarization: {diarization_status} ({num_detected_speakers} speakers)"}
     if segments_json:
         write_transcript(segments_json, [json.dumps(data, ensure_ascii=False, allow_nan=False)])
-    segments = group_turns(segments)
-
-    total_elapsed = time.time() - start_time
-
-    lines = [
-        f"Transcript: {input_path.name}",
-        f"Audio: {input_path}",
-        "Model: gigaam-v3-e2e-rnnt (ONNX / CPU)",
-        f"Diarization: {diarization_status} ({num_detected_speakers} speakers)",
-        "Diarization backend: nemotron",
-        f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        "",
-    ]
-
-    if segments:
-        for seg in segments:
-            start_s = float(seg.get("start", 0.0))
-            text = str(seg.get("text", "")).strip()
-            if not text:
-                continue
-            spk = seg.get("speaker", 1)
-            lines.append(f"[{format_timestamp(start_s)}] Speaker {spk}: {text}")
-    else:
-        text = str(result.get("text", "")).strip()
-        lines.append(f"[00:00] Speaker 1: {text}")
-
-    lines.extend([
-        "",
-        "Speaker guide:",
-    ])
-    guide = ("Inferred from local nemotron diarization; identities are unverified."
-             if diarization_status == "enabled" else
-             f"Speaker attribution unavailable: diarization {diarization_status}; Speaker 1 is a placeholder.")
-    for s_idx in range(1, num_detected_speakers + 1):
-        lines.append(f'Speaker {s_idx}: "{guide}"')
-
+    lines = transcript_lines(input_path, segments, diarization_status, num_detected_speakers,
+                             fallback_text=result.get("text", ""))
+    if parakeet:
+        lines.insert(5, "Term enhancement: " + enhancement_status)
+    for warning in warnings:
+        lines.insert(5, "Warning: " + warning)
     write_transcript(output_path, lines)
+    total_elapsed = time.time() - start_time
+    turns = group_turns(segments)
 
     audio_dur = segments[-1]["end"] if segments else 0.0
     speedup = f" ({audio_dur / total_elapsed:.1f}x realtime)" if audio_dur > 0 and total_elapsed > 0 else ""
     print(
-        f"Done: wrote {output_path} ({len(segments)} turns, {num_detected_speakers} speakers, {format_duration(total_elapsed)} total{speedup})",
+        f"Done: wrote {output_path} ({len(turns)} turns, {num_detected_speakers} speakers, {format_duration(total_elapsed)} total{speedup})",
         file=sys.stderr,
         flush=True,
     )
@@ -317,6 +324,8 @@ def main():
     parser.add_argument("audio_path", type=Path, help="Path to source audio")
     parser.add_argument("output_path", type=Path, nargs="?", help="Path to transcript")
     parser.add_argument("--no-diarize", action="store_true", help="Treat the input as one speaker")
+    parser.add_argument("--vad", action="store_true", help="Skip silent ASR windows")
+    parser.add_argument("--parakeet", action="store_true", help="Improve technical terms with Parakeet")
     parser.add_argument("--offline", action="store_true", help="Use cached models only")
     parser.add_argument("--segments-json", type=Path, help="Write word timestamps for merging source channels")
     args = parser.parse_args()
@@ -340,7 +349,7 @@ def main():
         parser.error(str(error))
     try:
         transcribe_file(input_path, output_path, diarize=not args.no_diarize,
-                        segments_json=segments_json)
+                        segments_json=segments_json, vad=args.vad, parakeet=args.parakeet)
     except Exception as error:
         print(f"Transcription error: {error}", file=sys.stderr, flush=True)
         sys.exit(2)

@@ -75,9 +75,11 @@ class RecordingTests(unittest.TestCase):
             for source in module.source_paths(base):
                 source.touch()
             calls = []
-            def transcribe(source, output, *, diarize, on_progress):
+            def transcribe(source, output, *, vad, parakeet, on_progress, on_warning):
                 self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
-                calls.append((source, diarize))
+                self.assertTrue(vad)
+                diarize = "remote" in source.name
+                calls.append((source, vad))
                 on_progress("gigaam", 1, 2)
                 return self.data([self.segment(0 if diarize else 5, "Remote" if diarize else "Host")],
                                  "enabled (1 speakers)" if diarize else "disabled (1 speakers)")
@@ -88,10 +90,10 @@ class RecordingTests(unittest.TestCase):
                 module.main()
             text = base.with_name("recording.sources.transcript.txt").read_text()
             self.assertIn("[00:00] Speaker 2: Remote\n[00:05] Speaker 1: Host", text)
-            self.assertEqual(calls, list(zip(module.source_paths(base.resolve()), (False, True))))
+            self.assertEqual(calls, list(zip(module.source_paths(base.resolve()), (True, True))))
             self.assertIn('"channel": "host"', output.getvalue())
             self.assertIn('"channel": "remote"', output.getvalue())
-            self.assertIn('"stage":"merge","completed":1', output.getvalue())
+            self.assertIn('"stage": "merge", "completed": 1', output.getvalue())
 
     def test_two_microphone_voices_remain_distinct_from_remote(self):
         host = self.data([self.segment(0, "First", 1), self.segment(2, "Second", 2)])

@@ -93,6 +93,7 @@ class TranscriberTests(unittest.TestCase):
                        "mlx_audio": SimpleNamespace(),
                        "mlx_audio.vad": SimpleNamespace(load=lambda *a, **k: model)}
             with self.subTest(raw=raw), patch.dict(sys.modules, modules), \
+                 patch("model_assets.model_path", return_value=self.root), \
                  contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(RuntimeError):
                     t.run_nemotron_diarization(self.audio)
@@ -169,7 +170,7 @@ class TranscriberTests(unittest.TestCase):
                    "soundfile": SimpleNamespace(), "mlx_audio": SimpleNamespace(),
                    "mlx_audio.vad": SimpleNamespace(load=lambda *a, **k: None)}
         with patch.dict(sys.modules, modules), patch.dict(os.environ, {"HF_HUB_OFFLINE": "1"}):
-            with self.assertRaises(CacheMiss):
+            with self.assertRaises(RuntimeError):
                 t.run_nemotron_diarization(self.audio)
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0]["local_files_only"])

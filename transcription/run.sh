@@ -14,7 +14,7 @@ if [[ ! -x "$UV" ]]; then UV="$(command -v uv)"; fi
 SCRIPT="$DIR/transcribe.py"
 case "${1:-}" in
   --recording) SCRIPT="$DIR/transcribe-recording.py"; shift ;;
-  --check) SCRIPT="$DIR/check-local.py" ;;
+  --check|--availability) SCRIPT="$DIR/check-local.py" ;;
   --prepare)
     SCRIPT="$DIR/check-local.py"
     UV_FLAGS=(--no-progress)
@@ -22,7 +22,8 @@ case "${1:-}" in
     ;;
 esac
 for arg in "$@"; do
-  if [[ "$arg" == "--offline" || "$arg" == "--check" ]]; then
+  if [[ "$arg" == "--parakeet" ]]; then UV_FLAGS+=(--with transcribe-cpp==0.2.3); fi
+  if [[ "$arg" == "--offline" || "$arg" == "--check" || "$arg" == "--availability" ]]; then
     export UV_OFFLINE=1 HF_HUB_OFFLINE=1
   fi
 done

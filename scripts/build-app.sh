@@ -19,7 +19,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/transcription"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp "$BIN_DIR/MeetingCompanionApp" "$APP/Contents/MacOS/MeetingCompanion"
-for name in transcribe.py transcribe-recording.py check-local.py run.sh uv-LICENSE-MIT; do
+for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py run.sh uv-LICENSE-MIT; do
   cp "transcription/$name" "$APP/Contents/Resources/transcription/"
 done
 cp "$UV_BIN" "$APP/Contents/Resources/transcription/uv"
