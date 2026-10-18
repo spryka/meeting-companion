@@ -13,9 +13,9 @@ final class AppWindowState: ObservableObject {
             ? .regular : .accessory
     }
 
-    static func audioCheckVisible(window: NSWindow?, diagnosticsSelected: Bool, applicationHidden: Bool) -> Bool {
+    static func settingsPageVisible(window: NSWindow?, pageSelected: Bool, applicationHidden: Bool) -> Bool {
         guard let window else { return false }
-        return diagnosticsSelected && !applicationHidden && window.isVisible && !window.isMiniaturized
+        return pageSelected && !applicationHidden && window.isVisible && !window.isMiniaturized
             && window.occlusionState.contains(.visible)
     }
 

@@ -50,7 +50,6 @@ struct RecorderSettingsView: View {
         .onAppear {
             model.refreshAccess()
             model.refreshMicrophones()
-            model.calendar.refresh()
         }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             model.refreshAccess()
@@ -191,7 +190,9 @@ private struct CalendarSettingsView: View {
 
     var body: some View {
         Section("Календари встреч") {
-            if calendar.calendars.isEmpty {
+            if calendar.isLoadingCalendars {
+                ProgressView("Загружаем календари…")
+            } else if calendar.calendars.isEmpty {
                 Text(calendar.message.isEmpty ? "Нет доступных календарей." : calendar.message)
                     .foregroundStyle(.secondary)
             } else {

@@ -138,10 +138,16 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private func updatePreviewVisibility() {
         AppWindowState.refreshActivationPolicy()
         let selected = (settingsWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex
-        model.setAudioCheckVisible(AppWindowState.audioCheckVisible(window: settingsWindow,
-            diagnosticsSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .diagnostics),
+        model.setAudioCheckVisible(AppWindowState.settingsPageVisible(window: settingsWindow,
+            pageSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .diagnostics),
             applicationHidden: NSApp.isHidden))
         model.setWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
+        model.calendar.setMainWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized
+            && window.occlusionState.contains(.visible) && window.styleMask.contains(.titled)
+            && !model.showsRecordingCapsule && !model.showsProcessingCapsule)
+        model.calendar.setCalendarSettingsVisible(AppWindowState.settingsPageVisible(window: settingsWindow,
+            pageSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .calendar),
+            applicationHidden: NSApp.isHidden))
     }
 
     func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }

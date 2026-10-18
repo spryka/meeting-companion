@@ -583,9 +583,11 @@ struct ContentView: View {
         })
         .onChange(of: viewModel.showsRecordingCapsule) { _, isRecording in
             if !isRecording { viewModel.setWindowVisible(false) }
+            if isRecording { viewModel.calendar.setMainWindowVisible(false) }
             windowState.setCapsuleMode(isRecording, processing: viewModel.showsProcessingCapsule)
         }
         .onChange(of: viewModel.showsProcessingCapsule) { _, processing in
+            if processing { viewModel.calendar.setMainWindowVisible(false) }
             windowState.setCapsuleMode(viewModel.showsRecordingCapsule, processing: processing)
         }
     }

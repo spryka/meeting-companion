@@ -57,6 +57,13 @@ struct MeetingChecks {
         precondition(visible.map(\.summary) == ["Meeting", "Later this week"])
         precondition(!visible[1].needsReminder(now: now, handled: []))
         precondition(MeetingCalendar.visibleMeetings([ended, allDay], now: now).isEmpty)
+        precondition(MeetingCalendar.refreshDelay(events: [], now: now) == 300)
+        precondition(MeetingCalendar.refreshDelay(events: [meeting], now: now) == 30)
+        precondition(MeetingCalendar.refreshDelay(events: [meeting], now: now.addingTimeInterval(-600)) == 300)
+        precondition(MeetingCalendar.refreshDelay(events: [meeting], now: now.addingTimeInterval(-301)) == 1)
+        precondition(MeetingCalendar.refreshDelay(events: [meeting], now: now.addingTimeInterval(-300)) == 30)
+        precondition(MeetingCalendar.refreshDelay(events: [meeting], now: now.addingTimeInterval(299)) == 30)
+        precondition(MeetingCalendar.refreshDelay(events: [meeting], now: now.addingTimeInterval(300)) == 300)
         event.notes = meeting.agenda
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
