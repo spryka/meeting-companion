@@ -4,8 +4,17 @@ import Sparkle
 @main struct Check {
     @MainActor static func main() throws {
         let driver = SPUStandardUserDriver(hostBundle: .main, delegate: nil)
-        let owner = AppUpdater()
+        let suite = "check-update-lifecycle-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let owner = AppUpdater(defaults: defaults)
         let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: owner)
+        precondition(owner.responds(to: NSSelectorFromString("allowedChannelsForUpdater:")))
+        precondition(owner.allowedChannels(for: updater).isEmpty)
+        defaults.set(true, forKey: "receiveBetaUpdates")
+        precondition(owner.allowedChannels(for: updater) == ["beta"])
+        defaults.set(false, forKey: "receiveBetaUpdates")
+        precondition(owner.allowedChannels(for: updater).isEmpty)
         owner.isBusy = { true }
         do {
             try owner.updater(updater, mayPerform: .updatesInBackground)
@@ -31,6 +40,6 @@ import Sparkle
             immediateInstallationBlock: { immediateInstallation = true }))
         precondition(!immediateInstallation, "Preparing an update must never terminate the app")
         precondition(owner.pendingVersion == "1.5.1")
-        print("Busy guard and deferred installation without forced termination passed")
+        print("Beta opt-in, busy guard and deferred installation without forced termination passed")
     }
 }
