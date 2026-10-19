@@ -3,6 +3,16 @@ import Foundation
 
 @main struct Check {
     @MainActor static func main() {
+        var hint = MutedMicrophoneActivity()
+        let epoch = Date()
+        precondition(!hint.receive(0.4, muted: true, now: epoch))
+        precondition(hint.receive(0.4, muted: true, now: epoch.addingTimeInterval(0.7)))
+        precondition(hint.receive(0, muted: true, now: epoch.addingTimeInterval(1)))
+        precondition(!hint.receive(0, muted: true, now: epoch.addingTimeInterval(3)))
+        precondition(!hint.receive(1, muted: false, now: epoch.addingTimeInterval(4)))
+        precondition(!hint.receive(1, muted: true, now: epoch.addingTimeInterval(5)))
+        precondition(!hint.receive(0, muted: true, now: epoch.addingTimeInterval(5.2)))
+        precondition(!hint.receive(1, muted: true, now: epoch.addingTimeInterval(5.8)))
         let levels = AudioLevels()
         let now = Date()
         var updates = 0

@@ -48,3 +48,23 @@ final class AudioLevels: ObservableObject {
         (min(max(value, 0), 1) * 10).rounded() / 10
     }
 }
+
+// A level hint, not a speech classifier; never changes recording state itself.
+struct MutedMicrophoneActivity {
+    private var aboveSince: Date?
+    private var lastLoud = Date.distantPast
+    private(set) var detected = false
+
+    mutating func receive(_ level: Double, muted: Bool, now: Date = Date()) -> Bool {
+        guard muted, level.isFinite else { self = Self(); return false }
+        if level >= 0.12 {
+            if aboveSince == nil { aboveSince = now }
+            if now.timeIntervalSince(aboveSince!) >= 0.6 { detected = true }
+            lastLoud = now
+        } else {
+            aboveSince = nil
+            if now.timeIntervalSince(lastLoud) >= 2 { detected = false }
+        }
+        return detected
+    }
+}
