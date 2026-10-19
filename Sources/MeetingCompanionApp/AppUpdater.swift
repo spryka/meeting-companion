@@ -3,6 +3,13 @@ import Sparkle
 
 @MainActor
 final class AppUpdater: NSObject, SPUUpdaterDelegate {
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults; super.init() }
+
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        defaults.bool(forKey: "receiveBetaUpdates") ? ["beta"] : []
+    }
+
     private var updater: SPUUpdater?
     private var userDriver: SPUStandardUserDriver?
     private var manualCheck = false

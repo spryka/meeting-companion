@@ -5,6 +5,7 @@ import MeetingCompanionCore
 struct RecorderSettingsView: View {
     @ObservedObject var model: RecorderViewModel
     let page: Page
+    @AppStorage("receiveBetaUpdates") private var receiveBetaUpdates = false
 
     enum Page: String, CaseIterable {
         case recording = "Запись", transcription = "Транскрибация"
@@ -88,6 +89,13 @@ struct RecorderSettingsView: View {
                     Button("Выбрать…", action: model.chooseFolder)
                         .disabled(model.isRecording || model.isBusy || model.diagnosticRunning)
                 }
+            }
+            Section {
+                Toggle("Получать бета-версии", isOn: $receiveBetaUpdates)
+            } header: {
+                Text("Обновления")
+            } footer: {
+                Text("Экспериментальные версии могут содержать ошибки. Настройка применяется при следующей проверке обновлений через Sparkle. Отключение не откатывает установленную версию и не отменяет уже подготовленное обновление.")
             }
         }
     }

@@ -38,6 +38,7 @@ struct MeetingCompanionCLI {
             let result = try await recorder.stop()
             print("Recording finished: \(formatDuration(result.duration))")
             print("Saved: \(result.outputURL.path) (\(formatBytes(result.fileSize)))")
+            for warning in result.warnings { fputs("Warning: " + warning + "\n", stderr) }
             print("Transcribing locally...")
             do {
                 let transcript = try await Transcription.run(recording: result.outputURL)

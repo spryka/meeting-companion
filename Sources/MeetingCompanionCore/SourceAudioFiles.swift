@@ -8,6 +8,16 @@ final class SourceAudioFiles {
     private let remote: SourceAudioFile
     private var startTime: CMTime?
     private var recording = false
+    private var muteIntervals: [(start: Double, end: Double)] = []
+
+    func setMicrophoneMuted(_ muted: Bool, at timestamp: CMTime) {
+        let time = timestamp.seconds
+        if muted {
+            if muteIntervals.last?.end != .infinity { muteIntervals.append((time, .infinity)) }
+        } else if muteIntervals.last?.end == .infinity {
+            muteIntervals[muteIntervals.count - 1].end = time
+        }
+    }
     private var failure: Error?
     private let archive: [SourceAudioFile]
     let archiveURLs: [URL]
@@ -56,8 +66,17 @@ final class SourceAudioFiles {
     func append(_ buffer: AVAudioPCMBuffer, timestamp: CMTime, microphone: Bool) {
         guard recording, failure == nil else { return }
         if startTime == nil { startTime = timestamp }
+        let bufferStart = timestamp.seconds
+        let bufferEnd = bufferStart + Double(buffer.frameLength) / buffer.format.sampleRate
         do {
             let offset = CMTimeGetSeconds(CMTimeSubtract(timestamp, startTime!))
+            if microphone && muteIntervals.contains(where: { $0.start < bufferEnd && $0.end > bufferStart }) {
+                // Write silence incrementally so a long mute never creates a large catch-up write.
+                let end = offset + Double(buffer.frameLength) / buffer.format.sampleRate
+                try host.appendSilence(until: max(0, end))
+                if !archive.isEmpty { try archive[0].appendSilence(until: max(0, end)) }
+                return
+            }
             try (microphone ? host : remote).append(buffer, seconds: offset)
             if !archive.isEmpty { try archive[microphone ? 0 : 1].append(buffer, seconds: offset) }
         } catch { failure = error }
@@ -143,6 +162,10 @@ final class SourceAudioFile {
 
     func finish(duration: Double) throws {
         defer { file = nil }
+        try appendSilence(until: duration)
+    }
+
+    func appendSilence(until duration: Double) throws {
         guard duration.isFinite, duration >= 0, duration < 86400 else { throw SourceAudioError.invalidBuffer }
         if file == nil { try open() }
         try pad(to: AVAudioFramePosition((duration * format.sampleRate).rounded()))
@@ -160,7 +183,7 @@ final class SourceAudioFile {
     }
 
     private func pad(to target: AVAudioFramePosition) throws {
-        guard let file else { return }
+        guard position < target, let file else { return }
         guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) else {
             throw SourceAudioError.invalidBuffer
         }

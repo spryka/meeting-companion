@@ -49,6 +49,25 @@ class RecordingTests(unittest.TestCase):
             self.assertTrue((raw/"meeting.sources.gigaam.transcript.txt").is_file())
             self.assertFalse((base.parent/"meeting.sources.gigaam.transcript.txt").exists())
 
+    def test_capture_warnings_do_not_block_source_transcription(self):
+        import json
+        for payload in ({'droppedBuffers': 3, 'droppedSourceSeconds': .03, 'failure': 'capture failed', 'exportFailure': 'disk'}, []):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)/'meeting'
+                raw = base.parent/'raw'; raw.mkdir()
+                for source in module.source_paths(base): source.touch()
+                (raw/'meeting.capture-report.json').write_text(json.dumps(payload))
+                events = io.StringIO()
+                with patch.object(sys, 'argv', ['recording', str(base)]), \
+                     patch.object(module, 'transcribe_file', return_value=self.data([self.segment(1,'kept')])) as engine, \
+                     contextlib.redirect_stdout(events):
+                    module.main()
+                self.assertEqual(engine.call_count, 2)
+                text = (base.parent/'meeting.sources.transcript.txt').read_text()
+                self.assertIn('kept', text)
+                self.assertIn('Warning:', text)
+                self.assertIn('"stage": "warning"', events.getvalue())
+
     def test_overlap_and_multiple_remote_voices(self):
         host = self.data([self.segment(13, "Host interruption"), self.segment(3601, "Later")])
         remote = self.data([self.segment(11, "Remote"), self.segment(13, "Other", 2)])

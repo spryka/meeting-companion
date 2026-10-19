@@ -20,6 +20,7 @@ public struct RecordingResult: Sendable {
     public let outputURL: URL
     public let duration: TimeInterval
     public let fileSize: Int
+    public let warnings: [String]
 }
 
 public struct MicrophoneDevice: Identifiable, Hashable, Sendable {
@@ -108,6 +109,11 @@ public final class Recorder: @unchecked Sendable {
         }
     }
 
+    public func setMicrophoneMuted(_ muted: Bool) {
+        let requestedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        queue.sync { sourceFiles.setMicrophoneMuted(muted, at: requestedAt) }
+    }
+
     public func start() async throws {
         guard let capture else { throw RecorderError.notConfigured }
         startedAt = CMClockGetTime(CMClockGetHostTimeClock())
@@ -129,11 +135,37 @@ public final class Recorder: @unchecked Sendable {
         let duration = CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), startedAt))
         // Finalize all captured audio even when the backend reports a partial recording.
         try queue.sync { try sourceFiles.finish(duration: duration) }
-        try await exportMixedAudio(from: sourceFiles.archiveURLs, to: outputURL, outputKind: outputKind)
-        if let captureError { throw captureError }
-        for url in sourceFiles.archiveURLs { try? FileManager.default.removeItem(at: url) }
-        return RecordingResult(outputURL: outputURL, duration: duration, fileSize: fileSize(at: outputURL))
+        return await finishRecording(sourceFiles: sourceFiles, outputURL: outputURL, outputKind: outputKind,
+                                     duration: duration, startedAt: startedAt, captureError: captureError)
     }
+}
+
+// Source files have already been finalized; a capture warning must not discard them.
+func finishRecording(sourceFiles: SourceAudioFiles, outputURL: URL, outputKind: OutputKind,
+                     duration: Double, startedAt: CMTime, captureError: Error?) async -> RecordingResult {
+    var warnings: [String] = []
+    var report = (captureError as? CaptureFailure)?.report ?? CaptureReport(failure: captureError?.localizedDescription)
+    report.losses = report.losses.map {
+        CaptureLoss(microphone: $0.microphone, timestamp: max(0, $0.timestamp - startedAt.seconds), duration: $0.duration)
+    }
+    if let warning = report.warning { warnings.append(warning) }
+    let reportURL = outputURL.deletingLastPathComponent().appendingPathComponent("raw")
+        .appendingPathComponent(outputURL.deletingPathExtension().lastPathComponent + ".capture-report.json")
+    do {
+        try await exportMixedAudio(from: sourceFiles.archiveURLs, to: outputURL, outputKind: outputKind)
+    } catch {
+        report.exportFailure = error.localizedDescription
+        warnings.append("Общая запись не собрана; исходные дорожки сохранены: " + error.localizedDescription)
+    }
+    do {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(report).write(to: reportURL, options: .atomic)
+    } catch { warnings.append("Не удалось сохранить журнал захвата: " + error.localizedDescription) }
+    if warnings.isEmpty {
+        for url in sourceFiles.archiveURLs { try? FileManager.default.removeItem(at: url) }
+    }
+    return RecordingResult(outputURL: outputURL, duration: duration, fileSize: fileSize(at: outputURL), warnings: warnings)
 }
 
 @available(macOS 15.0, *)
@@ -193,7 +225,10 @@ public func exportMixedAudio(from sources: [URL], to output: URL, outputKind: Ou
         throw RecorderError.exportUnavailable
     }
     session.audioMix = mix
-    try await session.export(to: output, as: outputKind == .m4a ? .m4a : .mp4)
+    let temporary = output.deletingLastPathComponent().appendingPathComponent("." + UUID().uuidString + "." + outputKind.fileExtension)
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    try await session.export(to: temporary, as: outputKind == .m4a ? .m4a : .mp4)
+    try FileManager.default.moveItem(at: temporary, to: output)
 }
 
 func audioLevel(from buffer: AVAudioPCMBuffer) -> Double {

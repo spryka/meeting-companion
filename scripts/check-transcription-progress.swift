@@ -62,6 +62,9 @@ sys.stdout.write(event(stage='merge', channel=None, completed=1, total=1)); sys.
         precondition(TranscriptionState.running(probe.events[0]).text == probe.events[0].text)
         precondition(TranscriptionState.completed(transcript).transcript == transcript)
         precondition(TranscriptionState.failed("error").text == "error")
+        let speakerEvent = Data("MEETING_PROGRESS {\"stage\":\"speakers\",\"channel\":\"remote\",\"completed\":500,\"total\":1000,\"step\":10,\"steps\":13}".utf8)
+        let speakers = TranscriptionProgress(line: speakerEvent)!
+        precondition(speakers.stage == .speakers && speakers.text.contains("500/1000 слов"))
         print("Progress: partial lines, invalid events, bounded parsing, full log and processing state passed")
     }
 }

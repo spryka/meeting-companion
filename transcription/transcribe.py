@@ -128,41 +128,54 @@ def run_gigaam(audio_path: Path, on_progress=None, keep=None):
     return {"segments": segments, "text": " ".join(s["text"] for s in segments)}
 
 
-def assign_speakers(text_segments: list, diar_segments: list):
-    """Align transcription segments with Diarization intervals by maximum overlap."""
-    if not diar_segments:
-        for seg in text_segments:
-            seg["speaker"] = 1
-        return text_segments, 1
-
+def assign_speakers(text_segments: list, diar_segments: list, on_progress=None):
+    """Find overlapping intervals with a prefix-end index, preserving tie order."""
+    from bisect import bisect_left, bisect_right
+    if on_progress:
+        on_progress("speakers", 0, len(text_segments))
     diar_sorted = sorted(diar_segments, key=lambda s: s.start)
+    starts = [d.start for d in diar_sorted]
+    prefix_ends = []
+    for d in diar_sorted:
+        prefix_ends.append(max(prefix_ends[-1] if prefix_ends else 0, d.end))
+    # Sorted unique boundaries retain the first interval for deterministic nearest ties.
+    def boundaries(attribute):
+        first = {}
+        for index, d in enumerate(diar_sorted):
+            first.setdefault(getattr(d, attribute), index)
+        values = sorted(first)
+        return values, first
+    start_values, start_indices = boundaries('start')
+    end_values, end_indices = boundaries('end')
     speaker_map = {}
-
-    for seg in text_segments:
-        w_start = seg["start"]
-        w_end = seg["end"]
-
-        # Calculate overlap duration with each diarized speaker
+    for number, seg in enumerate(text_segments, 1):
+        w_start, w_end = seg["start"], seg["end"]
         overlaps = {}
-        for d in diar_sorted:
-            o_start = max(w_start, d.start)
-            o_end = min(w_end, d.end)
-            if o_end > o_start:
-                overlaps[d.speaker] = overlaps.get(d.speaker, 0.0) + (o_end - o_start)
-
+        lower = bisect_right(prefix_ends, w_start)
+        upper = bisect_left(starts, w_end)
+        for index in range(lower, upper):
+            d = diar_sorted[index]
+            overlap = min(w_end, d.end) - max(w_start, d.start)
+            if overlap > 0:
+                overlaps[d.speaker] = overlaps.get(d.speaker, 0.0) + overlap
         if overlaps:
-            best_spk = max(overlaps.items(), key=lambda x: x[1])[0]
+            best_spk = max(overlaps, key=overlaps.get)
+        elif diar_sorted:
+            candidates = []
+            for values, indices, at in ((start_values, start_indices, w_start), (end_values, end_indices, w_end)):
+                point = bisect_left(values, at)
+                for index in (point-1, point):
+                    if 0 <= index < len(values):
+                        candidates.append((abs(values[index]-at), indices[values[index]]))
+            best_spk = diar_sorted[min(candidates)[1]].speaker
         else:
-            # Nearest diarization segment
-            closest = min(diar_sorted, key=lambda d: min(abs(d.start - w_start), abs(d.end - w_end)))
-            best_spk = closest.speaker
-
+            best_spk = 0
         if best_spk not in speaker_map:
             speaker_map[best_spk] = len(speaker_map) + 1
-
         seg["speaker"] = speaker_map[best_spk]
-
-    return text_segments, len(speaker_map)
+        if on_progress and (number % 500 == 0 or number == len(text_segments)):
+            on_progress("speakers", number, len(text_segments))
+    return text_segments, len(speaker_map) if diar_sorted else 1
 
 
 def write_transcript(output_path: Path, lines: list[str]):
@@ -272,7 +285,7 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
     result = run_gigaam(input_path, on_progress=on_progress, keep=keep)
     segments = result.get("segments", [])
     if diarize:
-        segments, num_detected_speakers = assign_speakers(segments, diar_segments)
+        segments, num_detected_speakers = assign_speakers(segments, diar_segments, on_progress=on_progress)
     original_segments = [dict(word) for word in segments]
     enhancement_status = "disabled"
     if parakeet:

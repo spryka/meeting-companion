@@ -56,6 +56,20 @@ final class RecorderViewModel: ObservableObject {
     @Published var isBusy = false
     @Published var isRecording = false { didSet { updateLevelVisibility() } }
     @Published var recordingSaveError: String?
+    @Published private(set) var microphoneMuted = false
+    @Published private(set) var mutedMicrophoneActivity = false
+    private var muteActivity = MutedMicrophoneActivity()
+    private var recordingWarnings: [String] = []
+
+    func toggleMicrophoneMute() {
+        guard isRecording, !isBusy, let recorder else { return }
+        let muted = !microphoneMuted
+        recorder.setMicrophoneMuted(muted)
+        microphoneMuted = muted
+        muteActivity = MutedMicrophoneActivity()
+        mutedMicrophoneActivity = false
+        levels.reset()
+    }
 
     @Published var capsuleDismissed = false
     @Published private(set) var transcriptionWarnings: [String] = []
@@ -226,7 +240,7 @@ final class RecorderViewModel: ObservableObject {
             openFolder()
             return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([lastFileURL])
+        NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.fileExists(atPath: lastFileURL.path) ? lastFileURL : lastFileURL.deletingLastPathComponent()])
     }
 
     func openTranscript() {
@@ -322,13 +336,29 @@ final class RecorderViewModel: ObservableObject {
 
     func transcribeLastRecording() {
         guard let lastFileURL, !isRecording, !isBusy, !diagnosticRunning, transcriptionJobs == 0 else { return }
-        transcribe(lastFileURL)
+        recordingSaveError = nil
+        if FileManager.default.fileExists(atPath: lastFileURL.path) {
+            transcribe(lastFileURL)
+        } else {
+            isBusy = true
+            Task {
+                defer { isBusy = false }
+                let base = lastFileURL.deletingLastPathComponent().appendingPathComponent("raw")
+                    .appendingPathComponent(lastFileURL.deletingPathExtension().lastPathComponent)
+                do {
+                    try await exportMixedAudio(from: ["host", "remote"].map { base.appendingPathExtension($0 + ".capture.caf") }, to: lastFileURL)
+                } catch {
+                    errorMessage = "Не удалось собрать общую запись. Пробуем обработать исходные WAV. " + error.localizedDescription
+                }
+                transcribe(lastFileURL)
+            }
+        }
     }
 
     private func transcribe(_ recording: URL) {
         transcriptionJobs += 1
         capsuleDismissed = false
-        transcriptionWarnings = []
+        transcriptionWarnings = recordingWarnings
         transcriptionState = .running(nil)
         let selectedTerms = improveTerms
         Task { [self] in
@@ -415,6 +445,10 @@ final class RecorderViewModel: ObservableObject {
         do {
             errorMessage = nil
             recordingSaveError = nil
+            recordingWarnings = []
+            microphoneMuted = false
+            mutedMicrophoneActivity = false
+            muteActivity = MutedMicrophoneActivity()
             await endAudioCheck()
             let outputURL = try RecordingPaths.makeOutputURL(outputDirectory: outputDirectory)
             let recorder = try await Recorder(
@@ -426,8 +460,12 @@ final class RecorderViewModel: ObservableObject {
                     Task { @MainActor in
                         guard let self else { return }
                         if system.isFinite { self.updateCaptureCheck(succeeded: true) }
+                        if mic.isFinite {
+                            let active = self.muteActivity.receive(mic, muted: self.microphoneMuted)
+                            if active != self.mutedMicrophoneActivity { self.mutedMicrophoneActivity = active }
+                        }
                         guard self.isWindowVisible else { return }
-                        self.levels.receive(mic: mic, system: system)
+                        self.levels.receive(mic: self.microphoneMuted ? 0 : mic, system: system)
                     }
                 }
             )
@@ -470,7 +508,9 @@ final class RecorderViewModel: ObservableObject {
             elapsed = result.duration
             lastFileURL = result.outputURL
             errorMessage = nil
-            status = "Запись сохранена · \(formatBytes(result.fileSize))"
+            recordingWarnings = result.warnings
+            mutedMicrophoneActivity = false
+            status = result.warnings.isEmpty ? "Запись сохранена · \(formatBytes(result.fileSize))" : "Запись сохранена с предупреждениями"
             transcribe(result.outputURL)
         } catch {
             self.recorder = nil
@@ -577,7 +617,7 @@ struct ContentView: View {
                         .frame(width: 348, height: 140)
                 } else {
                     CompactRecordingView(viewModel: viewModel)
-                        .frame(width: 288, height: 76)
+                        .frame(width: AppWindowState.recordingCapsuleSize.width, height: AppWindowState.recordingCapsuleSize.height)
                 }
             } else {
                 FullRecorderView(viewModel: viewModel, showSettings: showSettings)
@@ -595,136 +635,6 @@ struct ContentView: View {
         .onChange(of: viewModel.showsProcessingCapsule) { _, processing in
             if processing { viewModel.calendar.setMainWindowVisible(false) }
             windowState.setCapsuleMode(viewModel.showsRecordingCapsule, processing: processing)
-        }
-    }
-}
-
-struct CompactRecordingView: View {
-    @ObservedObject var viewModel: RecorderViewModel
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(viewModel.recordingSaveError == nil ? Color.red : Color.orange)
-                .frame(width: 7, height: 7)
-                .accessibilityLabel(viewModel.recordingSaveError != nil ? "Ошибка сохранения" : (viewModel.isBusy ? "Сохранение записи" : "Идёт запись"))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.elapsedText)
-                    .font(.system(size: 25, weight: .medium, design: .monospaced))
-                    .monospacedDigit()
-                if let error = viewModel.recordingSaveError {
-                    Text("Ошибка сохранения")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .help(error)
-                } else if viewModel.isBusy {
-                    Text("Сохранение…").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-            if !viewModel.isBusy && viewModel.recordingSaveError == nil {
-                CompactLevelMetersView(levels: viewModel.levels)
-                    .frame(width: 64)
-            }
-            Group {
-                if viewModel.isBusy {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel("Сохранение записи")
-                } else if viewModel.recordingSaveError != nil {
-                    Button {
-                        viewModel.recordingSaveError = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .help("Закрыть. Подробности ошибки доступны в основном окне.")
-                    .accessibilityLabel("Закрыть сообщение об ошибке")
-                } else {
-                    Button(action: viewModel.toggleRecording) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 12))
-                    }
-                    .tint(.red)
-                    .help("Остановить запись")
-                    .accessibilityLabel("Остановить запись")
-                }
-            }
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.circle)
-            .frame(width: 34, height: 34)
-        }
-        .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(MeetingOverlaySurface(capsule: true))
-        .padding(4)
-    }
-}
-
-struct ProcessingCapsuleView: View {
-    @ObservedObject var viewModel: RecorderViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(viewModel.lastRecordingTitle).font(.headline).lineLimit(1)
-                Spacer()
-                Button(action: viewModel.dismissCapsule) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).accessibilityLabel("Скрыть обработку")
-            }
-            switch viewModel.transcriptionState {
-            case .running(let progress):
-                HStack(alignment: .top) {
-                    Image(systemName: "text.magnifyingglass").accessibilityHidden(true)
-                    Text(viewModel.transcriptionStatus).font(.caption).lineLimit(2)
-                    Spacer(minLength: 0)
-                    if let step = progress?.step, let steps = progress?.steps {
-                        Text("\(step)/\(steps)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    }
-                }
-                if let progress, progress.total > 1 {
-                    ProgressView(value: Double(progress.completed), total: Double(progress.total))
-                        .accessibilityLabel("Обработано окон")
-                }
-            case .completed:
-                Label(viewModel.transcriptionWarnings.isEmpty ? "Транскрипт готов" : "Текст готов с предупреждениями",
-                      systemImage: viewModel.transcriptionWarnings.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
-                    .font(.caption)
-                Button("Открыть папку", action: viewModel.revealTranscript)
-                    .help(viewModel.transcriptionWarnings.joined(separator: "\n"))
-                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-            case .failed(let message):
-                Text(message).font(.caption).lineLimit(2).foregroundStyle(.red)
-                HStack {
-                    Button("Повторить", action: viewModel.transcribeLastRecording)
-                        .disabled(viewModel.transcriptionJobs > 0)
-                    Button("Открыть папку", action: viewModel.revealLastFile)
-                }
-                .buttonStyle(.bordered)
-            case .idle:
-                Text("Запись сохранена").font(.caption)
-            }
-        }
-        .padding(.horizontal, 22).padding(.vertical, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .modifier(MeetingOverlaySurface())
-        .padding(4)
-        .transaction { transaction in
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-        }
-    }
-}
-
-struct MeetingOverlaySurface: ViewModifier {
-    var capsule = false
-
-    @ViewBuilder func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: capsule ? 36 : 24)
-        if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content.background(.regularMaterial, in: shape)
-                .overlay(shape.stroke(.primary.opacity(0.08), lineWidth: 1))
         }
     }
 }
