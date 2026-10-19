@@ -90,8 +90,25 @@ def main():
                 parser.error(f"Transcript output aliases source audio: {output}")
     if args.offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
+    capture_warnings = []
+    capture_report = host.parent / (base.name + '.capture-report.json')
+    if capture_report.is_file():
+        try:
+            report = json.loads(capture_report.read_text())
+            if report.get('droppedBuffers', 0):
+                capture_warnings.append(f"При захвате пропущено буферов: {report['droppedBuffers']}; "
+                    f"{report.get('droppedSourceSeconds', 0):.3f} с суммарно по дорожкам.")
+            if report.get('exportFailure'):
+                capture_warnings.append('Общая запись не собрана: ' + str(report['exportFailure']))
+            if report.get('failure'):
+                capture_warnings.append('Сбой захвата: ' + str(report['failure']))
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            capture_warnings.append('Не удалось прочитать журнал захвата: ' + str(error))
+    for message in capture_warnings:
+        print('MEETING_PROGRESS ' + json.dumps(dict(stage='warning', completed=0, total=1,
+              warning=message[:1000])), flush=True)
     results = []
-    stages = ["diarization", "vad", "gigaam"] + (["parakeet", "correction"] if args.parakeet else [])
+    stages = ["diarization", "vad", "gigaam", "speakers"] + (["parakeet", "correction"] if args.parakeet else [])
     steps = 2 * len(stages) + 1
     for channel_index, (channel, source, output) in enumerate((("host", host, host_output), ("remote", remote, remote_output))):
         def progress(stage, completed, total):
@@ -106,6 +123,7 @@ def main():
     print("MEETING_PROGRESS " + json.dumps(dict(stage="merge", completed=0, total=1, step=steps, steps=steps)), flush=True)
     lines = [f"Transcript: {base.name} — separate sources", f"Host audio: {host}", f"Remote audio: {remote}"]
     lines.extend(merge_sources(*results))
+    lines.extend('Warning: ' + message for message in capture_warnings)
     for result in results:
         lines.extend("Warning: " + message for message in result.get("warnings", []))
     if args.parakeet:

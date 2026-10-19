@@ -151,7 +151,7 @@ public enum Transcription {
 
 public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public enum Stage: String, Decodable, Sendable {
-        case gigaam, diarization, vad, parakeet, correction, merge, warning
+        case gigaam, diarization, speakers, vad, parakeet, correction, merge, warning
     }
 
     public let stage: Stage
@@ -183,10 +183,12 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         case .correction: label = "Уточнение терминов"
         case .warning: label = warning ?? "Предупреждение"
         case .diarization: label = "Разделение голосов"
+        case .speakers: label = "Назначение голосов словам"
         case .merge: label = "Объединение дорожек"
         }
         let source = channel.map { $0 == "host" ? " · микрофон" : " · системный звук" } ?? ""
-        let count = total > 1 ? " · \(completed)/\(total) окон" : ""
+        let unit = stage == .speakers ? "слов" : "окон"
+        let count = total > 1 ? " · \(completed)/\(total) \(unit)" : ""
         return label + source + count + "…"
     }
 }

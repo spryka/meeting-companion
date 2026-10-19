@@ -34,25 +34,64 @@ func pcmBuffer(from sample: CMSampleBuffer) throws -> AVAudioPCMBuffer {
     return buffer
 }
 
+struct CaptureLoss: Codable, Sendable {
+    let microphone: Bool
+    let timestamp: Double
+    let duration: Double
+}
+
+struct CaptureFailure: Error, LocalizedError, Sendable {
+    let report: CaptureReport
+    var errorDescription: String? { report.warning }
+}
+
+struct CaptureReport: Codable, Sendable {
+    var droppedBuffers = 0
+    // Sum of source durations: simultaneous losses on two channels count twice.
+    var droppedSourceSeconds = 0.0
+    var losses: [CaptureLoss] = []
+    var failure: String?
+    var exportFailure: String?
+    var warning: String? {
+        var messages: [String] = []
+        if droppedBuffers > 0 {
+            messages.append(String(format: "Пропущено аудиобуферов: %d (%.3f с суммарно по дорожкам).", droppedBuffers, droppedSourceSeconds))
+        }
+        if let failure { messages.append("Сбой захвата: " + failure) }
+        return messages.isEmpty ? nil : messages.joined(separator: " ")
+    }
+}
+
 // All file/conversion work runs on this queue; HAL callbacks only copy bounded input.
-private final class AudioDelivery: @unchecked Sendable {
+final class AudioDelivery: @unchecked Sendable {
     let queue = DispatchQueue(label: "local.meeting-companion.audio-delivery")
-    private let slots = DispatchSemaphore(value: 32)
+    private let slots: DispatchSemaphore
     private let lock = NSLock()
-    private var failure: Error?
+    private var report = CaptureReport()
     private let sink: AudioSink
 
-    init(sink: @escaping AudioSink) { self.sink = sink }
+    init(capacity: Int = 256, sink: @escaping AudioSink) {
+        // Absorb short disk/scheduler stalls without allowing an unbounded queue.
+        slots = DispatchSemaphore(value: capacity)
+        self.sink = sink
+    }
 
     func fail(_ error: Error) {
         lock.lock(); defer { lock.unlock() }
-        if failure == nil { failure = error }
+        if report.failure == nil { report.failure = error.localizedDescription }
     }
 
     func submit(_ buffer: AVAudioPCMBuffer, time: CMTime, microphone: Bool) {
         guard slots.wait(timeout: .now()) == .success else {
-            fail(NSError(domain: "AudioCapture", code: 1, userInfo: [NSLocalizedDescriptionKey:
-                "Не успеваем сохранять звук. Запись сохранена частично; попробуйте другой режим захвата."]))
+            let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
+            lock.lock()
+            report.droppedBuffers += 1
+            report.droppedSourceSeconds += seconds
+            // Bound diagnostics even if the disk remains blocked for hours.
+            if report.losses.count < 1024 {
+                report.losses.append(CaptureLoss(microphone: microphone, timestamp: time.seconds, duration: seconds))
+            }
+            lock.unlock()
             return
         }
         queue.async { [self] in
@@ -64,7 +103,7 @@ private final class AudioDelivery: @unchecked Sendable {
     func drain() throws {
         queue.sync {}
         lock.lock(); defer { lock.unlock() }
-        if let failure { throw failure }
+        if report.warning != nil { throw CaptureFailure(report: report) }
     }
 }
 
