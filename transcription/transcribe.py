@@ -15,6 +15,11 @@ import tempfile
 import time
 from pathlib import Path
 
+NEMOTRON_MAX_SPEAKERS = 8
+DIARIZATION_LIMIT_NOTE = (
+    f"Nemotron различает не более {NEMOTRON_MAX_SPEAKERS} голосов на одной дорожке. "
+    "Speaker — метка модели, не подтверждённая личность; меньшее число меток не гарантирует точность.")
+
 
 def load_audio(audio_path: Path):
     import soundfile as sf
@@ -66,7 +71,7 @@ def run_nemotron_diarization(audio_path: Path):
     for seg in segments:
         if not (math.isfinite(seg.start) and math.isfinite(seg.end)
                 and 0 <= seg.start < seg.end <= duration + 1
-                and isinstance(seg.speaker, int) and 0 <= seg.speaker < 8):
+                and isinstance(seg.speaker, int) and 0 <= seg.speaker < NEMOTRON_MAX_SPEAKERS):
             raise RuntimeError("Nemotron returned an invalid speech interval")
     count = len({seg.speaker for seg in segments})
     print(f"Nemotron finished: {count} speakers, {len(segments)} intervals in "
@@ -128,41 +133,54 @@ def run_gigaam(audio_path: Path, on_progress=None, keep=None):
     return {"segments": segments, "text": " ".join(s["text"] for s in segments)}
 
 
-def assign_speakers(text_segments: list, diar_segments: list):
-    """Align transcription segments with Diarization intervals by maximum overlap."""
-    if not diar_segments:
-        for seg in text_segments:
-            seg["speaker"] = 1
-        return text_segments, 1
-
+def assign_speakers(text_segments: list, diar_segments: list, on_progress=None):
+    """Find overlapping intervals with a prefix-end index, preserving tie order."""
+    from bisect import bisect_left, bisect_right
+    if on_progress:
+        on_progress("speakers", 0, len(text_segments))
     diar_sorted = sorted(diar_segments, key=lambda s: s.start)
+    starts = [d.start for d in diar_sorted]
+    prefix_ends = []
+    for d in diar_sorted:
+        prefix_ends.append(max(prefix_ends[-1] if prefix_ends else 0, d.end))
+    # Sorted unique boundaries retain the first interval for deterministic nearest ties.
+    def boundaries(attribute):
+        first = {}
+        for index, d in enumerate(diar_sorted):
+            first.setdefault(getattr(d, attribute), index)
+        values = sorted(first)
+        return values, first
+    start_values, start_indices = boundaries('start')
+    end_values, end_indices = boundaries('end')
     speaker_map = {}
-
-    for seg in text_segments:
-        w_start = seg["start"]
-        w_end = seg["end"]
-
-        # Calculate overlap duration with each diarized speaker
+    for number, seg in enumerate(text_segments, 1):
+        w_start, w_end = seg["start"], seg["end"]
         overlaps = {}
-        for d in diar_sorted:
-            o_start = max(w_start, d.start)
-            o_end = min(w_end, d.end)
-            if o_end > o_start:
-                overlaps[d.speaker] = overlaps.get(d.speaker, 0.0) + (o_end - o_start)
-
+        lower = bisect_right(prefix_ends, w_start)
+        upper = bisect_left(starts, w_end)
+        for index in range(lower, upper):
+            d = diar_sorted[index]
+            overlap = min(w_end, d.end) - max(w_start, d.start)
+            if overlap > 0:
+                overlaps[d.speaker] = overlaps.get(d.speaker, 0.0) + overlap
         if overlaps:
-            best_spk = max(overlaps.items(), key=lambda x: x[1])[0]
+            best_spk = max(overlaps, key=overlaps.get)
+        elif diar_sorted:
+            candidates = []
+            for values, indices, at in ((start_values, start_indices, w_start), (end_values, end_indices, w_end)):
+                point = bisect_left(values, at)
+                for index in (point-1, point):
+                    if 0 <= index < len(values):
+                        candidates.append((abs(values[index]-at), indices[values[index]]))
+            best_spk = diar_sorted[min(candidates)[1]].speaker
         else:
-            # Nearest diarization segment
-            closest = min(diar_sorted, key=lambda d: min(abs(d.start - w_start), abs(d.end - w_end)))
-            best_spk = closest.speaker
-
+            best_spk = 0
         if best_spk not in speaker_map:
             speaker_map[best_spk] = len(speaker_map) + 1
-
         seg["speaker"] = speaker_map[best_spk]
-
-    return text_segments, len(speaker_map)
+        if on_progress and (number % 500 == 0 or number == len(text_segments)):
+            on_progress("speakers", number, len(text_segments))
+    return text_segments, len(speaker_map) if diar_sorted else 1
 
 
 def write_transcript(output_path: Path, lines: list[str]):
@@ -171,7 +189,9 @@ def write_transcript(output_path: Path, lines: list[str]):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output_path.parent,
                                          prefix=f".{output_path.name}.", delete=False) as handle:
             temporary_output = Path(handle.name)
-            handle.write("\n".join(lines) + "\n")
+            # Redact diagnostic metadata only; never rewrite words spoken in the meeting.
+            safe_lines = [line.replace(str(Path.home()), "~") if line.startswith(("Warning:", "Audio:", "Host audio:", "Remote audio:")) else line for line in lines]
+            handle.write("\n".join(safe_lines) + "\n")
         temporary_output.replace(output_path)
     finally:
         if temporary_output is not None:
@@ -195,11 +215,14 @@ def group_turns(segments: list, breaks=()):
     return turns
 
 
-def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text=""):
-    lines = [f"Transcript: {input_path.name}", f"Audio: {input_path}",
+def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text="", warnings=()):
+    lines = [f"Transcript: {input_path.name}", f"Audio: {input_path.name}",
              "Model: gigaam-v3-e2e-rnnt (ONNX / CPU)",
              f"Diarization: {diarization_status} ({speaker_count} speakers)",
              "Diarization backend: nemotron", f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
+    if diarization_status == "enabled":
+        lines.insert(-1, "Diarization limit: " + DIARIZATION_LIMIT_NOTE)
+    lines[-1:-1] = ["Warning: " + warning for warning in warnings]
     turns = group_turns(segments)
     if turns:
         lines.extend(f'[{format_timestamp(turn["start"])}] Speaker {turn.get("speaker", 1)}: {turn["text"]}'
@@ -242,6 +265,7 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
         if on_warning:
             on_warning(message)
     num_detected_speakers = 1
+    diarization_speakers = 0
     diarization_status = "disabled"
     diar_segments = []
     if diarize:
@@ -249,7 +273,12 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
             on_progress("diarization", 0, 1)
         try:
             diar_segments, num_detected_speakers = run_nemotron_diarization(input_path)
+            diarization_speakers = num_detected_speakers
             diarization_status = "enabled" if diar_segments else "no speech detected"
+            if diarization_speakers >= NEMOTRON_MAX_SPEAKERS:
+                warn(f"Nemotron достиг лимита {NEMOTRON_MAX_SPEAKERS} голосов на дорожке. "
+                     "Разные люди могут иметь одну метку Speaker. При суммаризации не приписывайте "
+                     "решения и поручения конкретным людям без проверки авторства.")
         except Exception as error:
             diarization_status = "failed"
             warn(f'Разделение голосов не выполнено: {error}')
@@ -272,12 +301,12 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
     result = run_gigaam(input_path, on_progress=on_progress, keep=keep)
     segments = result.get("segments", [])
     if diarize:
-        segments, num_detected_speakers = assign_speakers(segments, diar_segments)
+        segments, num_detected_speakers = assign_speakers(segments, diar_segments, on_progress=on_progress)
     original_segments = [dict(word) for word in segments]
     enhancement_status = "disabled"
     if parakeet:
         write_transcript(original_output, transcript_lines(input_path, original_segments,
-                         diarization_status, num_detected_speakers, fallback_text=result.get("text", "")))
+                         diarization_status, num_detected_speakers, fallback_text=result.get("text", ""), warnings=warnings))
         try:
             from audio_enhancement import run_parakeet, windows
             from term_correction import cascade
@@ -303,15 +332,15 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
 
     data = {"segments": segments, "gigaam_segments": original_segments,
             "enhancement": enhancement_status, "warnings": warnings,
+            "diarization_speakers": diarization_speakers,
+            "diarization_speaker_limit": NEMOTRON_MAX_SPEAKERS if diarize else None,
             "diarization": f"Diarization: {diarization_status} ({num_detected_speakers} speakers)"}
     if segments_json:
         write_transcript(segments_json, [json.dumps(data, ensure_ascii=False, allow_nan=False)])
     lines = transcript_lines(input_path, segments, diarization_status, num_detected_speakers,
-                             fallback_text=result.get("text", ""))
+                             fallback_text=result.get("text", ""), warnings=warnings)
     if parakeet:
         lines.insert(5, "Term enhancement: " + enhancement_status)
-    for warning in warnings:
-        lines.insert(5, "Warning: " + warning)
     write_transcript(output_path, lines)
     total_elapsed = time.time() - start_time
     turns = group_turns(segments)

@@ -16,10 +16,13 @@ protocol AudioCapture: AnyObject, Sendable {
     func stop() async throws
 }
 
-func makeAudioCapture(backend: AudioCaptureBackend, microphoneID: String?, sink: @escaping AudioSink) async throws -> any AudioCapture {
+func makeAudioCapture(backend: AudioCaptureBackend, microphoneID: String?,
+    sink: @escaping AudioSink) async throws -> any AudioCapture {
     switch backend {
-    case .screenCaptureKit: return try await ScreenAudioCapture(microphoneID: microphoneID, sink: sink)
-    case .coreAudioTap: return TapAudioCapture(microphoneID: microphoneID, sink: sink)
+    case .screenCaptureKit:
+        return try await ScreenAudioCapture(microphoneID: microphoneID, sink: sink)
+    case .coreAudioTap:
+        return TapAudioCapture(microphoneID: microphoneID, sink: sink)
     }
 }
 
@@ -34,25 +37,88 @@ func pcmBuffer(from sample: CMSampleBuffer) throws -> AVAudioPCMBuffer {
     return buffer
 }
 
+struct CaptureLoss: Codable, Sendable {
+    let microphone: Bool
+    let timestamp: Double
+    let duration: Double
+}
+
+struct CaptureFailure: Error, LocalizedError, Sendable {
+    let report: CaptureReport
+    var errorDescription: String? { report.warning }
+}
+
+struct MicrophoneRecoveryEvent: Codable, Sendable {
+    let timestamp: Double
+    let reason: String
+}
+
+struct CaptureReport: Codable, Sendable {
+    var droppedBuffers = 0
+    // Sum of source durations: simultaneous losses on two channels count twice.
+    var droppedSourceSeconds = 0.0
+    var losses: [CaptureLoss] = []
+    var failure: String?
+    var exportFailure: String?
+    var microphoneRecoveryEvents: [MicrophoneRecoveryEvent]?
+    var microphoneRecoveries: Int?
+    var microphoneMissing: Bool?
+    var warning: String? {
+        var messages: [String] = []
+        if droppedBuffers > 0 {
+            messages.append(String(format: "Пропущено аудиобуферов: %d (%.3f с суммарно по дорожкам).", droppedBuffers, droppedSourceSeconds))
+        }
+        if let failure { messages.append("Сбой захвата: " + failure) }
+        if microphoneMissing == true {
+            messages.append("Во время записи переставали поступать данные микрофона; часть речи могла не сохраниться.")
+        }
+        if let count = microphoneRecoveries, count > 0 {
+            messages.append("Попыток восстановления микрофона: \(count). В эти моменты возможны пропуски речи.")
+        }
+        return messages.isEmpty ? nil : messages.joined(separator: " ")
+    }
+}
+
 // All file/conversion work runs on this queue; HAL callbacks only copy bounded input.
-private final class AudioDelivery: @unchecked Sendable {
+final class AudioDelivery: @unchecked Sendable {
     let queue = DispatchQueue(label: "local.meeting-companion.audio-delivery")
-    private let slots = DispatchSemaphore(value: 32)
+    private let slots: DispatchSemaphore
     private let lock = NSLock()
-    private var failure: Error?
+    private var report = CaptureReport()
     private let sink: AudioSink
 
-    init(sink: @escaping AudioSink) { self.sink = sink }
+    init(capacity: Int = 256, sink: @escaping AudioSink) {
+        // Absorb short disk/scheduler stalls without allowing an unbounded queue.
+        slots = DispatchSemaphore(value: capacity)
+        self.sink = sink
+    }
 
     func fail(_ error: Error) {
         lock.lock(); defer { lock.unlock() }
-        if failure == nil { failure = error }
+        if report.failure == nil { report.failure = error.localizedDescription }
+    }
+
+    func noteMicrophoneRecovery(reason: String) {
+        lock.lock(); defer { lock.unlock() }
+        report.microphoneRecoveries = (report.microphoneRecoveries ?? 0) + 1
+        if (report.microphoneRecoveryEvents?.count ?? 0) < 128 {
+            if report.microphoneRecoveryEvents == nil { report.microphoneRecoveryEvents = [] }
+            report.microphoneRecoveryEvents?.append(MicrophoneRecoveryEvent(
+                timestamp: CMClockGetTime(CMClockGetHostTimeClock()).seconds, reason: reason))
+        }
     }
 
     func submit(_ buffer: AVAudioPCMBuffer, time: CMTime, microphone: Bool) {
         guard slots.wait(timeout: .now()) == .success else {
-            fail(NSError(domain: "AudioCapture", code: 1, userInfo: [NSLocalizedDescriptionKey:
-                "Не успеваем сохранять звук. Запись сохранена частично; попробуйте другой режим захвата."]))
+            let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
+            lock.lock()
+            report.droppedBuffers += 1
+            report.droppedSourceSeconds += seconds
+            // Bound diagnostics even if the disk remains blocked for hours.
+            if report.losses.count < 1024 {
+                report.losses.append(CaptureLoss(microphone: microphone, timestamp: time.seconds, duration: seconds))
+            }
+            lock.unlock()
             return
         }
         queue.async { [self] in
@@ -64,7 +130,7 @@ private final class AudioDelivery: @unchecked Sendable {
     func drain() throws {
         queue.sync {}
         lock.lock(); defer { lock.unlock() }
-        if let failure { throw failure }
+        if report.warning != nil { throw CaptureFailure(report: report) }
     }
 }
 
@@ -135,7 +201,7 @@ private final class TapAudioCapture: NSObject, AudioCapture, AVCaptureAudioDataO
     }
 
     func start() async throws {
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+        if !(await AVCaptureDevice.requestAccess(for: .audio)) {
             throw NSError(domain: "AudioCapture", code: 2, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к микрофону."])
         }
         do { try configureAndStart() }

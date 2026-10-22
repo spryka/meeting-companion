@@ -36,6 +36,10 @@ artifact layout, failure behavior and evaluation method.
   Only a detection copy is amplified. Preserve baseline GigaAM text with Parakeet enabled.
 - Keep processing UI event-driven and discrete; no continuous animation for transcription.
 - On transcription failure keep audio and logs, and allow retry.
+- Capture warnings must not block transcription of finalized WAVs. Keep the bounded
+  capture report and preserve CAF sources when capture/export has warnings.
+- Mute must silence host in both WAV and CAF, using capture timestamps (including
+  delayed delivery); remote is unaffected. Level detection never stores muted audio.
 - Do not quit/install over an active recording, preparation or transcription.
 - Do not commit certificates/keys, `.codesign/`, `.build/`, `dist/`, recordings,
   calendar exports or machine-specific paths. No skill dependencies in the app.

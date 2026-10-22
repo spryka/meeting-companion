@@ -46,8 +46,79 @@ class RecordingTests(unittest.TestCase):
                  contextlib.redirect_stdout(io.StringIO()):
                 module.main()
             self.assertTrue((base.parent/"meeting.sources.transcript.txt").is_file())
+            text = (base.parent/"meeting.sources.transcript.txt").read_text()
+            self.assertNotIn(directory, text)
+            self.assertIn("Host audio: raw/meeting.host_record.wav", text)
+            self.assertIn("Remote audio: raw/meeting.remote_record.wav", text)
             self.assertTrue((raw/"meeting.sources.gigaam.transcript.txt").is_file())
             self.assertFalse((base.parent/"meeting.sources.gigaam.transcript.txt").exists())
+
+    def test_capture_warnings_do_not_block_source_transcription(self):
+        import json
+        for payload in ({'droppedBuffers': 3, 'droppedSourceSeconds': .03, 'failure': 'capture failed', 'exportFailure': 'disk'}, []):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)/'meeting'
+                raw = base.parent/'raw'; raw.mkdir()
+                for source in module.source_paths(base): source.touch()
+                (raw/'meeting.capture-report.json').write_text(json.dumps(payload))
+                events = io.StringIO()
+                with patch.object(sys, 'argv', ['recording', str(base)]), \
+                     patch.object(module, 'transcribe_file', return_value=self.data([self.segment(1,'kept')])) as engine, \
+                     contextlib.redirect_stdout(events):
+                    module.main()
+                self.assertEqual(engine.call_count, 2)
+                text = (base.parent/'meeting.sources.transcript.txt').read_text()
+                self.assertIn('kept', text)
+                self.assertIn('Warning:', text)
+                self.assertIn('"stage": "warning"', events.getvalue())
+
+    def test_speaker_limit_warnings_are_near_top_and_source_specific(self):
+        host = {**self.data([self.segment(1, "Host")]), "warnings": ["Nemotron достиг лимита 8"]}
+        remote = self.data([self.segment(2, "Remote")])
+        text = "\n".join(module.merge_sources(host, remote))
+        self.assertIn("Warning: Микрофон: Nemotron достиг лимита 8", text)
+        self.assertIn("на одной дорожке", text)
+        self.assertLess(text.index("Warning:"), text.index("[00:01]"))
+
+    def test_calendar_count_is_a_warning_not_a_measured_voice_count(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)/"meeting"
+            context = base.with_name("meeting.context.json")
+            self.assertEqual(module.meeting_context_warnings(base), [])
+            for count in (7, 8, 12):
+                context.write_text(json.dumps({"attendees": [f"Person {i}" for i in range(count)]}))
+                warnings = module.meeting_context_warnings(base)
+                self.assertEqual(bool(warnings), count >= 8)
+                if warnings:
+                    self.assertIn("не число реально говоривших", warnings[0])
+                    self.assertIn("проверяйте", warnings[0])
+            context.write_text("[]")
+            self.assertIn("Не удалось проверить", module.meeting_context_warnings(base)[0])
+
+    def test_warnings_survive_final_and_original_transcripts(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)/"meeting"
+            raw = base.parent/"raw"; raw.mkdir()
+            for source in module.source_paths(base): source.touch()
+            base.with_name("meeting.context.json").write_text(json.dumps({"attendees": ["Same name"]*9}))
+            (raw/"meeting.capture-report.json").write_text(json.dumps({"microphoneRecoveries": 2, "microphoneMissing": True}))
+            words = [self.segment(1, "Kept speech")]
+            data = {**self.data(words), "gigaam_segments": words, "warnings": ["Nemotron достиг лимита 8"]}
+            with patch.object(sys, "argv", ["recording", str(base), "--parakeet"]), \
+                 patch.object(module, "transcribe_file", return_value=data), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                module.main()
+            for output in (base.with_name("meeting.sources.transcript.txt"), raw/"meeting.sources.gigaam.transcript.txt"):
+                text = output.read_text()
+                header = text.split("[00:01]", 1)[0]
+                self.assertIn("участников: 9", header)
+                self.assertIn("восстановления микрофона: 2", header)
+                self.assertIn("не доказывает молчание", header)
+                self.assertIn("Warning: Микрофон: Nemotron достиг лимита 8", header)
+                self.assertIn("Warning: Системный звук: Nemotron достиг лимита 8", header)
+                self.assertIn("Kept speech", text)
 
     def test_overlap_and_multiple_remote_voices(self):
         host = self.data([self.segment(13, "Host interruption"), self.segment(3601, "Later")])
@@ -134,6 +205,48 @@ class RecordingTests(unittest.TestCase):
                     module.main()
             self.assertEqual(merged.read_text(), "previous")
             self.assertTrue(all(source.read_bytes() == b"original" for source in module.source_paths(base)))
+
+    def test_echo_option_routes_only_microphone_and_keeps_progress_and_provenance(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve() / "meeting"
+            host, remote = module.source_paths(base)
+            host.touch(); remote.touch()
+            processed = host.with_suffix(".aec.wav"); processed.touch()
+            events = io.StringIO()
+            def echo(source, reference, progress):
+                self.assertEqual((source, reference), (host, remote))
+                progress(8000, 32000); progress(32000, 32000)
+                return processed
+            with patch.object(sys, "argv", ["recording", str(base), "--echo-cancel"]), \
+                 patch.object(module, "cancel_echo", side_effect=echo), \
+                 patch.object(module, "transcribe_file", return_value=self.data()) as engine, \
+                 contextlib.redirect_stdout(events):
+                module.main()
+            self.assertEqual([call.args[0] for call in engine.call_args_list], [processed, remote])
+            header = base.with_name("meeting.sources.transcript.txt").read_text()
+            self.assertIn("Host audio: meeting.host_record.wav", header)
+            self.assertIn("Microphone processing: WebRTC AEC3 (beta); meeting.host_record.aec.wav", header)
+            self.assertNotIn(directory, header)
+            values = [json.loads(line.removeprefix("MEETING_PROGRESS ")) for line in events.getvalue().splitlines()
+                      if line.startswith("MEETING_PROGRESS ")]
+            self.assertEqual(values[0]["stage"], "echo")
+            self.assertTrue(all(value["completed"] <= value["total"] for value in values))
+            self.assertEqual(values[-1]["step"], 10)
+
+    def test_echo_failure_falls_back_and_is_visible_in_final_transcript(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve() / "meeting"
+            for source in module.source_paths(base): source.touch()
+            for error in (RuntimeError("native failed"), module.wave.Error("invalid WAV")):
+                with self.subTest(error=error), \
+                     patch.object(sys, "argv", ["recording", str(base), "--echo-cancel"]), \
+                     patch.object(module, "cancel_echo", side_effect=error), \
+                     patch.object(module, "transcribe_file", return_value=self.data()) as engine, \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    module.main()
+                self.assertEqual([call.args[0] for call in engine.call_args_list], list(module.source_paths(base)))
+                self.assertIn("Эхоподавление не выполнено", base.with_name("meeting.sources.transcript.txt").read_text())
 
 
 if __name__ == "__main__":

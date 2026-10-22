@@ -40,7 +40,7 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
         if domain("zoom.us") || domain("zoom.com") {
             return ["/j/", "/my/", "/s/"].contains { path.hasPrefix($0) && path.count > $0.count }
         }
-        if host == "telemost.yandex.ru" || host == "telemost.yandex.com" {
+        if ["telemost.yandex.ru", "telemost.yandex.com", "telemost.360.yandex.ru"].contains(host) {
             return path.hasPrefix("/j/") && path.count > 3
         }
         if host == "meet.google.com" { return path != "" && path != "/" }
@@ -64,6 +64,40 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(self).write(to: recording.deletingPathExtension().appendingPathExtension("context.json"), options: [.withoutOverwriting])
+    }
+}
+
+struct MeetingSelection: Equatable {
+    private(set) var meeting: MeetingContext?
+    private var automatic = true
+
+    mutating func select(_ meeting: MeetingContext?) {
+        self.meeting = meeting
+        automatic = false
+    }
+
+    mutating func refresh(events: [MeetingContext], now: Date) {
+        if !automatic, let selected = meeting {
+            if let updated = events.first(where: { $0.id == selected.id && $0.end > now }) {
+                meeting = updated
+                return
+            }
+            automatic = true
+        }
+        guard automatic else { return } // Preserve an explicit "Без встречи".
+        meeting = Self.orderedCurrent(events: events, now: now).first
+    }
+
+    static func orderedCurrent(events: [MeetingContext], now: Date) -> [MeetingContext] {
+        events.filter { $0.start <= now && $0.end > now }.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            if $0.summary != $1.summary { return $0.summary < $1.summary }
+            return $0.id < $1.id
+        }
+    }
+
+    static func nextBoundary(events: [MeetingContext], now: Date) -> Date? {
+        events.flatMap { [$0.start, $0.end] }.filter { $0 > now }.min()
     }
 }
 
@@ -183,6 +217,8 @@ final class MeetingCalendar: ObservableObject {
             Task { @MainActor in self?.refresh() }
         }
     }
+
+    func recheckReminders() { checkReminders() }
 
     private func checkReminders() {
         reminderTimer?.invalidate()

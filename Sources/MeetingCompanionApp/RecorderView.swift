@@ -7,25 +7,62 @@ struct FullRecorderView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("Новая запись") {
+                if viewModel.diagnosticRunning || !viewModel.transcriptionReady {
+                    Section("Подготовка транскрибации") {
+                        Text(viewModel.diagnosticRunning ? "Идёт проверка или загрузка…" : "Сначала скачайте модели для распознавания речи")
+                            .font(.headline)
+                        Text("Нажмите «Скачать модели»: приложение установит Python, пакеты и модели. Нужен интернет; подготовка может занять несколько минут, при медленном соединении — дольше. Затем распознавание работает офлайн.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if viewModel.improveTerms {
+                            Text("Включено улучшение терминов: дополнительно загрузится Parakeet, около 740 МБ.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Button("Скачать модели") { Task { await viewModel.checkTranscription(prepare: true) } }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(viewModel.diagnosticRunning || viewModel.isBusy || viewModel.isRecording || viewModel.transcriptionJobs > 0)
+                            Button("Настройки…", action: showSettings)
+                        }
+                        if !viewModel.diagnosticReport.isEmpty {
+                            DisclosureGroup("Подробности") {
+                                ScrollView {
+                                    Text(viewModel.diagnosticReport)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                }
+                                .frame(maxHeight: 120)
+                            }
+                            .disclosureGroupStyle(FullWidthDisclosureStyle())
+                        }
+                    }
+                }
+                Section(viewModel.isRecording ? "Текущая запись" : "Новая запись") {
                     MeetingPicker(viewModel: viewModel, calendar: viewModel.calendar)
                     HStack {
                         Picker("Микрофон", selection: $viewModel.selectedMicrophoneID) {
-                            Text("По умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
+                            Text("Системный по умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
+                            if viewModel.selectedMicrophoneID != RecorderViewModel.defaultMicrophoneID,
+                               !viewModel.microphones.contains(where: { $0.id == viewModel.selectedMicrophoneID }) {
+                                Text("Выбранный микрофон недоступен").tag(viewModel.selectedMicrophoneID)
+                            }
                             ForEach(viewModel.microphones) { microphone in
                                 Text(microphone.name).tag(microphone.id)
                             }
                         }
                         .onChange(of: viewModel.selectedMicrophoneID) { _, _ in viewModel.restartLevelMonitor() }
+
                         Button("Обновить микрофоны", systemImage: "arrow.clockwise", action: viewModel.refreshMicrophones)
                             .labelStyle(.iconOnly)
                             .help("Обновить список микрофонов")
                     }
-                    .disabled(viewModel.isBusy)
+                    .disabled(viewModel.isBusy || viewModel.isRecording)
+                    if viewModel.isRecording { Text(viewModel.elapsedText).monospacedDigit() }
                     HStack {
                         Spacer()
                         Button(action: viewModel.toggleRecording) {
-                            Label(viewModel.isBusy ? "Запуск записи…" : "Начать запись", systemImage: "record.circle")
+                            Label(viewModel.isBusy ? "Подождите…" : viewModel.isRecording ? "Остановить запись" : "Начать запись", systemImage: viewModel.isRecording ? "stop.circle" : "record.circle")
                         }
                         .keyboardShortcut(.space, modifiers: [])
                         .buttonStyle(.borderedProminent)
@@ -36,11 +73,11 @@ struct FullRecorderView: View {
                 if let lastFileURL = viewModel.lastFileURL {
                     Section("Последняя запись") {
                         Text(viewModel.lastRecordingTitle).font(.headline)
-                        Text(lastFileURL.lastPathComponent)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                            .help(lastFileURL.lastPathComponent)
                         if !viewModel.transcriptionStatus.isEmpty {
-                            Text(viewModel.transcriptionStatus).font(.caption)
+                            Label(viewModel.transcriptionStatus, systemImage: viewModel.transcriptionWarnings.isEmpty ? "text.alignleft" : "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(viewModel.transcriptionWarnings.isEmpty ? Color.secondary : Color.orange)
                                 .textSelection(.enabled)
                         }
                         HStack {
@@ -54,16 +91,6 @@ struct FullRecorderView: View {
                         }
                     }
                 }
-                if viewModel.diagnosticRunning || !viewModel.transcriptionReady {
-                    Section {
-                        HStack {
-                            Text(viewModel.diagnosticRunning ? "Идёт подготовка транскрибации" : "Модели ещё не подготовлены")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Настройки…", action: showSettings)
-                        }
-                    }
-                }
                 if let error = viewModel.errorMessage {
                     Section {
                         Text(error).foregroundStyle(.red).textSelection(.enabled)
@@ -71,6 +98,8 @@ struct FullRecorderView: View {
                 }
             }
             .formStyle(.grouped)
+            .frame(maxWidth: 680)
+            .frame(maxWidth: .infinity, alignment: .center)
             HStack {
                 Spacer()
                 Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))

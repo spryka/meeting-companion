@@ -4,7 +4,7 @@ import Darwin
 public enum Transcription {
     private static let queue = DispatchQueue(label: "MeetingCompanion.transcription")
 
-    public static func run(recording: URL, parakeet: Bool = false,
+    public static func run(recording: URL, parakeet: Bool = false, echoCancellation: Bool = false,
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
@@ -24,7 +24,8 @@ public enum Transcription {
                     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
                     defer { try? handle.close() }
                     let process = try makeProcess(arguments: ["--recording", "--offline"] +
-                        (parakeet ? ["--parakeet"] : []) + [recording.path])
+                        (parakeet ? ["--parakeet"] : []) +
+                        (echoCancellation ? ["--echo-cancel"] : []) + [recording.path])
                     let pipe = Pipe()
                     process.standardOutput = pipe
                     process.standardError = pipe
@@ -40,13 +41,30 @@ public enum Transcription {
                     let transcript = base.appendingPathExtension("sources.transcript.txt")
                     guard process.terminationStatus == 0,
                           FileManager.default.fileExists(atPath: transcript.path) else {
+                        let status = process.terminationReason == .uncaughtSignal
+                            ? "Процесс остановлен сигналом \(process.terminationStatus)."
+                            : "Код завершения: \(process.terminationStatus)."
+                        let detail = failureDetail(log: log).map { " Последняя ошибка: " + $0 } ?? ""
                         throw NSError(domain: "Transcription", code: Int(process.terminationStatus),
-                            userInfo: [NSLocalizedDescriptionKey: "Запись сохранена, но транскрибация не завершилась. Подробности: " + log.path])
+                            userInfo: [NSLocalizedDescriptionKey: "Запись сохранена, но транскрибация не завершилась. " + status + detail + " Подробности: " + log.path])
                     }
                     continuation.resume(returning: transcript)
                 } catch { continuation.resume(throwing: error) }
             }
         }
+    }
+
+    public static func failureDetail(log: URL) -> String? {
+        guard let file = try? FileHandle(forReadingFrom: log) else { return nil }
+        defer { try? file.close() }
+        guard let size = try? file.seekToEnd() else { return nil }
+        do {
+            try file.seek(toOffset: size > 8192 ? size - 8192 : 0)
+            let tail = String(decoding: try file.read(upToCount: 8192) ?? Data(), as: UTF8.self)
+            return tail.components(separatedBy: .newlines).last {
+                !$0.hasPrefix("MEETING_PROGRESS ") && ($0.contains("Error:") || $0.contains("Exception:") || $0.contains("error:"))
+            }.map { String($0.prefix(1000)) }
+        } catch { return nil }
     }
     public static var scriptsDirectory: URL {
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("transcription")
@@ -151,7 +169,7 @@ public enum Transcription {
 
 public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public enum Stage: String, Decodable, Sendable {
-        case gigaam, diarization, vad, parakeet, correction, merge, warning
+        case gigaam, diarization, speakers, vad, parakeet, correction, merge, warning, echo
     }
 
     public let stage: Stage
@@ -174,19 +192,31 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         self = value
     }
 
+    public var completedSteps: Int? {
+        guard let step else { return nil }
+        return step - 1 + (total > 0 && completed == total ? 1 : 0)
+    }
+
+    public var stageFraction: Double? {
+        total > 0 ? Double(completed) / Double(total) : nil
+    }
+
     public var text: String {
         let label: String
         switch stage {
+        case .echo: label = "Подавление эха"
         case .gigaam: label = "Распознавание GigaAM"
         case .vad: label = "Поиск речи"
         case .parakeet: label = "Распознавание Parakeet"
         case .correction: label = "Уточнение терминов"
         case .warning: label = warning ?? "Предупреждение"
         case .diarization: label = "Разделение голосов"
+        case .speakers: label = "Назначение голосов словам"
         case .merge: label = "Объединение дорожек"
         }
         let source = channel.map { $0 == "host" ? " · микрофон" : " · системный звук" } ?? ""
-        let count = total > 1 ? " · \(completed)/\(total) окон" : ""
+        let unit = stage == .speakers ? "слов" : stage == .echo ? "с" : "окон"
+        let count = total > 1 ? " · \(completed)/\(total) \(unit)" : ""
         return label + source + count + "…"
     }
 }

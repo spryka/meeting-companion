@@ -20,6 +20,7 @@ public struct RecordingResult: Sendable {
     public let outputURL: URL
     public let duration: TimeInterval
     public let fileSize: Int
+    public let warnings: [String]
 }
 
 public struct MicrophoneDevice: Identifiable, Hashable, Sendable {
@@ -69,6 +70,50 @@ public struct RecordingPaths {
 }
 
 @available(macOS 15.0, *)
+public enum MicrophoneRecordingState: Sendable, Equatable {
+    case receiving, silent, missing, reconnecting
+}
+
+// Arrival times detect a dead capture even when audio timestamps are stale; silence is only a hint.
+struct MicrophoneCaptureHealth {
+    var started = 0.0
+    var lastBuffer: Double?
+    var lastSignal = 0.0
+    var muted = false
+    var reconnecting = false
+    var hadMissing = false
+
+    mutating func start(at time: Double) {
+        self = Self(started: time, lastSignal: time)
+    }
+    mutating func receive(at time: Double, level: Double) {
+        lastBuffer = time
+        reconnecting = false
+        if level > 0.001 { lastSignal = time }
+    }
+    mutating func setMuted(_ value: Bool, at time: Double) {
+        muted = value
+        lastSignal = time
+    }
+    mutating func backendState(_ value: MicrophoneRecordingState, at time: Double) {
+        if value == .reconnecting {
+            started = time; lastBuffer = nil; lastSignal = time; reconnecting = true
+        } else if value == .missing {
+            reconnecting = false; lastBuffer = nil; started = time - 4; hadMissing = true
+        }
+    }
+    mutating func state(at time: Double) -> MicrophoneRecordingState {
+        if time - (lastBuffer ?? started) >= 3 {
+            hadMissing = true
+            return .missing
+        }
+        if reconnecting { return .reconnecting }
+        if !muted && time - lastSignal >= 15 { return .silent }
+        return .receiving
+    }
+}
+
+@available(macOS 15.0, *)
 public final class Recorder: @unchecked Sendable {
     private let outputURL: URL
     private let outputKind: OutputKind
@@ -76,6 +121,7 @@ public final class Recorder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "local.meeting-companion.sources")
     private var capture: (any AudioCapture)?
     private var startedAt: CMTime?
+    private var microphoneHealth = MicrophoneCaptureHealth()
     private var lastMic = Date.distantPast
     private var lastSystem = Date.distantPast
     private let onLevels: (@Sendable (Double, Double) -> Void)?
@@ -93,12 +139,14 @@ public final class Recorder: @unchecked Sendable {
             guard let self else { return }
             self.queue.sync {
                 self.sourceFiles.append(buffer, timestamp: time, microphone: microphone)
+                let micLevel = microphone ? audioLevel(from: buffer) : 0
+                if microphone { self.microphoneHealth.receive(at: ProcessInfo.processInfo.systemUptime, level: micLevel) }
                 guard let onLevels = self.onLevels else { return }
                 let now = Date()
                 if microphone {
                     guard now.timeIntervalSince(self.lastMic) >= 0.2 else { return }
                     self.lastMic = now
-                    onLevels(audioLevel(from: buffer), .nan)
+                    onLevels(micLevel, .nan)
                 } else {
                     guard now.timeIntervalSince(self.lastSystem) >= 0.2 else { return }
                     self.lastSystem = now
@@ -108,10 +156,26 @@ public final class Recorder: @unchecked Sendable {
         }
     }
 
+    public func setMicrophoneMuted(_ muted: Bool) {
+        let requestedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        queue.sync {
+            sourceFiles.setMicrophoneMuted(muted, at: requestedAt)
+            microphoneHealth.setMuted(muted, at: ProcessInfo.processInfo.systemUptime)
+        }
+    }
+
+    public func microphoneState() -> MicrophoneRecordingState {
+        let state = queue.sync { microphoneHealth.state(at: ProcessInfo.processInfo.systemUptime) }
+        return state
+    }
+
     public func start() async throws {
         guard let capture else { throw RecorderError.notConfigured }
         startedAt = CMClockGetTime(CMClockGetHostTimeClock())
-        queue.sync { sourceFiles.start() }
+        queue.sync {
+            microphoneHealth.start(at: ProcessInfo.processInfo.systemUptime)
+            sourceFiles.start()
+        }
         do { try await capture.start() }
         catch {
             try? await capture.stop()
@@ -122,18 +186,92 @@ public final class Recorder: @unchecked Sendable {
     }
 
     public func stop() async throws -> RecordingResult {
+        try await stopCapture().finish()
+    }
+
+    public func stopCapture() async throws -> StoppedRecording {
         guard let capture, let startedAt else { throw RecorderError.notConfigured }
         var captureError: Error?
+        // Inspect before shutdown: intentionally stopped callbacks are not a capture failure.
+        let missing = queue.sync { () -> Bool in
+            _ = microphoneHealth.state(at: ProcessInfo.processInfo.systemUptime)
+            return microphoneHealth.hadMissing
+        }
         do { try await capture.stop() } catch { captureError = error }
+        if missing {
+            var report = (captureError as? CaptureFailure)?.report ?? CaptureReport(failure: captureError?.localizedDescription)
+            report.microphoneMissing = true
+            captureError = CaptureFailure(report: report)
+        }
         self.capture = nil
         let duration = CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), startedAt))
         // Finalize all captured audio even when the backend reports a partial recording.
         try queue.sync { try sourceFiles.finish(duration: duration) }
-        try await exportMixedAudio(from: sourceFiles.archiveURLs, to: outputURL, outputKind: outputKind)
-        if let captureError { throw captureError }
-        for url in sourceFiles.archiveURLs { try? FileManager.default.removeItem(at: url) }
-        return RecordingResult(outputURL: outputURL, duration: duration, fileSize: fileSize(at: outputURL))
+        let stopped = StoppedRecording(sourceFiles: sourceFiles, outputURL: outputURL, outputKind: outputKind,
+                                       duration: duration, startedAt: startedAt, captureError: captureError)
+        do { try stopped.saveReport() }
+        catch { stopped.reportSaveWarning = "Не удалось сохранить журнал захвата: " + error.localizedDescription }
+        return stopped
     }
+}
+
+// Owns closed source files only; the capture devices are free for the next recording.
+public final class StoppedRecording: @unchecked Sendable {
+    private let sourceFiles: SourceAudioFiles
+    public let outputURL: URL
+    public let duration: Double
+    private let outputKind: OutputKind
+    private let report: CaptureReport
+    fileprivate var reportSaveWarning: String?
+
+    init(sourceFiles: SourceAudioFiles, outputURL: URL, outputKind: OutputKind,
+         duration: Double, startedAt: CMTime, captureError: Error?) {
+        self.sourceFiles = sourceFiles
+        self.outputURL = outputURL
+        self.outputKind = outputKind
+        self.duration = duration
+        var report = (captureError as? CaptureFailure)?.report ?? CaptureReport(failure: captureError?.localizedDescription)
+        report.losses = report.losses.map {
+            CaptureLoss(microphone: $0.microphone, timestamp: max(0, $0.timestamp - startedAt.seconds), duration: $0.duration)
+        }
+        report.microphoneRecoveryEvents = report.microphoneRecoveryEvents?.map {
+            MicrophoneRecoveryEvent(timestamp: max(0, $0.timestamp - startedAt.seconds), reason: $0.reason)
+        }
+        self.report = report
+    }
+
+    func saveReport(_ report: CaptureReport? = nil) throws {
+        let url = outputURL.deletingLastPathComponent().appendingPathComponent("raw")
+            .appendingPathComponent(outputURL.deletingPathExtension().lastPathComponent + ".capture-report.json")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(report ?? self.report).write(to: url, options: .atomic)
+    }
+
+    public func finish() async -> RecordingResult {
+        var report = report
+        var warnings = report.warning.map { [$0] } ?? []
+        if let reportSaveWarning { warnings.append(reportSaveWarning) }
+        do {
+            try await exportMixedAudio(from: sourceFiles.archiveURLs, to: outputURL, outputKind: outputKind)
+        } catch {
+            report.exportFailure = error.localizedDescription
+            warnings.append("Общая запись не собрана; исходные дорожки сохранены: " + error.localizedDescription)
+        }
+        do { try saveReport(report) }
+        catch { warnings.append("Не удалось сохранить журнал захвата: " + error.localizedDescription) }
+        if warnings.isEmpty {
+            for url in sourceFiles.archiveURLs { try? FileManager.default.removeItem(at: url) }
+        }
+        return RecordingResult(outputURL: outputURL, duration: duration, fileSize: fileSize(at: outputURL), warnings: warnings)
+    }
+}
+
+// Kept for the CLI and file-only checks; capture warnings never discard finalized audio.
+func finishRecording(sourceFiles: SourceAudioFiles, outputURL: URL, outputKind: OutputKind,
+                     duration: Double, startedAt: CMTime, captureError: Error?) async -> RecordingResult {
+    await StoppedRecording(sourceFiles: sourceFiles, outputURL: outputURL, outputKind: outputKind,
+                           duration: duration, startedAt: startedAt, captureError: captureError).finish()
 }
 
 @available(macOS 15.0, *)
@@ -193,7 +331,10 @@ public func exportMixedAudio(from sources: [URL], to output: URL, outputKind: Ou
         throw RecorderError.exportUnavailable
     }
     session.audioMix = mix
-    try await session.export(to: output, as: outputKind == .m4a ? .m4a : .mp4)
+    let temporary = output.deletingLastPathComponent().appendingPathComponent("." + UUID().uuidString + "." + outputKind.fileExtension)
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    try await session.export(to: temporary, as: outputKind == .m4a ? .m4a : .mp4)
+    try FileManager.default.moveItem(at: temporary, to: output)
 }
 
 func audioLevel(from buffer: AVAudioPCMBuffer) -> Double {

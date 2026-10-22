@@ -16,6 +16,19 @@ spec.loader.exec_module(t)
 
 
 class TranscriberTests(unittest.TestCase):
+    def test_shared_text_hides_technical_home_paths_without_rewriting_speech(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "shared.txt"
+            audio = Path.home() / "Meetings" / "source.wav"
+            lines = t.transcript_lines(audio, [], "disabled", 1, fallback_text="Keep spoken /Users/example")
+            lines.insert(1, "Warning: failed " + str(Path.home() / "cache/model"))
+            t.write_transcript(output, lines)
+            text = output.read_text()
+            self.assertIn("Audio: source.wav", text)
+            self.assertIn("Warning: failed ~/cache/model", text)
+            self.assertIn("Keep spoken /Users/example", text)
+            self.assertNotIn(str(audio), text)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -50,6 +63,22 @@ class TranscriberTests(unittest.TestCase):
         self.run_main(self.audio, self.output, diarization_error=True)
         self.assertIn("Diarization: failed", self.output.read_text())
         self.assertIn("placeholder", self.output.read_text())
+
+    def test_eight_voices_warn_before_word_assignment_reduces_count(self):
+        intervals = [SimpleNamespace(start=float(i), end=float(i+1), speaker=i) for i in range(8)]
+        self.run_main(self.audio, self.output, diarization_result=(intervals, 8))
+        text = self.output.read_text()
+        self.assertIn("Nemotron достиг лимита 8", text)
+        self.assertIn("не приписывайте", text)
+        self.assertLess(text.index("Warning:"), text.index("[00:00]"))
+        self.assertIn("Diarization limit:", text)
+
+    def test_fewer_voices_explain_limit_without_claiming_it_was_hit(self):
+        self.run_main(self.audio, self.output, diarization_result=(
+            [SimpleNamespace(start=0, end=2, speaker=0)], 1))
+        text = self.output.read_text()
+        self.assertIn("не более 8 голосов", text)
+        self.assertNotIn("достиг лимита", text)
 
     def test_recorder_has_one_text_engine(self):
         self.run_main("--no-diarize", self.audio, self.output)
@@ -136,7 +165,7 @@ class TranscriberTests(unittest.TestCase):
              contextlib.redirect_stderr(io.StringIO()):
             data = t.transcribe_file(self.audio, self.output, on_progress=lambda *event: events.append(event))
         self.assertEqual([s["speaker"] for s in data["segments"]], [1, 2])
-        self.assertEqual(events, [("diarization", 0, 1), ("diarization", 1, 1)])
+        self.assertEqual(events, [("diarization", 0, 1), ("diarization", 1, 1), ("speakers", 0, 2), ("speakers", 2, 2)])
         self.assertEqual(self.audio.read_bytes(), b"original audio")
 
     def test_gigaam_progress_counts_actual_windows_without_changing_seams(self):
@@ -150,6 +179,36 @@ class TranscriberTests(unittest.TestCase):
                 data = t.run_gigaam(self.audio, lambda *event: events.append(event))
             self.assertEqual(events, [("gigaam", n, total) for n in range(total+1)])
             self.assertEqual([w["start"] for w in data["segments"]], [24*n+1 for n in range(total)])
+
+    def test_indexed_speaker_assignment_matches_exhaustive_search(self):
+        import random
+        rng = random.Random(17)
+        for trial in range(30):
+            intervals = [SimpleNamespace(start=rng.randrange(100)/2, speaker=rng.randrange(8)) for _ in range(60)]
+            for d in intervals:
+                d.end = d.start + rng.randrange(1, 20)/2
+            intervals.sort(key=lambda d: d.start)
+            words = [dict(start=rng.randrange(120)/2, text='word') for _ in range(150)]
+            for w in words:
+                w['end'] = w['start'] + rng.randrange(0, 5)/2
+            expected, mapping = [], {}
+            for w in words:
+                scores = {}
+                for d in intervals:
+                    amount = min(w['end'], d.end) - max(w['start'], d.start)
+                    if amount > 0:
+                        scores[d.speaker] = scores.get(d.speaker, 0) + amount
+                speaker = (max(scores, key=scores.get) if scores else
+                    min(intervals, key=lambda d: min(abs(d.start-w['start']), abs(d.end-w['end']))).speaker)
+                mapping.setdefault(speaker, len(mapping)+1)
+                expected.append(mapping[speaker])
+            result, count = t.assign_speakers(words, intervals)
+            self.assertEqual([w['speaker'] for w in result], expected)
+            self.assertEqual(count, len(mapping))
+        events = []
+        result, count = t.assign_speakers([dict(start=0, end=1, text='x')], [], lambda *e: events.append(e))
+        self.assertEqual((result[0]['speaker'], count), (1, 1))
+        self.assertEqual(events, [('speakers', 0, 1), ('speakers', 1, 1)])
 
     def test_removed_sherpa_options_are_rejected(self):
         for option, value in (("--num-speakers", "2"), ("--diarization-provider", "coreml"),

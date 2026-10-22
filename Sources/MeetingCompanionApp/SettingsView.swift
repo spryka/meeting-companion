@@ -5,6 +5,7 @@ import MeetingCompanionCore
 struct RecorderSettingsView: View {
     @ObservedObject var model: RecorderViewModel
     let page: Page
+    @AppStorage("receiveBetaUpdates") private var receiveBetaUpdates = false
 
     enum Page: String, CaseIterable {
         case recording = "Запись", transcription = "Транскрибация"
@@ -59,28 +60,54 @@ struct RecorderSettingsView: View {
 
     private var recording: some View {
         Group {
+            Section("Оформление") {
+                Picker("Тема", selection: $model.appearance) {
+                    ForEach(AppAppearance.allCases, id: \.self) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+            }
             Section {
                 Picker("Системный звук", selection: $model.captureBackend) {
-                    Text("ScreenCaptureKit").tag(AudioCaptureBackend.screenCaptureKit)
-                    Text("Core Audio Tap (экспериментальный)").tag(AudioCaptureBackend.coreAudioTap)
+                    Text("Core Audio Tap (рекомендуется)").tag(AudioCaptureBackend.coreAudioTap)
+                    Text("ScreenCaptureKit (при проблемах)").tag(AudioCaptureBackend.screenCaptureKit)
                 }
                 .disabled(model.isRecording || model.isBusy || model.isCheckingAudio || model.diagnosticRunning)
                 Picker("Микрофон", selection: $model.selectedMicrophoneID) {
-                    Text("По умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
+                    Text("Системный по умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
+                    if model.selectedMicrophoneID != RecorderViewModel.defaultMicrophoneID,
+                       !model.microphones.contains(where: { $0.id == model.selectedMicrophoneID }) {
+                        Text("Выбранный микрофон недоступен").tag(model.selectedMicrophoneID)
+                    }
                     ForEach(model.microphones) { microphone in
                         Text(microphone.name).tag(microphone.id)
                     }
                 }
                 .disabled(model.isRecording || model.isBusy)
                 .onChange(of: model.selectedMicrophoneID) { _, _ in model.restartLevelMonitor() }
+
                 Button("Обновить микрофоны", action: model.refreshMicrophones)
                     .disabled(model.isRecording || model.isBusy)
             } header: {
                 Text("Источники звука")
             } footer: {
-                Text(model.captureBackend == .screenCaptureKit
-                    ? "Записывается только звук, без видео."
-                    : "Захват без экрана. Возможны сбои аудиоустройств; длительные записи пока не проверены.")
+                Text(model.captureBackend == .coreAudioTap
+                    ? "Захват системного звука без экрана. Если возникнут проблемы, переключитесь на ScreenCaptureKit."
+                    : "Запасной вариант при проблемах с Core Audio Tap. Записывается только звук, без видео.")
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Section {
+                Toggle("Эхоподавление микрофона", isOn: $model.echoCancellation)
+                    .disabled(model.isRecording || model.isBusy || model.transcriptionJobs > 0)
+            } header: {
+                Text("Обработка после записи")
+            } footer: {
+                Text("Для записи через динамики. WebRTC AEC3 очищает копию микрофона перед распознаванием; может терять части слов. Исходники и общая запись сохраняются без обработки. С наушниками лучше выключить.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section("Сохранение") {
                 LabeledContent("Папка записей") {
@@ -88,6 +115,16 @@ struct RecorderSettingsView: View {
                     Button("Выбрать…", action: model.chooseFolder)
                         .disabled(model.isRecording || model.isBusy || model.diagnosticRunning)
                 }
+            }
+            Section {
+                Toggle("Получать бета-версии", isOn: $receiveBetaUpdates)
+            } header: {
+                Text("Обновления")
+            } footer: {
+                Text("Экспериментальные версии могут содержать ошибки. Настройка применяется при следующей проверке обновлений через Sparkle. Отключение не откатывает установленную версию и не отменяет уже подготовленное обновление.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -101,6 +138,9 @@ struct RecorderSettingsView: View {
                 Text("Распознавание")
             } footer: {
                 Text("Parakeet — дополнительная модель, около 740 МБ. Возможны неверные замены; исходный текст GigaAM сохраняется в raw/.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section {
                 LabeledContent("Состояние", value: model.diagnosticRunning ? "Идёт подготовка…" :
@@ -121,12 +161,18 @@ struct RecorderSettingsView: View {
                 Text("Модели")
             } footer: {
                 Text("Загрузка может занять несколько минут. Затем транскрибация работает офлайн; записи никуда не отправляются.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section {
                 Button("Сбросить кэш…") { Task { await model.resetCache() } }
                     .disabled(!model.canResetCache)
             } footer: {
                 Text("Удаляются только модели и Python-окружение приложения. Записи сохраняются.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -138,7 +184,7 @@ struct RecorderSettingsView: View {
                     LabeledContent(access.name) {
                         HStack(spacing: 8) {
                             Text(access.message).multilineTextAlignment(.trailing).textSelection(.enabled)
-                            Circle().fill(access.state == .granted ? Color.green : access.state == .pending ? .orange : .red)
+                            Circle().fill(access.state == .granted ? Color.green : access.state == .pending ? .secondary : .red)
                                 .frame(width: 9, height: 9).accessibilityHidden(true)
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -162,6 +208,9 @@ struct RecorderSettingsView: View {
                 Text("Проверки")
             } footer: {
                 Text("Включи звук и скажи несколько слов. Проверка выключится через 30 секунд, при уходе из диагностики или закрытии настроек.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -210,6 +259,9 @@ private struct CalendarSettingsView: View {
             Text("Напоминания")
         } footer: {
             Text("Ссылки ищутся в URL, месте и описании встречи. Для очных встреч отключи фильтр или начни запись вручную.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
