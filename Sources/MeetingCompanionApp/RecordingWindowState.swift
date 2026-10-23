@@ -1,6 +1,26 @@
 import AppKit
 import Combine
 
+enum AppAppearance: String, CaseIterable {
+    case system, light, dark
+
+    var title: String {
+        switch self {
+        case .system: "Системная"
+        case .light: "Светлая"
+        case .dark: "Тёмная"
+        }
+    }
+
+    var value: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 @MainActor
 final class AppWindowState: ObservableObject {
     weak var window: NSWindow?
@@ -11,7 +31,7 @@ final class AppWindowState: ObservableObject {
     private var positioning = false
     private static let capsuleFrameKey = "recordingCapsuleFrame"
     static let recordingCapsuleSize = NSSize(width: 384, height: 88)
-    private let normalSize = NSSize(width: 620, height: 460)
+    private let normalSize = NSSize(width: 900, height: 560)
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
@@ -120,8 +140,9 @@ final class AppWindowState: ObservableObject {
             defaults.set(NSStringFromRect(window.frame), forKey: Self.capsuleFrameKey)
             window.orderFrontRegardless()
         } else {
+            let toolbar = window.toolbar ?? normalToolbar
             window.orderOut(nil)
-            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isMovableByWindowBackground = false
             window.isOpaque = true
             window.backgroundColor = .windowBackgroundColor
@@ -131,7 +152,8 @@ final class AppWindowState: ObservableObject {
             window.standardWindowButton(.miniaturizeButton)?.isHidden = false
             window.standardWindowButton(.zoomButton)?.isHidden = false
             window.minSize = normalSize
-            window.toolbar = normalToolbar
+            // Changing the style mask detaches the toolbar; keep SwiftUI's current instance.
+            window.toolbar = toolbar
             window.toolbar?.isVisible = true
 
             if let normalFrame {

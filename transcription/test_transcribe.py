@@ -16,6 +16,19 @@ spec.loader.exec_module(t)
 
 
 class TranscriberTests(unittest.TestCase):
+    def test_shared_text_hides_technical_home_paths_without_rewriting_speech(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "shared.txt"
+            audio = Path.home() / "Meetings" / "source.wav"
+            lines = t.transcript_lines(audio, [], "disabled", 1, fallback_text="Keep spoken /Users/example")
+            lines.insert(1, "Warning: failed " + str(Path.home() / "cache/model"))
+            t.write_transcript(output, lines)
+            text = output.read_text()
+            self.assertIn("Audio: source.wav", text)
+            self.assertIn("Warning: failed ~/cache/model", text)
+            self.assertIn("Keep spoken /Users/example", text)
+            self.assertNotIn(str(audio), text)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -50,6 +63,22 @@ class TranscriberTests(unittest.TestCase):
         self.run_main(self.audio, self.output, diarization_error=True)
         self.assertIn("Diarization: failed", self.output.read_text())
         self.assertIn("placeholder", self.output.read_text())
+
+    def test_eight_voices_warn_before_word_assignment_reduces_count(self):
+        intervals = [SimpleNamespace(start=float(i), end=float(i+1), speaker=i) for i in range(8)]
+        self.run_main(self.audio, self.output, diarization_result=(intervals, 8))
+        text = self.output.read_text()
+        self.assertIn("Nemotron достиг лимита 8", text)
+        self.assertIn("не приписывайте", text)
+        self.assertLess(text.index("Warning:"), text.index("[00:00]"))
+        self.assertIn("Diarization limit:", text)
+
+    def test_fewer_voices_explain_limit_without_claiming_it_was_hit(self):
+        self.run_main(self.audio, self.output, diarization_result=(
+            [SimpleNamespace(start=0, end=2, speaker=0)], 1))
+        text = self.output.read_text()
+        self.assertIn("не более 8 голосов", text)
+        self.assertNotIn("достиг лимита", text)
 
     def test_recorder_has_one_text_engine(self):
         self.run_main("--no-diarize", self.audio, self.output)

@@ -57,6 +57,11 @@ sys.stdout.write(event(stage='merge', channel=None, completed=1, total=1)); sys.
         let contents = try String(contentsOf: log, encoding: .utf8)
         precondition(contents.contains("Обычный лог") && contents.contains(String(repeating: "x", count: 70000)))
         precondition(contents.hasSuffix("\"total\": 1}"))
+        precondition(Transcription.failureDetail(log: log) == nil)
+        let failureLog = directory.appendingPathComponent("failure.log")
+        try (String(repeating: "ignored\n", count: 2000) + "RuntimeError: model unavailable\nMEETING_PROGRESS {}\n").write(to: failureLog, atomically: true, encoding: .utf8)
+        precondition(Transcription.failureDetail(log: failureLog) == "RuntimeError: model unavailable")
+        precondition(Transcription.failureDetail(log: directory.appendingPathComponent("missing")) == nil)
         let transcript = directory.appendingPathComponent("result.txt")
         precondition(TranscriptionState.idle.transcript == nil)
         precondition(TranscriptionState.running(probe.events[0]).text == probe.events[0].text)
@@ -65,6 +70,13 @@ sys.stdout.write(event(stage='merge', channel=None, completed=1, total=1)); sys.
         let speakerEvent = Data("MEETING_PROGRESS {\"stage\":\"speakers\",\"channel\":\"remote\",\"completed\":500,\"total\":1000,\"step\":10,\"steps\":13}".utf8)
         let speakers = TranscriptionProgress(line: speakerEvent)!
         precondition(speakers.stage == .speakers && speakers.text.contains("500/1000 слов"))
+        precondition(speakers.completedSteps == 9 && speakers.stageFraction == 0.5)
+        let finished = TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"merge\",\"completed\":1,\"total\":1,\"step\":13,\"steps\":13}".utf8))!
+        precondition(finished.completedSteps == 13 && finished.stageFraction == 1)
+        let started = TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"gigaam\",\"completed\":0,\"total\":32,\"step\":1,\"steps\":13}".utf8))!
+        precondition(started.completedSteps == 0 && started.stageFraction == 0)
+        let unknown = TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"vad\",\"completed\":0,\"total\":0}".utf8))!
+        precondition(unknown.stageFraction == nil && unknown.completedSteps == nil)
         print("Progress: partial lines, invalid events, bounded parsing, full log and processing state passed")
     }
 }

@@ -16,10 +16,13 @@ protocol AudioCapture: AnyObject, Sendable {
     func stop() async throws
 }
 
-func makeAudioCapture(backend: AudioCaptureBackend, microphoneID: String?, sink: @escaping AudioSink) async throws -> any AudioCapture {
+func makeAudioCapture(backend: AudioCaptureBackend, microphoneID: String?,
+    sink: @escaping AudioSink) async throws -> any AudioCapture {
     switch backend {
-    case .screenCaptureKit: return try await ScreenAudioCapture(microphoneID: microphoneID, sink: sink)
-    case .coreAudioTap: return TapAudioCapture(microphoneID: microphoneID, sink: sink)
+    case .screenCaptureKit:
+        return try await ScreenAudioCapture(microphoneID: microphoneID, sink: sink)
+    case .coreAudioTap:
+        return TapAudioCapture(microphoneID: microphoneID, sink: sink)
     }
 }
 
@@ -45,6 +48,11 @@ struct CaptureFailure: Error, LocalizedError, Sendable {
     var errorDescription: String? { report.warning }
 }
 
+struct MicrophoneRecoveryEvent: Codable, Sendable {
+    let timestamp: Double
+    let reason: String
+}
+
 struct CaptureReport: Codable, Sendable {
     var droppedBuffers = 0
     // Sum of source durations: simultaneous losses on two channels count twice.
@@ -52,12 +60,21 @@ struct CaptureReport: Codable, Sendable {
     var losses: [CaptureLoss] = []
     var failure: String?
     var exportFailure: String?
+    var microphoneRecoveryEvents: [MicrophoneRecoveryEvent]?
+    var microphoneRecoveries: Int?
+    var microphoneMissing: Bool?
     var warning: String? {
         var messages: [String] = []
         if droppedBuffers > 0 {
             messages.append(String(format: "Пропущено аудиобуферов: %d (%.3f с суммарно по дорожкам).", droppedBuffers, droppedSourceSeconds))
         }
         if let failure { messages.append("Сбой захвата: " + failure) }
+        if microphoneMissing == true {
+            messages.append("Во время записи переставали поступать данные микрофона; часть речи могла не сохраниться.")
+        }
+        if let count = microphoneRecoveries, count > 0 {
+            messages.append("Попыток восстановления микрофона: \(count). В эти моменты возможны пропуски речи.")
+        }
         return messages.isEmpty ? nil : messages.joined(separator: " ")
     }
 }
@@ -79,6 +96,16 @@ final class AudioDelivery: @unchecked Sendable {
     func fail(_ error: Error) {
         lock.lock(); defer { lock.unlock() }
         if report.failure == nil { report.failure = error.localizedDescription }
+    }
+
+    func noteMicrophoneRecovery(reason: String) {
+        lock.lock(); defer { lock.unlock() }
+        report.microphoneRecoveries = (report.microphoneRecoveries ?? 0) + 1
+        if (report.microphoneRecoveryEvents?.count ?? 0) < 128 {
+            if report.microphoneRecoveryEvents == nil { report.microphoneRecoveryEvents = [] }
+            report.microphoneRecoveryEvents?.append(MicrophoneRecoveryEvent(
+                timestamp: CMClockGetTime(CMClockGetHostTimeClock()).seconds, reason: reason))
+        }
     }
 
     func submit(_ buffer: AVAudioPCMBuffer, time: CMTime, microphone: Bool) {
@@ -174,7 +201,7 @@ private final class TapAudioCapture: NSObject, AudioCapture, AVCaptureAudioDataO
     }
 
     func start() async throws {
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+        if !(await AVCaptureDevice.requestAccess(for: .audio)) {
             throw NSError(domain: "AudioCapture", code: 2, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к микрофону."])
         }
         do { try configureAndStart() }

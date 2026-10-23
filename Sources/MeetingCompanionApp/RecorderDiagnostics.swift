@@ -52,7 +52,7 @@ struct RecorderDiagnostics {
             calendar == .notDetermined ? "доступ ещё не запрошен" : "нет доступа к чтению"
         let systemAllowed = CGPreflightScreenCaptureAccess()
         return [Access(name: "Микрофон", message: microphone, state: microphoneState),
-            captureCheck ?? Access(name: "Системный звук", message: coreAudioTap ? "проверьте кнопкой «Проверить звук»" : systemAllowed ? "доступ разрешён" : "нет доступа", state: coreAudioTap ? .pending : systemAllowed ? .granted : .denied),
+            captureCheck ?? Access(name: "Системный звук", message: coreAudioTap ? "Не проверен" : systemAllowed ? "доступ разрешён" : "нет доступа", state: coreAudioTap ? .pending : systemAllowed ? .granted : .denied),
             Access(name: "Календарь", message: calendarText, state: calendar == .fullAccess ? .granted :
                 calendar == .notDetermined ? .pending : .denied)]
     }

@@ -4,26 +4,23 @@ import ServiceManagement
 import SwiftUI
 
 @MainActor
-final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
+final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = RecorderViewModel()
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem!
     private var reminder: NSPanel?
     private var recordingObserver: AnyCancellable?
+    private var busyObserver: AnyCancellable?
     private let appUpdater = AppUpdater()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = model.appearance.value
         NSApp.setActivationPolicy(.accessory)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460),
-                          styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let toolbar = NSToolbar(identifier: "RecorderToolbar")
-        toolbar.delegate = self
-        toolbar.allowsUserCustomization = false
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() })
         window.center()
@@ -34,6 +31,9 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         recordingObserver = model.$isRecording.sink { [weak self] recording in
             self?.statusItem.button?.image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "mic.circle",
                                                      accessibilityDescription: recording ? "Идёт запись" : "Meeting Companion")
+        }
+        busyObserver = model.$isBusy.dropFirst().filter { !$0 }.sink { [weak self] _ in
+            Task { @MainActor in self?.model.calendar.recheckReminders() }
         }
         model.calendar.onMeeting = { [weak self] meeting in self?.showReminder(meeting) }
         if !UserDefaults.standard.bool(forKey: "loginItemConfigured") {
@@ -85,31 +85,10 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         updatePreviewVisibility()
     }
 
-    private static let recordingsItem = NSToolbarItem.Identifier("Recordings")
-    private static let settingsItem = NSToolbarItem.Identifier("Settings")
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, Self.recordingsItem, Self.settingsItem]
+    @objc private func openRecordings() {
+        model.mainPage = .history
+        showWindow()
     }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
-    }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard identifier == Self.recordingsItem || identifier == Self.settingsItem else { return nil }
-        let recordings = identifier == Self.recordingsItem
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = recordings ? "Записи" : "Настройки"
-        item.toolTip = item.label
-        item.image = NSImage(systemSymbolName: recordings ? "folder" : "gearshape", accessibilityDescription: item.label)
-        item.target = self
-        item.action = recordings ? #selector(openRecordings) : #selector(showSettings)
-        return item
-    }
-
-    @objc private func openRecordings() { model.openFolder() }
 
     @objc private func toggleLogin() {
         do {
@@ -125,6 +104,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     @objc func checkForUpdates() { appUpdater.check() }
 
     @objc private func showWindow() {
+        model.mainWindowRequested = true
         if window.styleMask.contains(.titled) { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -135,6 +115,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         sender.orderOut(nil)
         if sender === window {
             if !model.isRecording { model.dismissCapsule() }
+            model.mainWindowRequested = false
             model.setWindowVisible(false)
         }
         updatePreviewVisibility()
@@ -182,13 +163,19 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     private func showReminder(_ meeting: MeetingContext) {
-        guard reminder == nil else { return }
-        if model.isRecording || model.isBusy || model.diagnosticRunning {
+        guard !model.isBusy, !model.diagnosticRunning else { return }
+        if model.recordingMeetingID == meeting.id {
             model.calendar.acknowledge(meeting)
             return
         }
-        model.calendar.acknowledge(meeting)
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 348, height: 134),
+        reminder?.orderOut(nil)
+        reminder = nil
+        if !model.isRecording { model.dismissCapsule() }
+        let now = Date()
+        for event in model.calendar.events where event.needsReminder(now: now, handled: []) {
+            model.calendar.acknowledge(event)
+        }
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 220),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -197,18 +184,18 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
-        panel.contentView = NSHostingView(rootView: MeetingReminderView(meeting: meeting) { [weak self] accept in
-            guard let self else { return }
-            self.reminder?.orderOut(nil)
+        let candidates = MeetingSelection.orderedCurrent(events: model.calendar.events, now: now)
+            .filter { $0.id != model.recordingMeetingID }
+        model.reminderMeeting = candidates.first ?? meeting
+        panel.contentView = NSHostingView(rootView: MeetingReminderView(model: model, calendar: model.calendar) { [weak self, weak panel] accept, selected in
+            guard let self, let panel, self.reminder === panel else { return }
+            panel.orderOut(nil)
             self.reminder = nil
-            if accept && !self.model.isRecording && !self.model.isBusy && !self.model.diagnosticRunning {
-                self.model.selectedMeeting = meeting
-                self.showWindow()
-                self.model.toggleRecording()
-            }
+            if accept { self.model.startMeeting(selected) }
         })
         let screen = window.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: screen.maxX - 372, y: screen.maxY - 158))
+        let y = screen.maxY - 244 - (model.isRecording ? 96 : 0)
+        panel.setFrameOrigin(NSPoint(x: screen.maxX - 424, y: max(screen.minY, y)))
         reminder = panel
         Timer.scheduledTimer(withTimeInterval: max(1, min(300, meeting.end.timeIntervalSinceNow)), repeats: false) { [weak self, weak panel] _ in
             Task { @MainActor in
@@ -219,27 +206,38 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         panel.orderFrontRegardless()
     }
+
 }
 
 struct MeetingReminderView: View {
-    let meeting: MeetingContext
-    let respond: (Bool) -> Void
+    @ObservedObject var model: RecorderViewModel
+    @ObservedObject var calendar: MeetingCalendar
+    let respond: (Bool, MeetingContext?) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(meeting.summary).font(.headline).lineLimit(2)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(model.isRecording ? "Начинается следующая встреча" : "Время встречи").font(.headline)
+            Picker("Встреча", selection: $model.reminderMeeting) {
+                Text("Без встречи").tag(Optional<MeetingContext>.none)
+                ForEach(calendar.events.filter { $0.id != model.recordingMeetingID }) { event in
+                    Text(event.start.formatted(date: .omitted, time: .shortened) + " · " + event.summary).tag(Optional(event))
+                }
+                if let selected = model.reminderMeeting, !calendar.events.contains(selected) { Text(selected.summary).tag(Optional(selected)) }
+            }
+            if model.isRecording {
+                Text("Закроем текущие дорожки и начнём новую запись. Обработка предыдущей продолжится в фоне.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                Button("Пропустить") { respond(false) }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                Button("Пропустить") { respond(false, nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
                 Spacer()
-                Button("Начать запись") { respond(true) }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
+                Button(model.isRecording ? "Завершить и начать новую" : "Начать запись") { respond(true, model.reminderMeeting) }
+                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                    .disabled(model.isBusy || model.diagnosticRunning)
             }
         }
         .padding(20)
-        .frame(width: 340, height: 126)
+        .frame(width: 392, height: 212)
         .modifier(MeetingOverlaySurface())
         .padding(4)
     }

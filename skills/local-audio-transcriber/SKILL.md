@@ -30,7 +30,10 @@ recording's status. Do not silently use an older meeting or rerun recognition.
 Retry transcription only when requested, using Meeting Companion's «Получить текст» action.
 
 The meeting folder holds the final transcript, context and combined audio.
-`raw/` holds source WAVs, per-source transcripts and logs. With Parakeet enabled,
+`raw/` holds source WAVs, per-source transcripts and logs. Optional WebRTC AEC3
+creates `raw/NAME.host_record.aec.wav` for ASR only; original WAVs and mixed M4A
+remain unprocessed. The transcript header marks successful AEC use; failures
+fall back to original microphone audio with a warning. With Parakeet enabled,
 `raw/NAME.sources.gigaam.transcript.txt` preserves the baseline before term corrections;
 consult it for disputed wording, without replacing the final transcript.
 `raw/*.corrections.json` records both models' words and correction decisions;
@@ -47,6 +50,14 @@ Use the transcript's Speaker guide to map voices to microphone or system audio.
 Either source can contain several people; do not infer the source from a speaker number.
 Assign names only from explicit introductions, clear transcript evidence or user
 confirmation. Calendar attendees alone do not identify a voice.
+
+Read `Warning:` and `Diarization limit:` before attributing speech. Nemotron
+supports at most 8 voices per source, not 8 for the combined transcript. At the
+limit, several people may share a Speaker label; a calendar list of 8+ attendees
+is also a caution, not evidence that all spoke. With either warning, explicitly
+qualify speaker attribution and do not assign decisions or actions to named
+people from Speaker labels alone. Missing microphone audio means missing evidence,
+not that the microphone participant stayed silent.
 
 ## Summarize
 

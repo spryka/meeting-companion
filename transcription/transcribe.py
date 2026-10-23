@@ -15,6 +15,11 @@ import tempfile
 import time
 from pathlib import Path
 
+NEMOTRON_MAX_SPEAKERS = 8
+DIARIZATION_LIMIT_NOTE = (
+    f"Nemotron различает не более {NEMOTRON_MAX_SPEAKERS} голосов на одной дорожке. "
+    "Speaker — метка модели, не подтверждённая личность; меньшее число меток не гарантирует точность.")
+
 
 def load_audio(audio_path: Path):
     import soundfile as sf
@@ -66,7 +71,7 @@ def run_nemotron_diarization(audio_path: Path):
     for seg in segments:
         if not (math.isfinite(seg.start) and math.isfinite(seg.end)
                 and 0 <= seg.start < seg.end <= duration + 1
-                and isinstance(seg.speaker, int) and 0 <= seg.speaker < 8):
+                and isinstance(seg.speaker, int) and 0 <= seg.speaker < NEMOTRON_MAX_SPEAKERS):
             raise RuntimeError("Nemotron returned an invalid speech interval")
     count = len({seg.speaker for seg in segments})
     print(f"Nemotron finished: {count} speakers, {len(segments)} intervals in "
@@ -184,7 +189,9 @@ def write_transcript(output_path: Path, lines: list[str]):
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output_path.parent,
                                          prefix=f".{output_path.name}.", delete=False) as handle:
             temporary_output = Path(handle.name)
-            handle.write("\n".join(lines) + "\n")
+            # Redact diagnostic metadata only; never rewrite words spoken in the meeting.
+            safe_lines = [line.replace(str(Path.home()), "~") if line.startswith(("Warning:", "Audio:", "Host audio:", "Remote audio:")) else line for line in lines]
+            handle.write("\n".join(safe_lines) + "\n")
         temporary_output.replace(output_path)
     finally:
         if temporary_output is not None:
@@ -208,11 +215,14 @@ def group_turns(segments: list, breaks=()):
     return turns
 
 
-def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text=""):
-    lines = [f"Transcript: {input_path.name}", f"Audio: {input_path}",
+def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text="", warnings=()):
+    lines = [f"Transcript: {input_path.name}", f"Audio: {input_path.name}",
              "Model: gigaam-v3-e2e-rnnt (ONNX / CPU)",
              f"Diarization: {diarization_status} ({speaker_count} speakers)",
              "Diarization backend: nemotron", f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
+    if diarization_status == "enabled":
+        lines.insert(-1, "Diarization limit: " + DIARIZATION_LIMIT_NOTE)
+    lines[-1:-1] = ["Warning: " + warning for warning in warnings]
     turns = group_turns(segments)
     if turns:
         lines.extend(f'[{format_timestamp(turn["start"])}] Speaker {turn.get("speaker", 1)}: {turn["text"]}'
@@ -255,6 +265,7 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
         if on_warning:
             on_warning(message)
     num_detected_speakers = 1
+    diarization_speakers = 0
     diarization_status = "disabled"
     diar_segments = []
     if diarize:
@@ -262,7 +273,12 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
             on_progress("diarization", 0, 1)
         try:
             diar_segments, num_detected_speakers = run_nemotron_diarization(input_path)
+            diarization_speakers = num_detected_speakers
             diarization_status = "enabled" if diar_segments else "no speech detected"
+            if diarization_speakers >= NEMOTRON_MAX_SPEAKERS:
+                warn(f"Nemotron достиг лимита {NEMOTRON_MAX_SPEAKERS} голосов на дорожке. "
+                     "Разные люди могут иметь одну метку Speaker. При суммаризации не приписывайте "
+                     "решения и поручения конкретным людям без проверки авторства.")
         except Exception as error:
             diarization_status = "failed"
             warn(f'Разделение голосов не выполнено: {error}')
@@ -290,7 +306,7 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
     enhancement_status = "disabled"
     if parakeet:
         write_transcript(original_output, transcript_lines(input_path, original_segments,
-                         diarization_status, num_detected_speakers, fallback_text=result.get("text", "")))
+                         diarization_status, num_detected_speakers, fallback_text=result.get("text", ""), warnings=warnings))
         try:
             from audio_enhancement import run_parakeet, windows
             from term_correction import cascade
@@ -316,15 +332,15 @@ def transcribe_file(input_path: Path, output_path: Path, *, diarize=True,
 
     data = {"segments": segments, "gigaam_segments": original_segments,
             "enhancement": enhancement_status, "warnings": warnings,
+            "diarization_speakers": diarization_speakers,
+            "diarization_speaker_limit": NEMOTRON_MAX_SPEAKERS if diarize else None,
             "diarization": f"Diarization: {diarization_status} ({num_detected_speakers} speakers)"}
     if segments_json:
         write_transcript(segments_json, [json.dumps(data, ensure_ascii=False, allow_nan=False)])
     lines = transcript_lines(input_path, segments, diarization_status, num_detected_speakers,
-                             fallback_text=result.get("text", ""))
+                             fallback_text=result.get("text", ""), warnings=warnings)
     if parakeet:
         lines.insert(5, "Term enhancement: " + enhancement_status)
-    for warning in warnings:
-        lines.insert(5, "Warning: " + warning)
     write_transcript(output_path, lines)
     total_elapsed = time.time() - start_time
     turns = group_turns(segments)

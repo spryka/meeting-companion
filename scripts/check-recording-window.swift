@@ -16,8 +16,8 @@ import AppKit
         let fitted = AppWindowState.visibleCapsuleFrame(bottomRight, screens: [primary])
         precondition(primary.contains(fitted) && fitted.maxX == primary.maxX && fitted.minY == 0)
         precondition(AppWindowState.visibleCapsuleFrame(external, screens: []) == external)
-        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 620, height: 460),
-                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 560),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.toolbar = NSToolbar(identifier: "CheckRecorderToolbar")
         window.toolbarStyle = .unified
@@ -27,6 +27,16 @@ import AppKit
         let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
                                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
         settings.isReleasedWhenClosed = false
+        NSApp.appearance = AppAppearance.dark.value
+        for panel in [window, settings] {
+            precondition(panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        }
+        NSApp.appearance = AppAppearance.light.value
+        for panel in [window, settings] {
+            precondition(panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua)
+        }
+        NSApp.appearance = AppAppearance.system.value
+        precondition(NSApp.appearance == nil, "System theme must remove the application override")
         let original = window.frame
         let state = AppWindowState(defaults: defaults)
         state.attach(window)
@@ -57,7 +67,13 @@ import AppKit
         precondition(window.styleMask == .borderless && window.isVisible)
         precondition(window.frame.size == NSSize(width: 348, height: 140))
         precondition(window.frame.minX == moved.minX && window.frame.maxY == moved.maxY)
+        // Simulate SwiftUI rebuilding normal window chrome before the mode callback.
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        let replacementToolbar = NSToolbar(identifier: "SwiftUIReplacementToolbar")
+        window.toolbar = replacementToolbar
+        precondition(window.toolbar === replacementToolbar)
         state.setCapsuleMode(false)
+        precondition(window.toolbar === replacementToolbar, "Never replace the toolbar installed by SwiftUI")
         precondition(!window.isVisible, "Saving must never reopen the main window")
         precondition(window.styleMask.contains(.titled) && window.level == .normal)
         precondition(!window.isMovableByWindowBackground)

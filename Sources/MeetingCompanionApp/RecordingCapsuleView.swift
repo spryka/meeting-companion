@@ -1,4 +1,5 @@
 import SwiftUI
+import MeetingCompanionCore
 
 struct CompactRecordingView: View {
     @ObservedObject var viewModel: RecorderViewModel
@@ -21,7 +22,7 @@ struct CompactRecordingView: View {
                     CompactLevelMetersView(levels: viewModel.levels).frame(width: 56)
                     Button(action: viewModel.toggleMicrophoneMute) {
                         Image(systemName: viewModel.microphoneMuted ? "mic.slash.fill" : "mic.fill")
-                            .foregroundStyle(viewModel.microphoneMuted ? Color.red : Color.primary)
+                            .foregroundStyle(viewModel.microphoneMuted || viewModel.microphoneState == .missing ? Color.red : Color.primary)
                             .frame(width: 18, height: 18)
                     }
                     .tint(viewModel.microphoneMuted ? .red : .primary)
@@ -45,12 +46,17 @@ struct CompactRecordingView: View {
             .buttonStyle(.bordered).buttonBorderShape(.circle)
             Text(viewModel.recordingSaveError != nil ? "Ошибка сохранения" :
                 viewModel.isBusy ? "Сохранение…" :
+                !viewModel.microphoneCaptureHint.isEmpty ? viewModel.microphoneCaptureHint :
                 viewModel.mutedMicrophoneActivity ? "Микрофон не записывается" :
                 viewModel.microphoneMuted ? "Микрофон выключен · системный звук записывается" : " ")
                 .font(.caption2)
-                .foregroundStyle(viewModel.microphoneMuted ? .orange : .secondary)
-                .lineLimit(1)
-                .help(viewModel.recordingSaveError ?? "")
+                .foregroundStyle(viewModel.microphoneState == .missing ? Color.red :
+                    viewModel.microphoneMuted || viewModel.microphoneState != .receiving ? Color.orange : Color.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .help(viewModel.recordingSaveError ?? (viewModel.microphoneState == .missing
+                    ? "Данные микрофона не поступают. Системный звук продолжает записываться; проверьте подключение и выбранный микрофон."
+                    : viewModel.microphoneCaptureHint))
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -79,23 +85,17 @@ struct ProcessingCapsuleView: View {
             }
             switch viewModel.transcriptionState {
             case .running(let progress):
-                HStack(alignment: .top) {
-                    Image(systemName: "text.magnifyingglass").accessibilityHidden(true)
+                if let progress {
+                    TranscriptionProgressView(progress: progress)
+                } else {
                     Text(viewModel.transcriptionStatus).font(.caption).lineLimit(2)
-                    Spacer(minLength: 0)
-                    if let step = progress?.step, let steps = progress?.steps {
-                        Text("\(step)/\(steps)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    }
-                }
-                if let progress, progress.total > 1 {
-                    ProgressView(value: Double(progress.completed), total: Double(progress.total))
-                        .accessibilityLabel(progress.stage == .speakers ? "Обработано слов" : "Обработано окон")
                 }
             case .completed:
                 Label(viewModel.transcriptionWarnings.isEmpty ? "Транскрипт готов" : "Текст готов с предупреждениями",
                       systemImage: viewModel.transcriptionWarnings.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
                     .font(.caption)
-                Button("Открыть папку", action: viewModel.revealTranscript)
+                    .foregroundStyle(viewModel.transcriptionWarnings.isEmpty ? Color.secondary : Color.orange)
+                Button("Открыть результаты", action: viewModel.openResults)
                     .help(viewModel.transcriptionWarnings.joined(separator: "\n"))
                     .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
             case .failed(let message):
@@ -121,6 +121,43 @@ struct ProcessingCapsuleView: View {
     }
 }
 
+struct TranscriptionProgressView: View {
+    let progress: TranscriptionProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let step = progress.step, let steps = progress.steps, let completed = progress.completedSteps {
+                HStack {
+                    Text("Обработка записи")
+                    Spacer(minLength: 4)
+                    Text("Этап \(step) из \(steps)").monospacedDigit().foregroundStyle(.secondary)
+                }.font(.caption)
+                VStack(spacing: 4) {
+                    bar(Double(completed) / Double(steps), color: Color(nsColor: .systemBlue), height: 6)
+                        .accessibilityLabel("Завершено этапов")
+                        .accessibilityValue("\(completed) из \(steps)")
+                    if let fraction = progress.stageFraction {
+                        bar(fraction, color: Color(nsColor: .systemPink), height: 2)
+                            .accessibilityLabel("Текущий этап")
+                            .accessibilityValue("\(progress.completed) из \(progress.total)")
+                    }
+                }
+            }
+            Text(progress.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+
+    private func bar(_ fraction: Double, color: Color, height: CGFloat) -> some View {
+        GeometryReader { geometry in
+            Capsule().fill(Color(nsColor: .controlColor))
+                .overlay(alignment: .leading) {
+                    Capsule().fill(color).frame(width: geometry.size.width * fraction)
+                }
+        }.frame(height: height)
+    }
+}
+
 struct MeetingOverlaySurface: ViewModifier {
     var capsule = false
 
@@ -134,4 +171,3 @@ struct MeetingOverlaySurface: ViewModifier {
         }
     }
 }
-

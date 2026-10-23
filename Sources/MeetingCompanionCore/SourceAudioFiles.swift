@@ -110,6 +110,8 @@ final class SourceAudioFile {
     private let format: AVAudioFormat
     private var converter: AVAudioConverter?
     private var position: AVAudioFramePosition = 0
+    private var inputPosition: Double?
+    private var conversionPosition: AVAudioFramePosition = 0
     var duration: Double { Double(position) / format.sampleRate }
 
     init(url: URL, sampleRate: Double = 16000, channels: AVAudioChannelCount = 1) throws {
@@ -123,25 +125,57 @@ final class SourceAudioFile {
     func append(_ input: AVAudioPCMBuffer, seconds: Double) throws {
         guard seconds.isFinite, seconds >= -1, seconds < 86400 else { throw SourceAudioError.invalidBuffer }
         if file == nil { try open() }
-        if converter?.inputFormat != input.format {
+        let target = seconds * format.sampleRate
+        // Follow the continuous output clock; re-anchor if accumulated timestamp drift exceeds 2 ms.
+        if converter?.inputFormat != input.format || inputPosition.map({ abs(target - $0) > format.sampleRate * 0.002 }) == true {
+            try drainConverter()
             converter = AVAudioConverter(from: input.format, to: format)
             converter?.primeMethod = .none
+            inputPosition = target
+            conversionPosition = AVAudioFramePosition(target.rounded())
         }
-        guard let converter,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity:
-                AVAudioFrameCount(ceil(Double(input.frameLength) * format.sampleRate / input.format.sampleRate)) + 32)
-        else { throw SourceAudioError.invalidBuffer }
+        guard let converter, let inputPosition else { throw SourceAudioError.invalidBuffer }
+        self.inputPosition = inputPosition + Double(input.frameLength) * format.sampleRate / input.format.sampleRate
+        try convert(converter, input: input)
+    }
+
+    private func convert(_ converter: AVAudioConverter, input: AVAudioPCMBuffer?) throws {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) else {
+            throw SourceAudioError.invalidBuffer
+        }
         var supplied = false
-        var conversionError: NSError?
-        let status = converter.convert(to: buffer, error: &conversionError) { _, state in
-            if supplied { state.pointee = .noDataNow; return nil }
-            supplied = true
-            state.pointee = .haveData
-            return input
+        while true {
+            var conversionError: NSError?
+            let status = converter.convert(to: buffer, error: &conversionError) { _, state in
+                guard let input else { state.pointee = .endOfStream; return nil }
+                if supplied { state.pointee = .noDataNow; return nil }
+                supplied = true
+                state.pointee = .haveData
+                return input
+            }
+            if let conversionError { throw conversionError }
+            guard status != .error else { throw SourceAudioError.invalidBuffer }
+            let count = buffer.frameLength
+            if input == nil, let inputPosition {
+                buffer.frameLength = AVAudioFrameCount(min(Int64(count), max(0, Int64(inputPosition.rounded()) - conversionPosition)))
+            }
+            if buffer.frameLength > 0 {
+                let written = buffer.frameLength
+                try write(buffer, at: conversionPosition)
+                conversionPosition += AVAudioFramePosition(written)
+            }
+            if status == .inputRanDry || status == .endOfStream { return }
+            guard count > 0 else { throw SourceAudioError.invalidBuffer }
         }
-        if let conversionError { throw conversionError }
-        guard status != .error else { throw SourceAudioError.invalidBuffer }
-        let target = AVAudioFramePosition((seconds * format.sampleRate).rounded())
+    }
+
+    private func drainConverter() throws {
+        if let converter { try convert(converter, input: nil) }
+        converter = nil
+        inputPosition = nil
+    }
+
+    private func write(_ buffer: AVAudioPCMBuffer, at target: AVAudioFramePosition) throws {
         try pad(to: max(0, target))
         // Trim overlapping/early buffers instead of shifting the next source in time.
         let skip = min(Int64(buffer.frameLength), max(0, position - target))
@@ -168,6 +202,7 @@ final class SourceAudioFile {
     func appendSilence(until duration: Double) throws {
         guard duration.isFinite, duration >= 0, duration < 86400 else { throw SourceAudioError.invalidBuffer }
         if file == nil { try open() }
+        try drainConverter()
         try pad(to: AVAudioFramePosition((duration * format.sampleRate).rounded()))
     }
 
