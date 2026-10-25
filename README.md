@@ -11,7 +11,6 @@ Intel не поддерживается. Для готовой сборки не
 агент или скил. Перед первой транскрибацией нажми «Скачать модели» в основном
 окне: приложение установит Python, пакеты и модели. Нужен интернет; подготовка
 может занять несколько минут, при медленном соединении — дольше.
-Для доступа к GitLab может понадобиться корпоративная сеть или VPN.
 
 ### Через Homebrew
 
@@ -19,31 +18,32 @@ Intel не поддерживается. Для готовой сборки не
 
 ```sh
 brew update
-brew tap bulat/apps https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap.git
-brew install --cask bulat/apps/meeting-companion
+brew tap spryka/tap
+brew install --cask spryka/tap/meeting-companion
 ```
 
 Для обновления сначала заверши Meeting Companion через меню в строке меню:
 
 ```sh
 brew update
-brew upgrade --cask bulat/apps/meeting-companion
+brew upgrade --cask spryka/tap/meeting-companion
 ```
 
 Если идентичная версия уже установлена вручную, её можно передать Homebrew:
 
 ```sh
-brew install --cask --adopt bulat/apps/meeting-companion
+brew install --cask --adopt spryka/tap/meeting-companion
 ```
 
 Homebrew скачивает готовое приложение в ZIP, проверяет SHA-256 и устанавливает
 его в `/Applications`. Приложение не обновляется в фоне само по себе.
-Подробнее: [инструкция tap](https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap).
+Подробнее: [инструкция tap](https://github.com/spryka/homebrew-tap).
+Если раньше использовался `bulat/apps`, см. [переход с GitLab](https://github.com/spryka/homebrew-tap#переход-с-gitlab).
 
 ### Вручную через DMG
 
-1. Скачай [DMG последней версии](https://gitlab.lamoda.tech/bulat.fayzulin/meeting-companion/-/releases/permalink/latest/downloads/Meeting-Companion-arm64.dmg)
-   или выбери версию на [странице релизов](https://gitlab.lamoda.tech/bulat.fayzulin/meeting-companion/-/releases).
+1. Скачай [DMG последней версии](https://github.com/spryka/meeting-companion/releases/latest/download/Meeting-Companion-arm64.dmg)
+   или выбери версию на [странице релизов](https://github.com/spryka/meeting-companion/releases).
 2. Открой DMG и перетащи Meeting Companion в Applications («Программы»).
 3. Запусти приложение из «Программ» и выполни шаги раздела «Первая запись».
 4. Извлеки образ диска в Finder.
@@ -98,7 +98,7 @@ brew install uv
 Клонируй репозиторий, собери и установи приложение:
 
 ```bash
-git clone https://gitlab.lamoda.tech/bulat.fayzulin/meeting-companion.git
+git clone https://github.com/spryka/meeting-companion.git
 cd meeting-companion
 ./scripts/install-app.sh
 open "/Applications/Meeting Companion.app"
@@ -381,7 +381,7 @@ printf '%s\n' 'имя сертификата в Keychain' > .codesign/identity
 
 ## Как внести исправление
 
-Создай ветку от актуального `master`, внеси изменения и открой merge request
+Создай ветку от актуального `master`, внеси изменения и открой pull request
 в этот репозиторий. Если нет права создавать ветки, используй fork.
 В описании укажи, что исправлено и как проверено; для ошибки полезны шаги
 воспроизведения, версия macOS и журнал без личных данных.
@@ -401,11 +401,11 @@ printf '%s\n' 'имя сертификата в Keychain' > .codesign/identity
 
 ## Проверки
 
-GitLab CI запускает Python unit-тесты и проверяет синтаксис shell-скриптов
-на Linux при push и в merge request. Модели для этих тестов не скачиваются.
-Сборка приложения, Swift-проверки и проверка записи выполняются на Mac.
+Python unit-тесты и проверку синтаксиса shell-скриптов можно запускать на Linux.
+Модели для этих тестов не скачиваются. Сборка приложения, Swift-проверки
+и проверка записи выполняются на Mac.
 
-Перед merge request проверь сборку и Python-тесты:
+Перед pull request проверь сборку и Python-тесты:
 
 ```bash
 swift build -c release
@@ -483,11 +483,13 @@ ZIP и `appcast.xml` с подписью архива появятся в `dist/
 `prepare-update.sh` автоматически добавляет канал `beta` только новой записи
 appcast; стабильные записи остаются без канала. Остальные prerelease-обозначения
 скрипт отклоняет, чтобы случайно не предложить экспериментальную сборку всем.
-Бета-архивы публикуются в Registry и appcast; стабильный Homebrew cask не меняется.
+Бета-архивы публикуются в GitHub Releases с отметкой prerelease и в appcast;
+стабильный Homebrew cask не меняется.
 
-Загрузи ZIP и DMG в Generic Package Registry проекта (`meeting-companion`, версия
-`VERSION`), добавь ссылки в GitLab Release и обнови версию и SHA-256 ZIP в
-[homebrew-tap](https://gitlab.lamoda.tech/bulat.fayzulin/homebrew-tap).
+Загрузи подписанный ZIP в GitHub Release с тегом `vVERSION`. DMG опубликуй
+под версионным именем и как `Meeting-Companion-arm64.dmg` для ссылки на последнюю
+версию. Обнови версию и SHA-256 ZIP в
+[homebrew-tap](https://github.com/spryka/homebrew-tap).
 Только после публикации ZIP скопируй подготовленный `appcast.xml` в корень
 репозитория и внеси его в `master`. Этот файл указывает Sparkle на доступное
 обновление. Пустой feed означает, что обновлений пока нет.
@@ -586,3 +588,11 @@ swiftc Sources/MeetingCompanionApp/RecordingWindowState.swift scripts/check-reco
 объединять разных людей. Речь из динамиков может попасть и в микрофон:
 экспериментальное эхоподавление применяется только при включённой галке,
 к копии микрофона для распознавания. Нормализация громкости не применяется.
+
+## Лицензия и благодарности
+
+Собственный код Meeting Companion распространяется под [MIT](LICENSE).
+Лицензии зависимостей и моделей перечислены в [THIRD_PARTY.md](THIRD_PARTY.md).
+
+Спасибо [Charoite](https://github.com/charoiteai/Charoite_audio) за вдохновение
+идеей локального помощника для встреч.

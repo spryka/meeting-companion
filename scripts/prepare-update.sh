@@ -25,7 +25,7 @@ ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 cp "$ROOT_DIR/appcast.xml" "$STAGE/appcast.xml"
 "$TOOLS/generate_appcast" --account "$ACCOUNT" --maximum-deltas 0 \
   ${CHANNEL_ARGS[@]+"${CHANNEL_ARGS[@]}"} \
-  --download-url-prefix "https://gitlab.lamoda.tech/api/v4/projects/3810/packages/generic/meeting-companion/$VERSION/" \
+  --download-url-prefix "https://github.com/spryka/meeting-companion/releases/download/v$VERSION/" \
   "$STAGE"
 SIGNATURE="$("$TOOLS/sign_update" --account "$ACCOUNT" -p "$ARCHIVE")"
 "$TOOLS/sign_update" --account "$ACCOUNT" --verify "$ARCHIVE" "$SIGNATURE"

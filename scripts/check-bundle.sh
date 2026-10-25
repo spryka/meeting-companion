@@ -10,6 +10,8 @@ grep -Eq "^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" "$ROOT_DIR/CH
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" == local.meeting-companion ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" == AppIcon ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
+[[ -s "$APP/Contents/Resources/LICENSE" ]]
+[[ -s "$APP/Contents/Resources/THIRD_PARTY.md" ]]
 [[ -x "$APP/Contents/MacOS/MeetingCompanion" ]]
 [[ -x "$APP/Contents/Frameworks/Sparkle.framework/Sparkle" ]]
 [[ -s "$APP/Contents/Resources/Sparkle-LICENSE" ]]

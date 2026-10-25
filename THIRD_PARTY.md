@@ -1,7 +1,7 @@
 # Сторонние компоненты
 
 Модели и Python-пакеты скачиваются при подготовке; в исходники и приложение
-входят только скрипты и uv. Их лицензии и условия действуют отдельно от кода
+входят скрипты, uv, Sparkle и нативный компонент эхоподавления. Их лицензии и условия действуют отдельно от кода
 Meeting Companion.
 
 - [Sparkle 2.9.6](https://github.com/sparkle-project/Sparkle/releases/tag/2.9.6),
@@ -27,3 +27,10 @@ Meeting Companion.
 - [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) — дополнительный runtime Parakeet / Metal (`transcribe-cpp==0.2.3`).
 
 Для Silero и Parakeet проверяется SHA-256 файла перед использованием.
+
+- [WebRTC Audio Processing](https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing)
+  и [aec-audio-processing](https://pypi.org/project/aec-audio-processing/1.0.0.dev9/)
+  используются для эхоподавления. В приложение входят нативный helper и динамическая
+  библиотека. Лицензии BSD и Apache-2.0, уведомления об авторстве и патентные условия
+  включены в `Contents/Resources/transcription/aec/THIRD_PARTY_NOTICES.txt`.
+  Исходный архив закреплён по SHA-256 в `scripts/build-aec.py`.

@@ -5,6 +5,16 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>1.7.1</title>
+            <description><![CDATA[<ul><li>Исходный код, установочные архивы и Homebrew tap перенесены на GitHub. Для скачивания больше не нужен доступ к корпоративному GitLab.</li><li>Проверка обновлений Sparkle использует ленту GitHub.</li><li>Добавлены лицензия MIT для собственного кода и сведения о лицензиях WebRTC.</li></ul>]]></description>
+            <pubDate>Sun, 25 Oct 2026 15:01:14 +0300</pubDate>
+            <sparkle:version>35</sparkle:version>
+            <sparkle:shortVersionString>1.7.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v1.7.1/Meeting-Companion-1.7.1-arm64.zip" length="21872584" type="application/octet-stream" sparkle:edSignature="uOw+ozg0YpsB7mbYni/AMc4texBwllPc8sG/PCeK5TiF0gG/ASMvTLcpSG7LNL+VfqEFWD0ZKcM8BOOS35eDDw=="/>
+        </item>
+        <item>
             <title>1.7.0</title>
             <description><![CDATA[<h3>Добавлено</h3><ul><li>Эхоподавление микрофона на базе WebRTC AEC3 для записи через динамики. Включается в настройках и применяется после записи, перед распознаванием. Исходные дорожки и общая запись сохраняются без изменений. При ошибке обработка продолжается с исходной дорожкой, а в истории появляется предупреждение.</li><li>История записей с темой встречи, участниками, описанием из календаря, аудио и текстами обеих дорожек. Ошибки и предупреждения доступны в блоке &quot;Проблемы&quot;. Неудачную или прерванную обработку можно запустить повторно.</li><li>Фоновая очередь сохранения и распознавания: следующую запись можно начать, пока обрабатывается предыдущая. Напоминание о новой встрече позволяет завершить текущую запись и начать следующую с выбором встречи.</li><li>Выбор микрофона в настройках. Подключение наушников не меняет явно выбранное устройство. Капсула показывает отсутствие данных, длительную тишину и попытки переподключения микрофона.</li><li>Системная, светлая и тёмная темы оформления для всех окон приложения.</li><li>Кнопка &quot;Скачать модели&quot; в основном окне перед первой транскрибацией.</li><li>Предупреждение об ограничении Nemotron: не более 8 голосов на одной дорожке. При достижении лимита или 8+ приглашённых в календаре текст содержит предупреждение о возможном смешении говорящих.</li></ul><h3>Изменено</h3><ul><li>Core Audio Tap рекомендован и выбран по умолчанию для новых настроек. ScreenCaptureKit доступен как запасной вариант. Сохранённый выбор не меняется.</li><li>Основное окно и настройки используют одинаковую навигацию по разделам.</li><li>Кнопка &quot;Открыть результаты&quot; в капсуле открывает нужную запись в истории. Готовая капсула скрывается через минуту или при следующем напоминании.</li><li>Прогресс разделён на общую синюю полосу и тонкую розовую полосу текущего этапа.</li><li>Аудио из истории открывается в системном Quick Look.</li><li>Новые транскрипты содержат относительные пути к аудио. Для старых записей доступен экспорт текста без локальных путей.</li></ul><h3>Исправлено</h3><ul><li>Разрывы и обрезки звука при преобразовании частоты, мьюте и смене формата.</li><li>Выбор завершившейся или удалённой встречи перед началом новой записи.</li><li>Напоминания о встречах со ссылками telemost.360.yandex.ru.</li><li>Смещение списка истории при первом открытии. Во время загрузки показан индикатор, для пустой папки записей отображается отдельное состояние.</li></ul><h3>Ограничения</h3><ul><li>Эхоподавление выключено по умолчанию. В наушниках рекомендуется оставлять его выключенным: обработка может ухудшать голос и обрезать части слов. Автоматического отключения при переходе на наушники пока нет.</li></ul>]]></description>
             <pubDate>Fri, 23 Oct 2026 12:44:14 +0300</pubDate>
@@ -12,7 +22,7 @@
             <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://gitlab.lamoda.tech/api/v4/projects/3810/packages/generic/meeting-companion/1.7.0/Meeting-Companion-1.7.0-arm64.zip" length="21869195" type="application/octet-stream" sparkle:edSignature="PHrUog+pVfa7VQEBSu3PNZDjgIOt7yGlpmin01B5paUBrdpMbZycDSTGntVV3ZCUY7sT+i65GTDPDPJ09FsTCw=="/>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v1.7.0/Meeting-Companion-1.7.0-arm64.zip" length="21869195" type="application/octet-stream" sparkle:edSignature="PHrUog+pVfa7VQEBSu3PNZDjgIOt7yGlpmin01B5paUBrdpMbZycDSTGntVV3ZCUY7sT+i65GTDPDPJ09FsTCw=="/>
         </item>
         <item>
             <title>1.6.0</title>
@@ -32,15 +42,6 @@
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://gitlab.lamoda.tech/api/v4/projects/3810/packages/generic/meeting-companion/1.6.0-beta.2/Meeting-Companion-1.6.0-beta.2-arm64.zip" length="21136528" type="application/octet-stream" sparkle:edSignature="K7z6AV8c3S1dn3tp40W3lDH9I4OdEXaOrRv8WZ/Bq56Sio59uWbQFtQCtKZPtm640/INWxwqnVl5DHSRsy1HAw=="/>
-        </item>
-        <item>
-            <title>1.5.0</title>
-            <pubDate>Sun, 18 Oct 2026 21:50:19 +0300</pubDate>
-            <sparkle:version>18</sparkle:version>
-            <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://gitlab.lamoda.tech/api/v4/projects/3810/packages/generic/meeting-companion/1.5.0/Meeting-Companion-1.5.0-arm64.zip" length="21105313" type="application/octet-stream" sparkle:edSignature="bI8fIgJMMoVug7X9FAhSWhlFI8mKTs5hJ4SPZwMhaxCHkD/GDNQGwkecHMHVu/py1yRzuMaZ4WZWjhm7JQVDAA=="/>
         </item>
     </channel>
 </rss>
