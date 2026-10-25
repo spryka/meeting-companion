@@ -20,6 +20,7 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 if [[ "${RELEASE_UPDATES:-0}" == 1 ]]; then
   /usr/libexec/PlistBuddy -c 'Set :MCEnableUpdates true' "$APP/Contents/Info.plist"
 fi
+cp LICENSE THIRD_PARTY.md "$APP/Contents/Resources/"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp "$BIN_DIR/MeetingCompanionApp" "$APP/Contents/MacOS/MeetingCompanion"
 mkdir -p "$APP/Contents/Frameworks"
