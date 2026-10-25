@@ -22,6 +22,14 @@ brew tap spryka/tap
 brew install --cask spryka/tap/meeting-companion
 ```
 
+Если Homebrew сообщает `Refusing to load cask ... from untrusted tap`,
+разреши загрузку этого рецепта и повтори установку:
+
+```sh
+brew trust --cask spryka/tap/meeting-companion
+brew install --cask spryka/tap/meeting-companion
+```
+
 Для обновления сначала заверши Meeting Companion через меню в строке меню:
 
 ```sh
