@@ -5,64 +5,105 @@ struct CompactRecordingView: View {
     @ObservedObject var viewModel: RecorderViewModel
 
     var body: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(viewModel.recordingSaveError == nil ? Color.red : Color.orange)
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel(viewModel.recordingSaveError == nil ? "Идёт запись" : "Ошибка сохранения")
-                Text(viewModel.elapsedText)
-                    .font(.system(size: 24, weight: .medium, design: .monospaced))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .frame(width: 130, alignment: .leading)
-                Spacer(minLength: 0)
-                if !viewModel.isBusy && viewModel.recordingSaveError == nil {
-                    CompactLevelMetersView(levels: viewModel.levels).frame(width: 56)
-                    Button(action: viewModel.toggleMicrophoneMute) {
-                        Image(systemName: viewModel.microphoneMuted ? "mic.slash.fill" : "mic.fill")
-                            .foregroundStyle(viewModel.microphoneMuted || viewModel.microphoneState == .missing ? Color.red : Color.primary)
-                            .frame(width: 18, height: 18)
+        Group {
+            if viewModel.recordingCancelled {
+                Label("Запись отменена", systemImage: "checkmark")
+                    .font(.headline)
+            } else {
+                VStack(spacing: 3) {
+                    HStack(spacing: 10) {
+                        Text(viewModel.elapsedText)
+                            .font(.system(size: 24, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .frame(width: 130, alignment: .leading)
+                        Spacer(minLength: 0)
+                        if !viewModel.isBusy && viewModel.recordingSaveError == nil {
+                            CompactLevelMetersView(levels: viewModel.levels).frame(width: 56)
+                            Button(action: viewModel.toggleMicrophoneMute) {
+                                Image(systemName: viewModel.microphoneMuted ? "mic.slash.fill" : "mic.fill")
+                                    .foregroundStyle(viewModel.microphoneMuted || viewModel.microphoneState == .missing ? Color.red : Color.primary)
+                                    .frame(width: 18, height: 18)
+                            }
+                            .tint(viewModel.microphoneMuted ? .red : .primary)
+                            .help(viewModel.microphoneMuted ? "Включить запись микрофона" : "Не записывать мой микрофон")
+                            .accessibilityLabel(viewModel.microphoneMuted ? "Включить запись микрофона" : "Отключить запись микрофона")
+                        }
+                        Group {
+                            if viewModel.isBusy {
+                                ProgressView().controlSize(.small).accessibilityLabel("Сохранение записи")
+                            } else if viewModel.recordingSaveError != nil {
+                                Button { viewModel.recordingSaveError = nil } label: { Image(systemName: "xmark") }
+                                    .help("Закрыть. Исходные файлы и повторная обработка доступны в основном окне.")
+                                    .accessibilityLabel("Закрыть сообщение об ошибке")
+                            } else {
+                                Button(action: viewModel.toggleRecording) {
+                                    Image(systemName: viewModel.showsCancelRecording ? "xmark" : "stop.fill").foregroundStyle(.red)
+                                }
+                                    .tint(.red)
+                                    .help(viewModel.showsCancelRecording ? "Отменить короткую запись" : "Остановить запись")
+                                    .accessibilityLabel(viewModel.showsCancelRecording ? "Отменить короткую запись" : "Остановить запись")
+                            }
+                        }
+                        .frame(width: 32, height: 32)
                     }
-                    .tint(viewModel.microphoneMuted ? .red : .primary)
-                    .help(viewModel.microphoneMuted ? "Включить запись микрофона" : "Не записывать мой микрофон")
-                    .accessibilityLabel(viewModel.microphoneMuted ? "Включить запись микрофона" : "Отключить запись микрофона")
-                }
-                Group {
-                    if viewModel.isBusy {
-                        ProgressView().controlSize(.small).accessibilityLabel("Сохранение записи")
-                    } else if viewModel.recordingSaveError != nil {
-                        Button { viewModel.recordingSaveError = nil } label: { Image(systemName: "xmark") }
-                            .help("Закрыть. Исходные файлы и повторная обработка доступны в основном окне.")
-                            .accessibilityLabel("Закрыть сообщение об ошибке")
-                    } else {
-                        Button(action: viewModel.toggleRecording) { Image(systemName: "stop.fill") }
-                            .tint(.red).help("Остановить запись").accessibilityLabel("Остановить запись")
+                    .buttonStyle(.bordered).buttonBorderShape(.circle)
+                    Text(viewModel.recordingSaveError != nil ? "Ошибка сохранения" :
+                        viewModel.isBusy ? "Сохранение…" :
+                        !viewModel.microphoneCaptureHint.isEmpty ? viewModel.microphoneCaptureHint :
+                        viewModel.mutedMicrophoneActivity ? "Микрофон не записывается" :
+                        viewModel.microphoneMuted ? "Микрофон выключен · системный звук записывается" : " ")
+                        .font(.caption2)
+                        .foregroundStyle(viewModel.microphoneState == .missing ? Color.red :
+                            viewModel.microphoneMuted || viewModel.microphoneState != .receiving ? Color.orange : Color.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .help(viewModel.recordingSaveError ?? (viewModel.microphoneState == .missing
+                            ? "Данные микрофона не поступают. Системный звук продолжает записываться; проверьте подключение и выбранный микрофон."
+                            : viewModel.microphoneCaptureHint))
+                    if viewModel.showsOvertimeReminder {
+                        Text(viewModel.overtimeMessage)
+                            .font(.caption).foregroundStyle(.primary)
+                        Button("Продолжить запись · ещё 15 минут", action: viewModel.postponeOvertimeReminder)
+                            .font(.caption).buttonStyle(.plain)
+                            .padding(.vertical, 4)
+                            .help("Убрать напоминание на 15 минут. Запись продолжится.")
                     }
                 }
-                .frame(width: 32, height: 32)
             }
-            .buttonStyle(.bordered).buttonBorderShape(.circle)
-            Text(viewModel.recordingSaveError != nil ? "Ошибка сохранения" :
-                viewModel.isBusy ? "Сохранение…" :
-                !viewModel.microphoneCaptureHint.isEmpty ? viewModel.microphoneCaptureHint :
-                viewModel.mutedMicrophoneActivity ? "Микрофон не записывается" :
-                viewModel.microphoneMuted ? "Микрофон выключен · системный звук записывается" : " ")
-                .font(.caption2)
-                .foregroundStyle(viewModel.microphoneState == .missing ? Color.red :
-                    viewModel.microphoneMuted || viewModel.microphoneState != .receiving ? Color.orange : Color.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .help(viewModel.recordingSaveError ?? (viewModel.microphoneState == .missing
-                    ? "Данные микрофона не поступают. Системный звук продолжает записываться; проверьте подключение и выбранный микрофон."
-                    : viewModel.microphoneCaptureHint))
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(MeetingOverlaySurface(capsule: true))
+        .overlay {
+            if viewModel.showsOvertimeReminder { OvertimeCapsuleOutline() }
+        }
         .padding(4)
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+}
+
+private struct OvertimeCapsuleOutline: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                outline.opacity(0.8)
+            } else {
+                outline.phaseAnimator([false, true]) { content, bright in
+                    content.opacity(bright ? 0.85 : 0.15)
+                } animation: { _ in .easeInOut(duration: 1.8) }
+            }
+        }
+        .allowsHitTesting(false).accessibilityHidden(true)
+        // Keep animation local to the outline; the recording controls remain discrete.
+        .transaction { $0.disablesAnimations = false }
+    }
+
+    private var outline: some View {
+        RoundedRectangle(cornerRadius: 36).strokeBorder(.primary, lineWidth: 2)
     }
 }
 
@@ -163,11 +204,14 @@ struct MeetingOverlaySurface: ViewModifier {
 
     @ViewBuilder func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: capsule ? 36 : 24)
-        if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content.background(.regularMaterial, in: shape)
-                .overlay(shape.stroke(.primary.opacity(0.08), lineWidth: 1))
+        Group {
+            if #available(macOS 26.0, *) {
+                content.glassEffect(.regular, in: shape)
+            } else {
+                content.background(.regularMaterial, in: shape)
+            }
         }
+        .overlay(shape.strokeBorder(.primary.opacity(0.18), lineWidth: 1)
+            .allowsHitTesting(false).accessibilityHidden(true))
     }
 }

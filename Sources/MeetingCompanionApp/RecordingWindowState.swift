@@ -31,6 +31,7 @@ final class AppWindowState: ObservableObject {
     private var positioning = false
     private static let capsuleFrameKey = "recordingCapsuleFrame"
     static let recordingCapsuleSize = NSSize(width: 384, height: 88)
+    static let overtimeCapsuleHeight: CGFloat = 132
     private let normalSize = NSSize(width: 900, height: 560)
 
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
@@ -99,8 +100,9 @@ final class AppWindowState: ObservableObject {
         ]
     }
 
-    func setCapsuleMode(_ isRecording: Bool, processing: Bool = false) {
-        let compactSize = processing ? NSSize(width: 348, height: 140) : Self.recordingCapsuleSize
+    func setCapsuleMode(_ isRecording: Bool, processing: Bool = false, overtime: Bool = false) {
+        let compactSize = processing ? NSSize(width: 348, height: 140) :
+            NSSize(width: Self.recordingCapsuleSize.width, height: overtime ? Self.overtimeCapsuleHeight : Self.recordingCapsuleSize.height)
         guard let window else { return }
         positioning = true
         defer { positioning = false; Self.refreshActivationPolicy() }

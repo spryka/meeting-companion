@@ -263,6 +263,22 @@ final class RecordingHistory: ObservableObject {
         put(entry)
     }
 
+    func cancelShortRecording(_ url: URL, duration: Double,
+                              trash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }) throws -> Bool {
+        guard duration.isFinite, duration >= 0, duration < 10 else { return false }
+        guard let entry = entry(url), entry.phase == .recording,
+              entry.folder.lastPathComponent.hasPrefix("meeting_"),
+              entry.folder.lastPathComponent == entry.base.lastPathComponent else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        // Trash only the dedicated directory of this active recording, never a legacy day folder.
+        try trash(entry.folder)
+        revisions[entry.id, default: 0] += 1
+        entries.removeAll { $0.id == entry.id }
+        progress.removeValue(forKey: entry.id)
+        return true
+    }
+
     func refresh(root: URL) async {
         generation += 1
         let request = generation

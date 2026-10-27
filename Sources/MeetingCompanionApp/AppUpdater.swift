@@ -14,8 +14,13 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     private var userDriver: SPUStandardUserDriver?
     private var manualCheck = false
     private var messageWindows: [NSWindow] = []
+    private var readyWindow: NSWindow?
+    private var restartButton: NSButton?
+    private var restartStatus: NSTextField?
+    private var installHandler: (() -> Void)?
     private(set) var pendingVersion: String?
     var isBusy: () -> Bool = { false }
+    var canInstall: Bool { installHandler != nil && !isBusy() }
     var menuTitle: String {
         if let pendingVersion { return "Версия \(pendingVersion) установится после выхода" }
         return manualCheck ? "Проверка и загрузка обновления…" : "Проверить обновления…"
@@ -34,7 +39,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
 
     func check() {
         if AppUpdatePolicy.isHomebrewManaged(Bundle.main.bundleURL) {
-            message("Обновление через Homebrew", "После завершения записи выйди из приложения и выполни:\nbrew update\nbrew upgrade --cask bulat/apps/meeting-companion")
+            message("Обновление через Homebrew", "После завершения записи выйди из приложения и выполни:\nbrew update\nbrew upgrade --cask meeting-companion")
         } else if pendingVersion != nil {
             showReadyMessage()
         } else if let updater {
@@ -60,6 +65,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         pendingVersion = item.displayVersionString
+        installHandler = immediateInstallHandler
         if manualCheck {
             manualCheck = false
             showReadyMessage()
@@ -69,6 +75,11 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     }
 
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: (any Error)?) {
+        if error != nil {
+            installHandler = nil
+            pendingVersion = nil
+            readyWindow?.close()
+        }
         if let error { NSLog("Meeting Companion update: %@", error.localizedDescription) }
         guard manualCheck else { return }
         manualCheck = false
@@ -81,15 +92,62 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
-        // Sparkle's prepared installer still waits for the host process to exit.
+        guard isBusy() else { return false }
         pendingVersion = item.displayVersionString
-        showReadyMessage()
+        self.installHandler = installHandler
+        refreshReadyMessage()
         return true
     }
 
     private func showReadyMessage() {
-        message("Обновление готово", "Новая версия установится после выхода из Meeting Companion. Можно продолжать работу. При следующем запуске откроется новая версия.")
+        if let readyWindow {
+            refreshReadyMessage()
+            readyWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 240),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Обновления Meeting Companion"
+        window.isReleasedWhenClosed = false
+        let label = NSTextField(wrappingLabelWithString: "Обновление готово\n\nМожно установить его сейчас и перезапустить приложение или продолжить работу. При обычном выходе обновление установится автоматически.")
+        label.frame = NSRect(x: 20, y: 100, width: 480, height: 120)
+        let status = NSTextField(wrappingLabelWithString: "")
+        status.frame = NSRect(x: 20, y: 55, width: 480, height: 40)
+        status.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        status.textColor = .secondaryLabelColor
+        let later = NSButton(title: "Позже", target: self, action: #selector(dismissReadyMessage))
+        later.frame = NSRect(x: 20, y: 15, width: 90, height: 32)
+        later.bezelStyle = .rounded
+        later.keyEquivalent = "\u{1b}"
+        let restart = NSButton(title: "Установить и перезапустить", target: self, action: #selector(restartForUpdate))
+        restart.frame = NSRect(x: 250, y: 15, width: 250, height: 32)
+        restart.bezelStyle = .rounded
+        for view in [label, status, later, restart] { window.contentView?.addSubview(view) }
+        readyWindow = window
+        restartButton = restart
+        restartStatus = status
+        refreshReadyMessage()
+        window.center()
+        window.makeKeyAndOrderFront(nil)
     }
+
+    func refreshReadyMessage() {
+        restartButton?.isEnabled = canInstall
+        restartStatus?.stringValue = isBusy()
+            ? "Перезапуск доступен после завершения записи, обработки и подготовки приложения."
+            : ""
+    }
+
+    @discardableResult
+    func installPreparedUpdate() -> Bool {
+        guard canInstall, let installHandler else { refreshReadyMessage(); return false }
+        readyWindow?.close()
+        installHandler()
+        return true
+    }
+
+    @objc private func restartForUpdate() { installPreparedUpdate() }
+    @objc private func dismissReadyMessage() { readyWindow?.close() }
 
     private func message(_ title: String, _ text: String) {
         // A failed update must never enter a modal loop or block recording controls.

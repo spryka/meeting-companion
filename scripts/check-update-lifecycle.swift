@@ -40,6 +40,27 @@ import Sparkle
             immediateInstallationBlock: { immediateInstallation = true }))
         precondition(!immediateInstallation, "Preparing an update must never terminate the app")
         precondition(owner.pendingVersion == "1.5.1")
+        owner.isBusy = { true }
+        precondition(!owner.canInstall)
+        precondition(!owner.installPreparedUpdate())
+        precondition(!immediateInstallation)
+        owner.isBusy = { false }
+        precondition(owner.canInstall)
+        precondition(owner.installPreparedUpdate())
+        precondition(immediateInstallation)
+        var resumedInstallation = false
+        precondition(!owner.updater(updater, shouldPostponeRelaunchForUpdate: item,
+            untilInvokingBlock: { resumedInstallation = true }))
+        owner.isBusy = { true }
+        precondition(owner.updater(updater, shouldPostponeRelaunchForUpdate: item,
+            untilInvokingBlock: { resumedInstallation = true }))
+        precondition(!owner.installPreparedUpdate())
+        owner.isBusy = { false }
+        precondition(owner.installPreparedUpdate())
+        precondition(resumedInstallation)
+        owner.updater(updater, didFinishUpdateCycleFor: .updatesInBackground,
+            error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+        precondition(!owner.canInstall && owner.pendingVersion == nil)
         print("Beta opt-in, busy guard and deferred installation without forced termination passed")
     }
 }

@@ -36,6 +36,33 @@ struct RecordingHistoryChecks {
 
         let history = RecordingHistory()
         history.put(entry)
+        var movedToTrash = false
+        for duration in [10.0, 10.01, Double.nan, Double.infinity, -1.0] {
+            let cancelled = try history.cancelShortRecording(recording, duration: duration) { _ in movedToTrash = true }
+            precondition(!cancelled)
+        }
+        precondition(!movedToTrash && history.entry(recording) != nil)
+        do {
+            _ = try history.cancelShortRecording(recording, duration: 0) { _ in movedToTrash = true }
+            preconditionFailure("A completed recording must never be cancelled")
+        } catch { precondition(!movedToTrash) }
+        history.update(recording) { $0.phase = .recording }
+        do {
+            _ = try history.cancelShortRecording(recording, duration: 9.99) { _ in throw CocoaError(.fileWriteNoPermission) }
+            preconditionFailure("Trash failure must be reported")
+        } catch {
+            precondition(history.entry(recording) != nil && FileManager.default.fileExists(atPath: folder.path))
+        }
+        let trashFolder = root.appendingPathComponent(".cancelled")
+        let cancelled = try history.cancelShortRecording(recording, duration: 9.99) { url in
+            precondition(url.path == folder.resolvingSymlinksInPath().path)
+            try FileManager.default.moveItem(at: url, to: trashFolder)
+        }
+        precondition(cancelled && history.entry(recording) == nil)
+        await history.refresh(root: root)
+        precondition(history.entry(recording) == nil, "A cancelled recording must not reappear after refresh")
+        try FileManager.default.moveItem(at: trashFolder, to: folder)
+        history.put(entry)
         history.update(recording) { $0.phase = .processing }
         let interrupted = RecordingEntry.load(recording: recording)
         precondition(interrupted.phase == .interrupted, "An old transcript must not hide an interrupted retry")

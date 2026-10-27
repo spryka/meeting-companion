@@ -12,6 +12,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private var reminder: NSPanel?
     private var recordingObserver: AnyCancellable?
     private var busyObserver: AnyCancellable?
+    private var updateObserver: AnyCancellable?
     private let appUpdater = AppUpdater()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -45,6 +46,9 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         showWindow()
         Task { await model.calendar.start() }
         appUpdater.isBusy = { [weak self] in self?.model.preventsTermination ?? true }
+        updateObserver = model.objectWillChange.sink { [weak self] in
+            Task { @MainActor in self?.appUpdater.refreshReadyMessage() }
+        }
         do { try appUpdater.start() }
         catch { NSLog("Meeting Companion updater unavailable: %@", error.localizedDescription) }
     }

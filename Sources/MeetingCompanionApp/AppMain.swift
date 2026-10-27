@@ -142,12 +142,26 @@ final class RecorderViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(echoCancellation, forKey: "echoCancellation") }
     }
     var showsRecordingCapsule: Bool {
-        !mainWindowRequested && (isRecording || recordingSaveError != nil || (!capsuleDismissed && transcriptionState != .idle))
+        !mainWindowRequested && (isRecording || recordingCancelled || recordingSaveError != nil || (!capsuleDismissed && transcriptionState != .idle))
     }
-    var showsProcessingCapsule: Bool { !isRecording && recordingSaveError == nil && showsRecordingCapsule }
+    var showsProcessingCapsule: Bool { !isRecording && !recordingCancelled && recordingSaveError == nil && showsRecordingCapsule }
+    @Published private(set) var recordingCancelled = false
+    var showsCancelRecording: Bool { isRecording && elapsed < 10 }
 
     func dismissCapsule() {
         capsuleDismissed = true
+    }
+
+    @Published private var recordingOvertime: RecordingOvertime?
+    var showsOvertimeReminder: Bool {
+        guard isRecording, !isBusy, recordingSaveError == nil, let startedAt else { return false }
+        return recordingOvertime?.needsReminder(at: startedAt.addingTimeInterval(elapsed)) ?? false
+    }
+    var overtimeMessage: String {
+        recordingOvertime?.hasMeeting == true ? "Время встречи истекло" : "Запись длится больше часа"
+    }
+    func postponeOvertimeReminder() {
+        recordingOvertime?.postpone(at: Date())
     }
 
     func openResults() {
@@ -602,6 +616,7 @@ final class RecorderViewModel: ObservableObject {
             lastFileURL = outputURL
             capsuleTimer?.invalidate()
             mainWindowRequested = false
+            recordingCancelled = false
             transcriptionState = .idle
             capsuleDismissed = false
             lastRecordingTitle = meeting?.summary ?? "Запись встречи"
@@ -609,6 +624,7 @@ final class RecorderViewModel: ObservableObject {
             elapsed = 0
             levels.reset()
             startedAt = Date()
+            recordingOvertime = RecordingOvertime(start: startedAt!, meetingEnd: meeting?.end)
             status = "Идёт запись"
             var entry = RecordingEntry(recording: outputURL, date: startedAt ?? Date(), title: lastRecordingTitle, phase: .recording)
             if let meeting {
@@ -652,6 +668,32 @@ final class RecorderViewModel: ObservableObject {
             recordingMeetingID = nil
             errorMessage = nil
             mutedMicrophoneActivity = false
+            do {
+                if try history.cancelShortRecording(stopped.outputURL, duration: stopped.duration) {
+                    lastFileURL = nil
+                    transcriptionState = .idle
+                    transcriptionWarnings = []
+                    capsuleDismissed = true
+                    status = "Короткая запись отменена"
+                    recordingCancelled = true
+                    capsuleTimer?.invalidate()
+                    capsuleTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                        Task { @MainActor in self?.recordingCancelled = false }
+                    }
+                    return true
+                }
+            } catch {
+                let message = "Не удалось отменить короткую запись. Исходники сохранены: " + error.localizedDescription
+                history.update(stopped.outputURL) {
+                    $0.duration = stopped.duration
+                    $0.phase = .interrupted
+                    $0.addProblem(.saving, message, error: true)
+                }
+                status = "Короткая запись не обработана"
+                errorMessage = message
+                transcriptionState = .failed(message)
+                return true
+            }
             status = "Исходные дорожки сохранены"
             history.update(stopped.outputURL) { $0.duration = stopped.duration; $0.readArtifacts() }
             enqueue(stopped.outputURL, stopped: stopped)
@@ -771,7 +813,8 @@ struct ContentView: View {
                         .frame(width: 348, height: 140)
                 } else {
                     CompactRecordingView(viewModel: viewModel)
-                        .frame(width: AppWindowState.recordingCapsuleSize.width, height: AppWindowState.recordingCapsuleSize.height)
+                        .frame(width: AppWindowState.recordingCapsuleSize.width,
+                               height: viewModel.showsOvertimeReminder ? AppWindowState.overtimeCapsuleHeight : AppWindowState.recordingCapsuleSize.height)
                 }
             } else {
                 RecorderWorkspaceView(model: viewModel, showSettings: showSettings)
@@ -794,15 +837,12 @@ struct ContentView: View {
         .background(WindowAccessor { window in
             windowState.attach(window)
         })
-        .onChange(of: viewModel.showsRecordingCapsule) { _, isRecording in
+        .onChange(of: [viewModel.showsRecordingCapsule, viewModel.showsProcessingCapsule, viewModel.showsOvertimeReminder]) { _, modes in
+            let isRecording = modes[0]
             if !isRecording { viewModel.setWindowVisible(false) }
             if isRecording { viewModel.calendar.setMainWindowVisible(false) }
-            windowState.setCapsuleMode(isRecording, processing: viewModel.showsProcessingCapsule)
+            windowState.setCapsuleMode(isRecording, processing: modes[1], overtime: modes[2])
             if !isRecording && viewModel.mainWindowRequested { windowState.window?.makeKeyAndOrderFront(nil) }
-        }
-        .onChange(of: viewModel.showsProcessingCapsule) { _, processing in
-            if processing { viewModel.calendar.setMainWindowVisible(false) }
-            windowState.setCapsuleMode(viewModel.showsRecordingCapsule, processing: processing)
         }
     }
     private func pageButton(_ title: String, symbol: String, page: RecorderViewModel.MainPage) -> some View {
