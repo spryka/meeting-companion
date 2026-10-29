@@ -3,6 +3,23 @@
 Standalone macOS 15+ / Apple Silicon meeting recorder. No agent or skill is
 required to record or transcribe. Keep changes small; use existing platform APIs.
 
+## Development workflow
+
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) for SDD, TDD, review and exceptions.
+Before behavior, data-format or contract changes, read relevant OpenSpec specs
+and active changes, then prepare and review proposal, scenarios, design and tasks.
+Use the project-local intent-driven schema. Read in-force root adr/ decisions and
+complete each change ADR review before tasks. New ADR acceptance requires maintainer
+agreement; accepted architecture does not mean shipped behavior. Never rewrite an
+accepted ADR; supersede it with a new record.
+Active changes describe proposed behavior, not evidence of shipped features.
+Use test-first development for testable logic and regression fixes. Confirm the
+expected failure before implementation. Record justified exceptions and manual UAT.
+Validate with `openspec validate <name> --strict`; mark tasks done only after
+verification. Do not archive unimplemented or unverified changes.
+Keep requirements in specs and rationale in design/context. Trivial documentation
+and behavior-preserving changes do not need a new specification.
+
 ## Layout
 
 - `Sources/MeetingCompanionCore`: ScreenCaptureKit / Core Audio Tap audio capture, synchronized source

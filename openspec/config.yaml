@@ -1,0 +1,21 @@
+schema: intent-driven
+context: |
+  Meeting Companion: native Swift macOS 15+ / Apple Silicon application.
+  Python transcription runs locally and offline after model preparation.
+  Read AGENTS.md and CONTRIBUTING.md. Preserve recordings, original recognition,
+  user edits, timestamps and overlapping speech. Parakeet remains optional.
+  Nemotron supports up to 8 voices independently per source, not per meeting.
+  Write prose in Russian; keep OpenSpec structural headings and keywords.
+  Specify only behavior touched by the change. Existing documentation is in docs/.
+rules:
+  specs:
+    - Requirements must include testable success and relevant failure scenarios.
+  design:
+    - Explain compatibility, persistence, failure behavior and validation boundaries.
+  adr:
+    - Read repository-level ADRs and distinguish accepted decisions from proposals.
+    - Accepted means maintainer-approved architecture, not implemented behavior.
+    - Do not mark a new decision accepted without maintainer agreement.
+  tasks:
+    - Order testable logic as failing test, implementation, then regression checks.
+    - Separate real-device UAT from automated tests; leave unchecked until verified.

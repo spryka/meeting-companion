@@ -628,3 +628,8 @@ swiftc Sources/MeetingCompanionApp/RecordingWindowState.swift scripts/check-reco
 
 Спасибо [Charoite](https://github.com/charoiteai/Charoite_audio) за вдохновение
 идеей локального помощника для встреч.
+
+## Участие в разработке
+
+Процесс SDD, правила TDD и подготовка PR описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
+Спецификации и предложения изменений находятся в [openspec/](openspec/).
