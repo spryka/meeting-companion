@@ -91,3 +91,8 @@ subprocess в изолированном временном bundle. Старто
 Реальная офлайн-проверка кэша с прежними ONNX/GGUF snapshot показывает
 отсутствие GigaAM MLX, Silero MLX и Parakeet MLX, но успешно находит прежний
 Nemotron. Пользовательский кэш не изменён; проверка использует временные ссылки.
+
+Итог: release/1.7.3 опубликована в origin, master остался на 22373cf.
+Python: 83 tests, 82 passed, 1 skipped. Release-сборка и оба сценария
+скрипта check-transcription-startup.sh проходят. OpenSpec strict и
+проверка diff проходят. Теги, релизы, feed и установленное приложение не менялись.
