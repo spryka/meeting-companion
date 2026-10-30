@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Meeting Companion transcription: Russian speech and speaker separation.
-Uses GigaAM CPU for transcription and Nemotron GPU for diarization.
+Uses GigaAM for transcription and Nemotron GPU for diarization.
 Offline mode requires cached dependencies and models.
 """
 
@@ -100,15 +100,13 @@ def gigaam_words(result, start: float, end: float, lower: float, upper: float):
 
 
 def load_gigaam_model():
-    import onnx_asr
-    from model_assets import model_path
-    path = model_path('gigaam', download=os.environ.get('HF_HUB_OFFLINE') != '1')
-    print("GigaAM: загрузка в память…", file=sys.stderr, flush=True)
-    return onnx_asr.load_model("gigaam-v3-e2e-rnnt", path=path, providers=["CPUExecutionProvider"]).with_timestamps()
+    from gigaam_mlx_backend import load_model
+    print("GigaAM: MLX / GPU (experiment)…", file=sys.stderr, flush=True)
+    return load_model()
 
 
 def run_gigaam(audio_path: Path, on_progress=None, keep=None):
-    """GigaAM v3 RNNT on CPU, 25 s chunks with 1 s overlap."""
+    """GigaAM v3 RNNT, 25 s chunks with 1 s overlap."""
     model = load_gigaam_model()
     samples, sr = load_audio(audio_path)
     if sr != 16000 or samples.ndim != 1:
@@ -217,7 +215,7 @@ def group_turns(segments: list, breaks=()):
 
 def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text="", warnings=()):
     lines = [f"Transcript: {input_path.name}", f"Audio: {input_path.name}",
-             "Model: gigaam-v3-e2e-rnnt (ONNX / CPU)",
+             "Model: gigaam-v3-e2e-rnnt (MLX / GPU; experiment)",
              f"Diarization: {diarization_status} ({speaker_count} speakers)",
              "Diarization backend: nemotron", f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
     if diarization_status == "enabled":

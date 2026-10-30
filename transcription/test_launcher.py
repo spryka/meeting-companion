@@ -32,11 +32,12 @@ printf '%s\\n' "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$HF_HOME" "$HF_HUB_CACH
         self.assertIn("only-managed", lines)
         self.assertTrue(any(line.endswith("/check-local.py") for line in lines))
 
-    def test_optional_parakeet_is_only_added_when_selected(self):
+    def test_parakeet_uses_same_mlx_runtime_without_other_engines(self):
         base = self.run_launcher("--availability")
         enhanced = self.run_launcher("--availability", "--parakeet")
-        self.assertNotIn("transcribe-cpp==0.2.3", base)
-        self.assertIn("transcribe-cpp==0.2.3", enhanced)
+        for lines in (base, enhanced):
+            self.assertIn("mlx-audio==0.5.8", lines)
+            self.assertFalse(any('transcribe-cpp' in line or 'onnx' in line for line in lines))
         self.assertEqual(enhanced[5:7], ["1", "1"])
 
     def test_prepare_can_download(self):

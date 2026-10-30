@@ -15,7 +15,7 @@ struct FullRecorderView: View {
                             .font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if viewModel.improveTerms {
-                            Text("Включено улучшение терминов: дополнительно загрузится Parakeet, около 740 МБ.")
+                            Text("Включено улучшение терминов: дополнительно загрузится Parakeet, около 745 МБ.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         HStack {

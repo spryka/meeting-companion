@@ -17,7 +17,7 @@ grep -Eq "^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" "$ROOT_DIR/CH
 [[ -s "$APP/Contents/Resources/Sparkle-LICENSE" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")" == 'oD6scmX5XipE+YSBIw8CfnrhPIlxQPHSrcsrEYNGKHE=' ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUVerifyUpdateBeforeExtraction' "$APP/Contents/Info.plist")" == true ]]
-for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py echo_cancellation.py run.sh uv uv-LICENSE-MIT; do
+for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py echo_cancellation.py gigaam_mlx_backend.py gigaam_mlx_runtime.py gigaam-mlx-LICENSE run.sh uv uv-LICENSE-MIT; do
   [[ -s "$APP/Contents/Resources/transcription/$name" ]]
 done
 [[ -x "$APP/Contents/Resources/transcription/aec/meeting-aec" ]]

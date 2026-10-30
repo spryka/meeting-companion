@@ -137,7 +137,7 @@ struct RecorderSettingsView: View {
             } header: {
                 Text("Распознавание")
             } footer: {
-                Text("Parakeet — дополнительная модель, около 740 МБ. Возможны неверные замены; исходный текст GigaAM сохраняется в raw/.")
+                Text("Parakeet — дополнительная модель, около 745 МБ. Возможны неверные замены; исходный текст GigaAM сохраняется в raw/.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)

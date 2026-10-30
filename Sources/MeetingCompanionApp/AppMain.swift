@@ -177,9 +177,7 @@ final class RecorderViewModel: ObservableObject {
     @Published private(set) var transcriptionState: TranscriptionState = .idle
     var lastTranscriptURL: URL? { transcriptionState.transcript }
     @Published var transcriptionJobs = 0
-    @Published var transcriptionReady = UserDefaults.standard.bool(forKey: "transcriptionPrepared") {
-        didSet { UserDefaults.standard.set(transcriptionReady, forKey: "transcriptionPrepared") }
-    }
+    @Published var transcriptionReady = false
     var transcriptionStatus: String {
         if let url = lastFileURL, let entry = history.entry(url), [.queued, .saving].contains(entry.phase) { return entry.status + "…" }
         return transcriptionState.text
@@ -241,7 +239,7 @@ final class RecorderViewModel: ObservableObject {
         Task { await history.refresh(root: outputDirectory) }
         refreshMicrophones()
         startTimer()
-        if !transcriptionReady { Task { await checkTranscription(prepare: false) } }
+        Task { await checkTranscription(prepare: false, availability: true) }
     }
 
     func toggleRecording() {
@@ -386,7 +384,7 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
-    func checkTranscription(prepare: Bool) async {
+    func checkTranscription(prepare: Bool, availability: Bool = false) async {
         guard !diagnosticRunning, !isRecording, !isBusy, transcriptionJobs == 0 else { return }
         diagnosticRunning = true
         diagnosticStartedAt = Date()
@@ -395,7 +393,7 @@ final class RecorderViewModel: ObservableObject {
         diagnosticReport = prepare ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
         do {
             try RecorderDiagnostics.checkFolder(outputDirectory)
-            let result = try await Transcription.checkDependencies(prepare: prepare, parakeet: improveTerms) { [weak self] output in
+            let result = try await Transcription.checkDependencies(prepare: prepare, availability: availability, parakeet: improveTerms) { [weak self] output in
                 Task { @MainActor in
                     guard let self, self.diagnosticRunning else { return }
                     self.diagnosticReport = "Папка записей: OK\n" + output
@@ -403,9 +401,14 @@ final class RecorderViewModel: ObservableObject {
             }
             transcriptionReady = result.succeeded
             diagnosticReport = "Папка записей: OK\n" + result.output +
-                (result.succeeded ? "\nТранскрибация готова." : "\nНе удалось подготовить транскрибацию. Подробности выше.")
+                (result.succeeded ? "\nТранскрибация готова." : availability
+                    ? "\nНе хватает моделей или Python-окружения. Нажмите «Скачать модели» на экране записи."
+                    : "\nНе удалось подготовить транскрибацию. Подробности выше.")
             calendar.refresh()
-        } catch { diagnosticReport = "Ошибка: " + error.localizedDescription }
+        } catch {
+            transcriptionReady = false
+            diagnosticReport = "Ошибка: " + error.localizedDescription
+        }
     }
 
     private func updateCaptureCheck(succeeded: Bool) {

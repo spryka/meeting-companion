@@ -82,11 +82,21 @@ class TranscriberTests(unittest.TestCase):
 
     def test_recorder_has_one_text_engine(self):
         self.run_main("--no-diarize", self.audio, self.output)
-        self.assertIn("gigaam-v3-e2e-rnnt (ONNX / CPU)", self.output.read_text())
+        self.assertIn("gigaam-v3-e2e-rnnt (MLX / GPU; experiment)", self.output.read_text())
         for option, value in (("--asr-backend", "whisper"), ("--model", "unused"),
                               ("--language", "en"), ("--context-file", "unused")):
             with self.subTest(option=option), self.assertRaises(SystemExit):
                 self.run_main(option, value, self.audio, self.output)
+
+    def test_experimental_mlx_selection_does_not_load_onnx(self):
+        expected = object()
+        modules = {"gigaam_mlx_backend": SimpleNamespace(load_model=lambda: expected),
+                   "onnx_asr": SimpleNamespace(load_model=lambda *a, **k: SimpleNamespace(
+                       with_timestamps=lambda: "onnx"))}
+        with patch.dict(sys.modules, modules), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch("model_assets.model_path", return_value=self.root):
+            self.assertIs(t.load_gigaam_model(), expected)
 
     def test_gigaam_tokens_join_into_words_and_overlap_has_one_owner(self):
         result = SimpleNamespace(tokens=[" Не", " зна", "ю", ",", " что"], timestamps=[0, 0.4, 0.5, 0.5, 1])

@@ -10,8 +10,8 @@ required to record or transcribe. Keep changes small; use existing platform APIs
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
-- `transcription/`: GigaAM ONNX speech recognition, Nemotron MLX diarization,
-  Silero VAD, optional Parakeet term correction, timestamp merge, runtime/model preparation and Python tests.
+- `transcription/`: GigaAM MLX speech recognition (al-bo), Nemotron MLX diarization,
+  Silero MLX VAD, optional Parakeet MLX Q8 term correction, timestamp merge, runtime/model preparation and Python tests.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
 
 Before changing transcription or term correction, read
@@ -19,6 +19,8 @@ Before changing transcription or term correction, read
 artifact layout, failure behavior and evaluation method.
 
 ## Invariants
+
+- Check current pinned models and runtime on every launch; never trust a persisted readiness flag.
 
 - Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths
   stable; changing signing identity can reset macOS permissions.

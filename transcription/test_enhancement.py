@@ -23,11 +23,11 @@ class EnhancementTests(unittest.TestCase):
     def test_vad_amplifies_only_detection_copy_and_keeps_boundary_speech(self):
         source = np.full(50*16000, .1, dtype='float32')
         before = source.copy()
-        def segment(batch, lengths, rate, **kwargs):
-            self.assertAlmostEqual(float(batch[0, 0]), .199526, places=5)
-            self.assertEqual(rate, 16000)
-            return iter([iter([(24*16000, 24*16000+1)])])
-        self.assertEqual(a.speech_windows(source, 16000, SimpleNamespace(segment_batch=segment)), [True, True, False])
+        def segment(audio, **kwargs):
+            self.assertAlmostEqual(float(audio[0]), .199526, places=5)
+            self.assertEqual(kwargs['sample_rate'], 16000)
+            return [dict(start=24*16000, end=24*16000+1)]
+        self.assertEqual(a.speech_windows(source, 16000, SimpleNamespace(get_speech_timestamps=segment)), [True, True, False])
         np.testing.assert_array_equal(source, before)
         with self.assertRaises(ValueError):
             a.speech_windows(np.array([float('nan')], dtype='float32'), 16000, None)

@@ -5,16 +5,16 @@ from pathlib import Path
 import sys
 
 MODELS = {
-    'gigaam': dict(repo='istupakov/gigaam-v3-onnx', revision='322c3b29492673eb7d0b434bfa9dfb8653e34d02',
-        files=['config.json', 'v3_e2e_rnnt_encoder.onnx', 'v3_e2e_rnnt_decoder.onnx',
-               'v3_e2e_rnnt_joint.onnx', 'v3_e2e_rnnt_vocab.txt']),
+    'gigaam': dict(repo='al-bo/gigaam-v3-e2e-rnnt-mlx', revision='9488b39159c6d30f0fbaef1e41459f1e078daf30',
+        files=['model.safetensors', 'config.json', 'tokenizer.model']),
     'nemotron': dict(repo='mlx-community/Nemotron-3-Diarization', revision='59ed2dbfc1346dcea9d423c71306a3a2499c568f',
         files=['config.json', 'model.safetensors']),
-    'vad': dict(repo='istupakov/silero-vad-onnx', revision='8b14476858ef240c50b3884bb38cc67290c1cc70', files=['silero_vad.onnx'],
-        sha256='1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3'),
-    'parakeet': dict(repo='memoravox/parakeet-tdt-0.6b-v3-gguf', revision='cb1f2b1b2f7dd49ca1016610cfa58e1e75350729',
-        files=['parakeet-tdt-0.6b-v3-Q8_0.gguf'],
-        sha256='5859f77944efcd8eafa23a6350731960b2b55b2203df51f319665c807d802cc7'),
+    'vad': dict(repo='mlx-community/silero-vad-v6', revision='2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06',
+        files=['model.safetensors', 'config.json'],
+        sha256='65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff'),
+    'parakeet': dict(repo='craquehouse/parakeet-tdt-0.6b-v3-mlx-8bit', revision='29d291a62b4013d74a24d79fca00883b717d988a',
+        files=['model.safetensors', 'config.json', 'tokenizer.model', 'tokenizer.vocab', 'vocab.txt'],
+        sha256='3e9a25e0f1c4cd866868e271601407b5a5c187ac1d4f7324a4867120775204eb'),
 }
 
 

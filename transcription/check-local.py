@@ -21,7 +21,7 @@ def check(name, operation):
 
 def scripts():
     folder = Path(__file__).parent
-    for name in ("transcribe.py", "transcribe-recording.py", "model_assets.py", "audio_enhancement.py", "term_correction.py", "run.sh"):
+    for name in ("transcribe.py", "transcribe-recording.py", "model_assets.py", "audio_enhancement.py", "term_correction.py", "gigaam_mlx_backend.py", "gigaam_mlx_runtime.py", "gigaam-mlx-LICENSE", "run.sh"):
         path = folder / name
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -46,6 +46,12 @@ def nemotron():
     mx.synchronize()
 
 
+def vad():
+    import numpy as np
+    from audio_enhancement import load_vad, speech_windows
+    speech_windows(np.zeros(16000, dtype='float32'), 16000, load_vad())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
@@ -62,18 +68,16 @@ def main():
         outcomes.append(check(name, lambda name=name: model_path(name, download=args.prepare)))
     if not args.availability:
         outcomes.extend([check("Распознавание речи", gigaam), check("Разделение голосов", nemotron)])
-        from audio_enhancement import load_vad
-        outcomes.append(check("Детектор речи", load_vad))
+        outcomes.append(check("Детектор речи", vad))
         if args.parakeet:
             def parakeet():
                 import numpy as np
-                import transcribe_cpp as tc
-                from model_assets import MODELS
-                tc.set_log_callback(None)
-                with tc.Model(model_path('parakeet') / MODELS['parakeet']['files'][0], backend='metal') as model:
-                    with tc.Session(model, n_threads=4) as session:
-                        session.run(np.zeros(16000, dtype='float32'), timestamps='word')
-            outcomes.append(check("Parakeet / Metal", parakeet))
+                import mlx.core as mx
+                from audio_enhancement import load_parakeet_model, parakeet_words
+                result = load_parakeet_model().generate(mx.array(np.zeros(16000, dtype='float32')), dtype=mx.float16)
+                parakeet_words(result, 0, 1, 0, 1)
+                mx.synchronize()
+            outcomes.append(check("Parakeet / MLX", parakeet))
     return 0 if all(outcomes) else 1
 
 

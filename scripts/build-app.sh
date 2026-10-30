@@ -26,7 +26,7 @@ cp "$BIN_DIR/MeetingCompanionApp" "$APP/Contents/MacOS/MeetingCompanion"
 mkdir -p "$APP/Contents/Frameworks"
 ditto "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 cp "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
-for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py echo_cancellation.py run.sh uv-LICENSE-MIT; do
+for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py echo_cancellation.py gigaam_mlx_backend.py gigaam_mlx_runtime.py gigaam-mlx-LICENSE run.sh uv-LICENSE-MIT; do
   cp "transcription/$name" "$APP/Contents/Resources/transcription/"
 done
 "$UV_BIN" run --quiet --python 3.12 python scripts/build-aec.py "$APP/Contents/Resources/transcription/aec"

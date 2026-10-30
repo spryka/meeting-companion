@@ -22,14 +22,11 @@ case "${1:-}" in
     ;;
 esac
 for arg in "$@"; do
-  if [[ "$arg" == "--parakeet" ]]; then UV_FLAGS+=(--with transcribe-cpp==0.2.3); fi
   if [[ "$arg" == "--offline" || "$arg" == "--check" || "$arg" == "--availability" ]]; then
     export UV_OFFLINE=1 HF_HUB_OFFLINE=1
   fi
 done
 exec "$UV" run "${UV_FLAGS[@]}" --python 3.12 --python-preference only-managed \
-  --with onnx-asr==0.12.0 \
-  --with onnxruntime==1.23.2 \
   --with mlx-audio==0.5.8 \
   --with huggingface_hub \
   --with soundfile \
