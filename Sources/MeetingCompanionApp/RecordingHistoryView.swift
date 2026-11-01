@@ -127,6 +127,7 @@ struct RecordingHistoryView: View {
                 }
             }
             Section("Файлы") {
+                Button("Открыть расшифровку") { model.onOpenTranscript?(entry) }
                 HStack {
                     Button("Открыть аудио") { model.audioPreviewURL = entry.recording }
                         .disabled(!exists(entry.recording))

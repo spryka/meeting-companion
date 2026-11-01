@@ -64,6 +64,7 @@ final class RecorderViewModel: ObservableObject {
     }
     let calendar = MeetingCalendar()
     let history = RecordingHistory()
+    var onOpenTranscript: ((RecordingEntry) -> Void)?
     enum MainPage: String, CaseIterable, Identifiable {
         case recording, history
         var id: Self { self }

@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_valid_parakeet_on",
+  "createdAt": "2026-10-29T12:30:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "raw/meeting.host_record.wav",
+      "recognitionAudioPath": "raw/meeting.host_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "completed"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "completed"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    },
+    {
+      "id": "spk_r1",
+      "sourceID": "remote",
+      "localID": 1,
+      "displayNumber": 2
+    }
+  ],
+  "words": [
+    {
+      "id": "w_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.2,
+      "text": "Развернули"
+    },
+    {
+      "id": "w_2",
+      "speakerID": "spk_h1",
+      "start": 1.3,
+      "end": 2.0,
+      "text": "Kubernetes"
+    },
+    {
+      "id": "w_3",
+      "speakerID": "spk_r1",
+      "start": 3.0,
+      "end": 3.5,
+      "text": "Отлично"
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 2.0,
+      "wordIDs": ["w_1", "w_2"]
+    },
+    {
+      "id": "turn_2",
+      "speakerID": "spk_r1",
+      "start": 3.0,
+      "end": 3.5,
+      "wordIDs": ["w_3"]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "bw_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.2,
+      "text": "Развернули"
+    },
+    {
+      "id": "bw_2",
+      "speakerID": "spk_h1",
+      "start": 1.3,
+      "end": 2.0,
+      "text": "кубернетес"
+    },
+    {
+      "id": "bw_3",
+      "speakerID": "spk_r1",
+      "start": 3.0,
+      "end": 3.5,
+      "text": "Отлично"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "ready",
+    "mixPath": "raw/transcripts/res_valid_parakeet_on/mix.m4a"
+  },
+  "warnings": [],
+  "context": null
+}

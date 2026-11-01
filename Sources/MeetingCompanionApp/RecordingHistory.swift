@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Darwin
 #if canImport(MeetingCompanionCore)
 import MeetingCompanionCore
 #endif
@@ -69,6 +70,7 @@ struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
     var problems: [RecordingProblem] = []
     var meeting: SavedMeeting?
     var log: URL?
+    var selectedResultID: String? = nil
     init(recording: URL, date: Date, title: String, phase: Phase) {
         self.recording = Self.canonicalURL(recording)
         self.date = date
@@ -244,23 +246,65 @@ final class RecordingHistory: ObservableObject {
         return entries.first { $0.id == canonical }
     }
 
-    func put(_ entry: RecordingEntry, persist: Bool = true) {
-        revisions[entry.id, default: 0] += 1
-        if let index = entries.firstIndex(where: { $0.id == entry.id }) { entries[index] = entry }
-        else { entries.append(entry); entries.sort { $0.date > $1.date } }
-        guard persist else { return }
-        do {
+    func putThrowing(_ entry: RecordingEntry, persist: Bool = true) throws {
+        if persist {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(entry).write(to: entry.metadata, options: .atomic)
-        } catch { self.error = "Не удалось сохранить историю. Аудио не удалено: " + error.localizedDescription }
+            let encodedData = try encoder.encode(entry)
+            let finalData: Data
+            // Validate the full metadata path, including a possibly dangling raw/ symlink.
+            _ = try TranscriptVersionSelector(recordingURL: entry.recording).persistedSelectedResultID()
+            var status = stat()
+            if lstat(entry.metadata.path, &status) == 0 {
+                let existingData = try Data(contentsOf: entry.metadata)
+                finalData = try TranscriptVersionSelector.mergeUnknownFields(from: existingData, into: encodedData)
+            } else {
+                let failure = errno
+                guard failure == ENOENT else { throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO) }
+                finalData = encodedData
+            }
+            try finalData.write(to: entry.metadata, options: .atomic)
+        }
+        revisions[entry.id, default: 0] += 1
+        if let index = entries.firstIndex(where: { $0.id == entry.id }) { entries[index] = entry }
+        else { entries.append(entry); entries.sort { $0.date > $1.date } }
+    }
+
+    func put(_ entry: RecordingEntry, persist: Bool = true) {
+        do {
+            try putThrowing(entry, persist: persist)
+        } catch {
+            self.error = "Не удалось сохранить историю. Аудио не удалено: " + error.localizedDescription
+        }
+    }
+
+    func updateThrowing(_ url: URL, _ change: (inout RecordingEntry) -> Void) throws {
+        guard var entry = entry(url) else {
+            throw TranscriptVersionSelectionError.metadataNotFound(url.path)
+        }
+        change(&entry)
+        try putThrowing(entry)
     }
 
     func update(_ url: URL, _ change: (inout RecordingEntry) -> Void) {
-        guard var entry = entry(url) else { return }
-        change(&entry)
-        put(entry)
+        do {
+            try updateThrowing(url, change)
+        } catch {
+            self.error = "Не удалось сохранить историю. Аудио не удалено: " + error.localizedDescription
+        }
+    }
+
+    func selectResultIDThrowing(_ resultID: String, for url: URL) throws {
+        try updateThrowing(url) { $0.selectedResultID = resultID }
+    }
+
+    func selectResultID(_ resultID: String, for url: URL) {
+        do {
+            try selectResultIDThrowing(resultID, for: url)
+        } catch {
+            self.error = "Не удалось сохранить выбранную версию: " + error.localizedDescription
+        }
     }
 
     func cancelShortRecording(_ url: URL, duration: Double,

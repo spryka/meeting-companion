@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_valid_parakeet_off",
+  "createdAt": "2026-10-29T12:00:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "raw/meeting.host_record.wav",
+      "recognitionAudioPath": "raw/meeting.host_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    },
+    {
+      "id": "spk_r1",
+      "sourceID": "remote",
+      "localID": 1,
+      "displayNumber": 2
+    }
+  ],
+  "words": [
+    {
+      "id": "w_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.0,
+      "text": "Добрый"
+    },
+    {
+      "id": "w_2",
+      "speakerID": "spk_h1",
+      "start": 1.1,
+      "end": 1.6,
+      "text": "день"
+    },
+    {
+      "id": "w_3",
+      "speakerID": "spk_r1",
+      "start": 2.0,
+      "end": 2.5,
+      "text": "Привет"
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.6,
+      "wordIDs": ["w_1", "w_2"]
+    },
+    {
+      "id": "turn_2",
+      "speakerID": "spk_r1",
+      "start": 2.0,
+      "end": 2.5,
+      "wordIDs": ["w_3"]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "bw_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.0,
+      "text": "Добрый"
+    },
+    {
+      "id": "bw_2",
+      "speakerID": "spk_h1",
+      "start": 1.1,
+      "end": 1.6,
+      "text": "день"
+    },
+    {
+      "id": "bw_3",
+      "speakerID": "spk_r1",
+      "start": 2.0,
+      "end": 2.5,
+      "text": "Привет"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "ready",
+    "mixPath": "raw/transcripts/res_valid_parakeet_off/mix.m4a"
+  },
+  "warnings": [],
+  "context": {
+    "title": "Короткий синк",
+    "startAt": "2026-10-29T12:00:00+03:00",
+    "timeZone": "Europe/Moscow",
+    "agenda": "Обсуждение редактора",
+    "attendees": ["Алиса", "Боб"]
+  }
+}

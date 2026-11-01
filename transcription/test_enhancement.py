@@ -112,6 +112,70 @@ class EnhancementTests(unittest.TestCase):
         self.assertEqual(suggestions[0]['reason'], 'phonetic')
         self.assertTrue(suggestions[0]['applied'])
 
+    def test_compound_correction_preserves_other_parts_and_punctuation(self):
+        for original, donor, expected in [
+                ('джава-команду', 'Java', 'Java-команду'),
+                ('питон-команду,', 'Python', 'Python-команду,'),
+                ('команда-джава', 'Java', 'команда-Java'),
+                ('«джава-команду,»', 'Java,', '«Java-команду,»')]:
+            with self.subTest(original=original):
+                word = dict(start=1, end=1.5, text=original, speaker=2)
+                before = dict(word)
+                result, rows = cascade([word], [dict(start=1.1, end=1.5, text=donor)])
+                self.assertEqual(result, [{**word, 'text': expected}])
+                self.assertEqual(word, before)
+                self.assertEqual([r['proposed'] for r in rows if r['applied']], [expected])
+
+    def test_ambiguous_compound_is_retained_and_explained(self):
+        word = dict(start=1, end=1.5, text='джава-джава')
+        result, rows = cascade([word], [dict(start=1, end=1.5, text='Java')])
+        self.assertEqual(result, [word])
+        self.assertTrue(any(r['reason'] == 'ambiguous_compound' for r in rows))
+        self.assertFalse(any(r['applied'] for r in rows))
+
+    def test_compound_correction_rejects_unrelated_or_distant_donor(self):
+        word = dict(start=1, end=1.5, text='джава-команду')
+        for donor in [dict(start=1, end=1.5, text='queue'),
+                      dict(start=10, end=10.5, text='Java')]:
+            with self.subTest(donor=donor):
+                result, rows = cascade([word], [donor])
+                self.assertEqual(result, [word])
+                self.assertFalse(any(r['applied'] for r in rows))
+
+    def test_compound_correction_cannot_consume_neighbour_or_number(self):
+        for texts in [('джава-команду', 'платформы'), ('джава-команду-2',)]:
+            with self.subTest(texts=texts):
+                words = [dict(start=1+i*.2, end=1.2+i*.2, text=text)
+                         for i, text in enumerate(texts)]
+                result, rows = cascade(words, [dict(start=1, end=1.4, text='Java')])
+                self.assertEqual([w['text'] for w in result],
+                                 ['Java-команду', 'платформы'] if len(words) == 2 else list(texts))
+                self.assertFalse(any(r['applied'] and r['source_indices'] == [0, 2] for r in rows))
+
+    def test_compound_donor_is_not_used_to_rewrite_source_compound(self):
+        word = dict(start=1, end=1.5, text='ордерс-гейтвей')
+        result, rows = cascade([word], [dict(start=1, end=1.5, text='Orders-Gateway')])
+        self.assertEqual(result, [word])
+        self.assertTrue(any(r['reason'] == 'unsupported_compound' for r in rows))
+
+    def test_multiword_compound_donor_cannot_apply_only_its_first_word(self):
+        word = dict(start=1, end=1.54, text='тим-лит', speaker=1)
+        donor = [dict(start=1, end=1.24, text='Team'),
+                 dict(start=1.24, end=1.48, text='Lead')]
+        result, rows = cascade([word], donor)
+        self.assertEqual(result, [word])
+        self.assertTrue(any(r['reason'] == 'compound_alignment' for r in rows))
+        self.assertFalse(any(r['applied'] for r in rows))
+
+    def test_russian_donor_neighbour_does_not_block_compound_correction(self):
+        words = [dict(start=1, end=1.4, text='джава-команду'),
+                 dict(start=1.4, end=1.6, text='платформы')]
+        donor = [dict(start=1, end=1.2, text='Java'),
+                 dict(start=1.2, end=1.6, text='там')]
+        result, rows = cascade(words, donor)
+        self.assertEqual([w['text'] for w in result], ['Java-команду', 'платформы'])
+        self.assertEqual(sum(r['applied'] for r in rows), 1)
+
     def test_equal_scores_choose_better_temporal_match(self):
         words = [dict(start=1, end=1.5, text='абракадабра')]
         donor = [dict(start=1, end=1.5, text='abrakadabra'),

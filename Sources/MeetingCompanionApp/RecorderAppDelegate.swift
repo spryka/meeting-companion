@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import ServiceManagement
 import SwiftUI
+import MeetingCompanionCore
 
 @MainActor
 final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -14,8 +15,20 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private var busyObserver: AnyCancellable?
     private var updateObserver: AnyCancellable?
     private let appUpdater = AppUpdater()
+    private let transcriptWindows = TranscriptReviewWindowManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        model.onOpenTranscript = { [weak self] entry in
+            guard let self else { return }
+            do {
+                _ = try self.transcriptWindows.open(recordingURL: entry.recording, title: entry.title) { [weak history = self.model.history] id in
+                    guard let history else { throw TranscriptWindowError.closed }
+                    try history.selectResultIDThrowing(id, for: entry.id)
+                }
+            } catch {
+                self.model.history.reportError("Не удалось открыть расшифровку: " + error.localizedDescription)
+            }
+        }
         NSApp.appearance = model.appearance.value
         NSApp.setActivationPolicy(.accessory)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),

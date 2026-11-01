@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_invalid_path_traversal",
+  "createdAt": "2026-10-29T15:20:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "../../sensitive/host.wav",
+      "recognitionAudioPath": "../../sensitive/host.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    }
+  ],
+  "words": [
+    {
+      "id": "w_1",
+      "speakerID": "spk_h1",
+      "start": 0.0,
+      "end": 0.5,
+      "text": "Путь"
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn_1",
+      "speakerID": "spk_h1",
+      "start": 0.0,
+      "end": 0.5,
+      "wordIDs": ["w_1"]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "bw_1",
+      "speakerID": "spk_h1",
+      "start": 0.0,
+      "end": 0.5,
+      "text": "Путь"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "ready",
+    "mixPath": "raw/transcripts/res_invalid_path_traversal/mix.m4a"
+  },
+  "warnings": [],
+  "context": null
+}

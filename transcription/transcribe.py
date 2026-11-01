@@ -10,6 +10,7 @@ from bisect import bisect_right
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import time
@@ -206,13 +207,24 @@ def group_turns(segments: list, breaks=()):
             continue
         if (turns and turns[-1].get("speaker", 1) == seg.get("speaker", 1)
                 and seg["start"] - turns[-1]["end"] < 2
-                and seg["end"] - turns[-1]["start"] <= 15
+                and seg["end"] - turns[-1]["start"] <= 30
+                and not (turns[-1]["end"] - turns[-1]["start"] >= 15
+                         and re.search(r'''[.!?…]["'»”’\)\]]*\s*$''', turns[-1]["text"]))
                 and bisect_right(boundaries, turns[-1]["start"]) == bisect_right(boundaries, seg["start"])):
             turns[-1]["text"] += " " + seg["text"]
             turns[-1]["end"] = max(turns[-1]["end"], seg["end"])
         else:
             turns.append(dict(seg))
     return turns
+
+
+def turn_lines(turns):
+    lines = []
+    for turn in turns:
+        if lines:
+            lines.append("")
+        lines.append(f'[{format_timestamp(turn["start"])}] Speaker {turn.get("speaker", 1)}: {turn["text"]}')
+    return lines
 
 
 def transcript_lines(input_path, segments, diarization_status, speaker_count, fallback_text="", warnings=()):
@@ -225,8 +237,7 @@ def transcript_lines(input_path, segments, diarization_status, speaker_count, fa
     lines[-1:-1] = ["Warning: " + warning for warning in warnings]
     turns = group_turns(segments)
     if turns:
-        lines.extend(f'[{format_timestamp(turn["start"])}] Speaker {turn.get("speaker", 1)}: {turn["text"]}'
-                     for turn in turns)
+        lines.extend(turn_lines(turns))
     else:
         lines.append(f"[00:00] Speaker 1: {str(fallback_text).strip()}")
     lines.extend(["", "Speaker guide:"])

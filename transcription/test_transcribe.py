@@ -16,6 +16,38 @@ spec.loader.exec_module(t)
 
 
 class TranscriberTests(unittest.TestCase):
+    def test_paragraph_waits_for_sentence_end_after_fifteen_seconds(self):
+        words = [dict(start=i, end=i+.5, text=text, speaker=1)
+                 for i, text in enumerate(['слово']*15 + ['результат.', 'Следующее'])]
+        before = [dict(word) for word in words]
+        turns = t.group_turns(words)
+        self.assertEqual([turn['start'] for turn in turns], [0, 16])
+        self.assertTrue(turns[0]['text'].endswith('результат.'))
+        self.assertEqual(words, before)
+        self.assertEqual(' '.join(turn['text'] for turn in turns),
+                         ' '.join(word['text'] for word in words))
+
+    def test_sentence_end_recognizes_closing_quotes_and_brackets(self):
+        for ending in ['готово!', 'готово?', 'готово…', 'готово."', 'готово.»', 'готово.)']:
+            with self.subTest(ending=ending):
+                words = [dict(start=i, end=i+.5, text='слово') for i in range(15)]
+                words += [dict(start=15, end=15.5, text=ending),
+                          dict(start=16, end=16.5, text='Далее')]
+                self.assertEqual(len(t.group_turns(words)), 2)
+
+    def test_paragraph_breaks_at_pause_speaker_change_and_explicit_boundary(self):
+        words = [dict(start=0, end=1, text='Начало', speaker=1),
+                 dict(start=3, end=4, text='Пауза', speaker=1),
+                 dict(start=4, end=5, text='Другой', speaker=2),
+                 dict(start=5, end=6, text='Продолжение', speaker=2)]
+        self.assertEqual(len(t.group_turns(words, breaks=[5])), 4)
+
+    def test_text_paragraphs_have_blank_line_between_them(self):
+        words = [dict(start=0, end=1, text='Первый', speaker=1),
+                 dict(start=1, end=2, text='Второй', speaker=2)]
+        text = '\n'.join(t.transcript_lines(Path('audio.wav'), words, 'enabled', 2))
+        self.assertIn('[00:00] Speaker 1: Первый\n\n[00:01] Speaker 2: Второй', text)
+
     def test_shared_text_hides_technical_home_paths_without_rewriting_speech(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "shared.txt"

@@ -23,6 +23,18 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit")
             ]
         ),
+        .testTarget(
+            name: "MeetingCompanionCoreTests",
+            dependencies: [
+                "MeetingCompanionCore",
+                "TranscriptLockHelper"
+            ]
+        ),
+        .executableTarget(
+            name: "TranscriptLockHelper",
+            dependencies: ["MeetingCompanionCore"],
+            path: "Tests/TranscriptLockHelper"
+        ),
         .executableTarget(
             name: "MeetingCompanionCLI",
             dependencies: ["MeetingCompanionCore"]

@@ -28,6 +28,27 @@ def allowed(a,b):
   and re.findall(r'\d+',a)==re.findall(r'\d+',b)
   and similarity(a,b) >= 0.4)
 
+def replacement(a, b):
+    if '-' not in a:
+        return (b, similarity(a, b), 'candidate') if allowed(a, b) else None
+    if not all(re.fullmatch(r'[A-Za-z]+(?:[-’\'][A-Za-z]+)*[.,!?;:]?', term) for term in b.split()):
+        return None
+    parts = list(re.finditer(r'[A-Za-zА-Яа-яЁё0-9]+', a))
+    matches = [part for part in parts if any(allowed(part.group(), term) for term in b.split())]
+    if re.findall(r'\d+', a) != re.findall(r'\d+', b):
+        return None
+    if not matches and not allowed(a, b):
+        return None
+    # shortcut: only one component and one plain donor term; reject broader compound rewrites.
+    if (not re.fullmatch(r'[^\w]*[A-Za-zА-Яа-яЁё0-9]+(?:-[A-Za-zА-Яа-яЁё0-9]+)+[^\w]*', a)
+            or not re.fullmatch(r'[A-Za-z]+[.,!?;:]?', b)):
+        return b, similarity(a, b), 'unsupported_compound'
+    if len(matches) != 1:
+        return b, similarity(a, b), 'ambiguous_compound' if matches else 'unsupported_compound'
+    part = matches[0]
+    return (a[:part.start()] + re.sub(r'[.,!?;:]$', '', b) + a[part.end():],
+            similarity(part.group(), b), 'candidate')
+
 def contiguous(words):
  return all(left['start'] <= right['start'] and right['start']-left['end'] <= 0.6
             for left,right in zip(words,words[1:]))
@@ -61,16 +82,18 @@ def propose(g, p):
                         if overlap <= 0:
                             continue
                         b = ' '.join(w['text'] for w in donor)
-                        if not allowed(a, b):
+                        alternative = replacement(a, b)
+                        if alternative is None:
                             continue
+                        proposed, score, reason = alternative
                         union = max(source[-1]['end'], donor[-1]['end']) - min(source[0]['start'], donor[0]['start'])
                         protected = any(norm(w) in STOP for w in a.split())
                         rows.append(dict(start=source[0]['start'], end=source[-1]['end'],
-                            original=a, proposed=b, score=round(similarity(a, b), 3),
+                            original=a, proposed=proposed, score=score,
                             donor_start=donor[0]['start'], donor_end=donor[-1]['end'],
                             source_indices=[i, i+n], donor_indices=[j, j+m],
                             time_overlap=round(overlap/union, 3),
-                            applied=False, reason='protected_word' if protected else 'candidate'))
+                            applied=False, reason='protected_word' if protected else reason))
     return rows
 
 
@@ -81,11 +104,20 @@ def conflicts(a, b):
 
 def cascade(g, p):
     rows = propose(g, p)
+    for row in rows:
+        if row['reason'] != 'candidate' or '-' not in row['original']:
+            continue
+        if any(other['reason'] == 'unsupported_compound'
+               and other['source_indices'] == row['source_indices']
+               and other['donor_indices'] != row['donor_indices']
+               and other['donor_indices'][0] <= row['donor_indices'][0]
+               and other['donor_indices'][1] >= row['donor_indices'][1] for other in rows):
+            row['reason'] = 'compound_alignment'
     candidates = [row for row in rows if row['reason'] == 'candidate']
     selected = []
     # Keep the original score-first selection; time checks already gate each proposal.
     for row in sorted(candidates, key=lambda r: (
-            similarity(r['original'], r['proposed']), r['time_overlap'], r['source_indices'][0],
+            r['score'], r['time_overlap'], r['source_indices'][0],
             r['source_indices'][1]-r['source_indices'][0], r['donor_indices'][0],
             r['donor_indices'][1]-r['donor_indices'][0]), reverse=True):
         if any(conflicts(row, other) for other in selected):
@@ -109,5 +141,6 @@ def cascade(g, p):
         else:
             corrected.append(dict(g[i]))
             i += 1
-    return corrected, sorted(rows, key=lambda r: r['start'])
+    return corrected, sorted([{**row, 'score': round(row['score'], 3)} for row in rows],
+                             key=lambda r: r['start'])
 

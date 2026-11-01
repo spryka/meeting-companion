@@ -154,7 +154,7 @@ class RecordingTests(unittest.TestCase):
     def test_five_minute_monologue_keeps_every_word_in_short_paragraphs(self):
         remote = self.data([self.segment(second, str(second)) for second in range(300)])
         lines = [line for line in module.merge_sources(self.data(), remote) if line.startswith("[")]
-        self.assertEqual(len(lines), 20)
+        self.assertEqual(len(lines), 10)
         self.assertEqual(" ".join(line.split(": ", 1)[1] for line in lines), " ".join(map(str, range(300))))
 
     def test_recording_uses_shared_pipeline_and_emits_progress(self):
@@ -177,7 +177,7 @@ class RecordingTests(unittest.TestCase):
                  patch.dict(os.environ), contextlib.redirect_stdout(output):
                 module.main()
             text = base.with_name("recording.sources.transcript.txt").read_text()
-            self.assertIn("[00:00] Speaker 2: Remote\n[00:05] Speaker 1: Host", text)
+            self.assertIn("[00:00] Speaker 2: Remote\n\n[00:05] Speaker 1: Host", text)
             self.assertEqual(calls, list(zip(module.source_paths(base.resolve()), (True, True))))
             self.assertIn('"channel": "host"', output.getvalue())
             self.assertIn('"channel": "remote"', output.getvalue())

@@ -8,8 +8,9 @@ import os
 import wave
 
 from transcribe import (DIARIZATION_LIMIT_NOTE, NEMOTRON_MAX_SPEAKERS,
-                        format_timestamp, group_turns, transcribe_file, write_transcript)
+                        group_turns, transcribe_file, turn_lines, write_transcript)
 from echo_cancellation import cancel_echo
+from transcript_document import publish_result
 
 
 def merge_sources(host_data: dict, remote_data: dict) -> list[str]:
@@ -45,8 +46,7 @@ def merge_sources(host_data: dict, remote_data: dict) -> list[str]:
         lines.insert(-1, "Diarization limit: " + DIARIZATION_LIMIT_NOTE)
     for label, data in (("Микрофон", host_data), ("Системный звук", remote_data)):
         lines[-1:-1] = [f"Warning: {label}: {message}" for message in data.get("warnings", [])]
-    lines.extend(f'[{format_timestamp(turn["start"])}] Speaker {turn["speaker"]}: {turn["text"]}'
-                 for turn in sorted(turns, key=lambda turn: (turn["start"], turn["speaker"])))
+    lines.extend(turn_lines(sorted(turns, key=lambda turn: (turn["start"], turn["speaker"]))))
     if host_data["diarization"].startswith("Diarization: disabled"):
         source_speakers[0].add(1)
     lines.extend(["", "Speaker guide:"])
@@ -67,6 +67,11 @@ def merge_sources(host_data: dict, remote_data: dict) -> list[str]:
 def source_paths(base: Path):
     raw = base.parent / "raw"
     source_base = raw / base.name if raw.is_dir() else base
+    # Publication adds raw/ even to legacy flat recordings; it does not move WAVs.
+    names = [base.name + f".{source}_record.wav" for source in ("host", "remote")]
+    if (raw.is_dir() and not any((raw / name).exists() for name in names)
+            and any((base.parent / name).exists() for name in names)):
+        source_base = base
     return tuple(source_base.with_name(base.name + f".{source}_record.wav") for source in ("host", "remote"))
 
 
@@ -145,6 +150,7 @@ def main():
     stages = ["diarization", "vad", "gigaam", "speakers"] + (["parakeet", "correction"] if args.parakeet else [])
     steps = 2 * len(stages) + 1 + int(args.echo_cancel)
     microphone = host
+    aec = dict(requested=args.echo_cancel, outcome="disabled")
     if args.echo_cancel:
         def echo_progress(completed, total):
             print("MEETING_PROGRESS " + json.dumps(dict(stage="echo", channel="host",
@@ -152,8 +158,10 @@ def main():
                   total=math.ceil(total / 16000), step=1, steps=steps)), flush=True)
         echo_progress(0, 1)
         try:
-            microphone = cancel_echo(host, remote, echo_progress)
+            microphone = Path(cancel_echo(host, remote, echo_progress)).resolve()
+            aec["outcome"] = "applied" if microphone != host else "bypassed"
         except (OSError, ValueError, RuntimeError, EOFError, wave.Error) as error:
+            aec["outcome"] = "failed"
             message = "Эхоподавление не выполнено; распознаётся исходный микрофон: " + str(error)
             capture_warnings.append(message)
             print("MEETING_PROGRESS " + json.dumps(dict(stage="warning", channel="host", completed=0,
@@ -180,6 +188,7 @@ def main():
         write_transcript(original_output, [f"Transcript: {base.name} — original GigaAM",
             *("Warning: " + message for message in capture_warnings), *merge_sources(*originals)])
     write_transcript(merged_output, lines)
+    publish_result(base, results, host, remote, microphone, aec, capture_warnings)
     print("MEETING_PROGRESS " + json.dumps(dict(stage="merge", completed=1, total=1, step=steps, steps=steps)), flush=True)
     print(f"Saved: {merged_output}")
 

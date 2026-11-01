@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_valid_overlaps_identities",
+  "createdAt": "2026-10-29T13:30:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "raw/meeting.host_record.wav",
+      "recognitionAudioPath": "raw/meeting.host_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 2,
+      "correctionStatus": "disabled"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 2,
+      "correctionStatus": "disabled"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    },
+    {
+      "id": "spk_h2",
+      "sourceID": "host",
+      "localID": 2,
+      "displayNumber": 2
+    },
+    {
+      "id": "spk_r1",
+      "sourceID": "remote",
+      "localID": 1,
+      "displayNumber": 3
+    },
+    {
+      "id": "spk_r2",
+      "sourceID": "remote",
+      "localID": 2,
+      "displayNumber": 4
+    }
+  ],
+  "words": [
+    {
+      "id": "w_1",
+      "speakerID": "spk_h1",
+      "start": 1.0,
+      "end": 2.0,
+      "text": "Давайте"
+    },
+    {
+      "id": "w_2",
+      "speakerID": "spk_h1",
+      "start": 2.0,
+      "end": 3.0,
+      "text": "начнём"
+    },
+    {
+      "id": "w_3",
+      "speakerID": "spk_r1",
+      "start": 1.5,
+      "end": 2.5,
+      "text": "Слушаем"
+    },
+    {
+      "id": "w_4",
+      "speakerID": "spk_h2",
+      "start": 3.5,
+      "end": 4.2,
+      "text": "Согласен"
+    },
+    {
+      "id": "w_5",
+      "speakerID": "spk_r2",
+      "start": 3.8,
+      "end": 4.5,
+      "text": "Поддерживаю"
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn_1",
+      "speakerID": "spk_h1",
+      "start": 1.0,
+      "end": 3.0,
+      "wordIDs": ["w_1", "w_2"]
+    },
+    {
+      "id": "turn_2",
+      "speakerID": "spk_r1",
+      "start": 1.5,
+      "end": 2.5,
+      "wordIDs": ["w_3"]
+    },
+    {
+      "id": "turn_3",
+      "speakerID": "spk_h2",
+      "start": 3.5,
+      "end": 4.2,
+      "wordIDs": ["w_4"]
+    },
+    {
+      "id": "turn_4",
+      "speakerID": "spk_r2",
+      "start": 3.8,
+      "end": 4.5,
+      "wordIDs": ["w_5"]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "bw_1",
+      "speakerID": "spk_h1",
+      "start": 1.0,
+      "end": 2.0,
+      "text": "Давайте"
+    },
+    {
+      "id": "bw_2",
+      "speakerID": "spk_h1",
+      "start": 2.0,
+      "end": 3.0,
+      "text": "начнём"
+    },
+    {
+      "id": "bw_3",
+      "speakerID": "spk_r1",
+      "start": 1.5,
+      "end": 2.5,
+      "text": "Слушаем"
+    },
+    {
+      "id": "bw_4",
+      "speakerID": "spk_h2",
+      "start": 3.5,
+      "end": 4.2,
+      "text": "Согласен"
+    },
+    {
+      "id": "bw_5",
+      "speakerID": "spk_r2",
+      "start": 3.8,
+      "end": 4.5,
+      "text": "Поддерживаю"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "ready",
+    "mixPath": "raw/transcripts/res_valid_overlaps_identities/mix.m4a"
+  },
+  "warnings": [],
+  "context": null
+}
