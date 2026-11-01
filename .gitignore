@@ -18,3 +18,9 @@ __pycache__/
 *.transcript.txt
 *.context.json
 *.log
+
+# AI agent skills & workflows
+.agent/
+.codex/
+.opencode/
+.claude/
