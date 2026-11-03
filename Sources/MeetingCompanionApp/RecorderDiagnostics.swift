@@ -63,9 +63,15 @@ struct RecorderDiagnostics {
             throw NSError(domain: "CacheReset", code: 2, userInfo: [NSLocalizedDescriptionKey:
                 "Сброс отменён: папка данных приложения заменена ссылкой."])
         }
-        let targets = ["models", "runtime"].map { directory.appendingPathComponent($0) }
+        let targets = ["native-models", "runtime"].map { directory.appendingPathComponent($0) }
         let recordingPath = recordings.resolvingSymlinksInPath().standardizedFileURL.path
+        let directoryPath = directory.standardizedFileURL.path
         for target in targets {
+            let standardTargetPath = target.standardizedFileURL.path
+            guard standardTargetPath.hasPrefix(directoryPath + "/") else {
+                throw NSError(domain: "CacheReset", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                    "Сброс отменён: путь кэша выходит за пределы папки приложения."])
+            }
             let path = target.resolvingSymlinksInPath().standardizedFileURL.path
             guard recordingPath != path, !recordingPath.hasPrefix(path + "/"),
                   !path.hasPrefix(recordingPath + "/") else {

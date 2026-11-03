@@ -18,8 +18,6 @@ struct RecorderWorkspaceView: View {
         }
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
-
-
 }
 
 struct RecordingHistoryView: View {
@@ -76,7 +74,7 @@ struct RecordingHistoryView: View {
             .foregroundStyle(entry.phase == .failed ? Color.red : !entry.problems.isEmpty ? Color.orange : Color.secondary)
     }
 
-    private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+    private func exists(_ url: URL) -> Bool { history.entries.contains { $0.availableFiles.contains(url) } }
 
     private func openButton(_ title: String, _ url: URL) -> some View {
         Button(title) {
@@ -85,26 +83,23 @@ struct RecordingHistoryView: View {
     }
 
     private func exportTranscript(_ entry: RecordingEntry) {
+        guard entry.capabilities.canReview else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = entry.transcript.lastPathComponent
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
+            Task {
             do {
-                let destination = url.standardizedFileURL.resolvingSymlinksInPath()
-                let raw = entry.rawBase.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-                let protected = [entry.transcript, entry.recording, entry.context, entry.captureReport, entry.metadata] +
-                    ["host", "remote"].flatMap { source in
-                        ["wav", "local.transcript.txt", "local.transcript.gigaam.txt"].map { entry.rawBase.appendingPathExtension(source + "_record." + $0) }
-                    }
-                guard !protected.contains(where: { $0.standardizedFileURL.resolvingSymlinksInPath() == destination }),
-                      !(raw.lastPathComponent == "raw" && destination.path.hasPrefix(raw.path + "/")) else {
-                    history.reportError("Для экспорта выберите другой файл: исходный транскрипт сохраняем.")
-                    return
+                try await Task.detached {
+                guard let document = try TranscriptResultStorage(recordingURL: entry.recording).currentDocument() else {
+                    throw TranscriptWindowError.transcriptNotFound(entry.recording.path)
                 }
-                let text = try String(contentsOf: entry.transcript, encoding: .utf8)
-                try RecordingEntry.shareableTranscript(text).write(to: url, atomically: true, encoding: .utf8)
+                let edits = try TranscriptEditsRepository(recordingDirectory: entry.folder).loadEdits(resultID: document.resultID)
+                try TranscriptExportWriter(recordingDirectory: entry.folder).export(document: document, edits: edits, to: url, allowOverwrite: true)
+                }.value
             } catch { history.reportError("Не удалось экспортировать текст: " + error.localizedDescription) }
+            }
         }
     }
 
@@ -114,6 +109,7 @@ struct RecordingHistoryView: View {
                 Text(entry.title).font(.title2).textSelection(.enabled)
                 Text(entry.date.formatted(date: .complete, time: .shortened)).foregroundStyle(.secondary)
                 statusLabel(entry)
+                if let warning = entry.persistenceWarning { Text(warning).foregroundStyle(.orange).textSelection(.enabled) }
                 if let problem = entry.problems.first(where: { $0.isError }) ?? entry.problems.first {
                     Text(problem.stage.title + ": " + problem.message)
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -126,40 +122,55 @@ struct RecordingHistoryView: View {
                     TranscriptionProgressView(progress: progress)
                 }
             }
-            Section("Файлы") {
-                Button("Открыть расшифровку") { model.onOpenTranscript?(entry) }
-                HStack {
-                    Button("Открыть аудио") { model.audioPreviewURL = entry.recording }
-                        .disabled(!exists(entry.recording))
-                        .help("Прослушать запись в системном предпросмотре Quick Look")
-                    openButton("Открыть текст", entry.transcript)
-                    Button("Показать в Finder") { NSWorkspace.shared.open(entry.folder) }
+            if entry.capabilities.isTextOnly {
+                Section("Файлы") {
+                    Button("Открыть текст только для чтения") { model.onOpenTranscript?(entry) }
+                        .disabled(!entry.capabilities.hasSavedText)
+                    Text(entry.capabilities.reason ?? "Доступен только просмотр сохранённого текста.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Button("Экспортировать текст…") { exportTranscript(entry) }
-                    .disabled(!exists(entry.transcript))
-                Text("В экспортируемой копии технические пути заменяются относительными; исходный файл сохраняется.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            DisclosureGroup("Дополнительные действия") {
-                HStack {
-                    openButton("Текст микрофона", entry.rawBase.appendingPathExtension("host_record.local.transcript.txt"))
-                    openButton("Текст системного звука", entry.rawBase.appendingPathExtension("remote_record.local.transcript.txt"))
+            } else {
+                Section("Файлы") {
+                    Button("Открыть расшифровку") { model.onOpenTranscript?(entry) }
+                        .disabled(!entry.capabilities.canReview && !entry.capabilities.hasSavedText)
+                    HStack {
+                        Button("Открыть аудио") { model.audioPreviewURL = entry.recording }
+                            .disabled(!entry.capabilities.canPreviewAudio)
+                            .help("Прослушать запись в системном предпросмотре Quick Look")
+                        Button("Открыть текст") { model.onOpenTranscript?(entry) }
+                            .disabled(!entry.capabilities.hasSavedText)
+                        Button("Показать в Finder") { NSWorkspace.shared.open(entry.folder) }
+                    }
+                    Button("Экспортировать текст…") { exportTranscript(entry) }
+                        .disabled(!entry.capabilities.canReview)
+                    Text("В экспортируемой копии технические пути заменяются относительными; исходный файл сохраняется.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Button("Повторить обработку") { model.retryRecording(entry.id) }
-                    .disabled(entry.phase.isWorking || model.isBusy || model.diagnosticRunning)
-            }
-            if let meeting = entry.meeting {
-                Section("Контекст встречи") {
-                    Text(meeting.start.formatted(date: .omitted, time: .shortened) + " — " + meeting.end.formatted(date: .omitted, time: .shortened))
-                    if !meeting.agenda.isEmpty { Text(meeting.agenda).textSelection(.enabled) }
-                    if !meeting.attendees.isEmpty {
-                        LabeledContent("Приглашены") { Text(meeting.attendees.joined(separator: ", ")).textSelection(.enabled) }
-                        Text("Список приглашённых не подтверждает участие и не определяет голоса в транскрипте.").font(.caption).foregroundStyle(.secondary)
+                if let reason = entry.capabilities.reason { Text(reason).font(.caption).foregroundStyle(.secondary) }
+                DisclosureGroup("Дополнительные действия") {
+                    if entry.capabilities.canReview {
+                        HStack {
+                            openButton("Текст микрофона", entry.rawBase.appendingPathExtension("host_record.local.transcript.txt"))
+                            openButton("Текст системного звука", entry.rawBase.appendingPathExtension("remote_record.local.transcript.txt"))
+                        }
                     }
-                    ForEach(meeting.links, id: \.self) { link in
-                        if let url = URL(string: link), ["http", "https"].contains(url.scheme) { Link(link, destination: url).lineLimit(2) }
+                    Button("Повторить обработку") { model.retryRecording(entry.id) }
+                        .disabled(!entry.capabilities.canRetry || entry.phase.isWorking || model.isBusy || model.diagnosticRunning)
+                }
+                if let meeting = entry.meeting {
+                    Section("Контекст встречи") {
+                        Text(meeting.start.formatted(date: .omitted, time: .shortened) + " — " + meeting.end.formatted(date: .omitted, time: .shortened))
+                        if !meeting.agenda.isEmpty { Text(meeting.agenda).textSelection(.enabled) }
+                        if !meeting.attendees.isEmpty {
+                            LabeledContent("Приглашены") { Text(meeting.attendees.joined(separator: ", ")).textSelection(.enabled) }
+                            Text("Список приглашённых не подтверждает участие и не определяет голоса в транскрипте.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(meeting.links, id: \.self) { link in
+                            if let url = URL(string: link), ["http", "https"].contains(url.scheme) { Link(link, destination: url).lineLimit(2) }
+                        }
+                        openButton("Файл контекста", entry.context)
                     }
-                    openButton("Файл контекста", entry.context)
                 }
             }
             Section("Проблемы") {
@@ -175,6 +186,7 @@ struct RecordingHistoryView: View {
                         Text(problem.advice).font(.caption).foregroundStyle(.secondary)
                     }.padding(.vertical, 4)
                 }
+                if !entry.capabilities.isTextOnly {
                 if !model.transcriptionReady {
                     Button("Скачать модели") { Task { await model.checkTranscription(prepare: true) } }
                         .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0)
@@ -182,6 +194,7 @@ struct RecordingHistoryView: View {
                 openButton("Отчёт захвата", entry.captureReport)
                 if let log = entry.log { openButton("Последний журнал обработки", log) }
                 Button("Журналы обработки в Finder") { NSWorkspace.shared.open(entry.rawBase.deletingLastPathComponent()) }
+                }
             }
         }
         .formStyle(.grouped)

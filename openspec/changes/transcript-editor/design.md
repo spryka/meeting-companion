@@ -1,3 +1,10 @@
+> Актуализация 2026-11-03: history picker, selectedResultID и async-switch clauses
+> superseded [ADR-0004](../../../adr/0004-single-current-transcript.md) и
+> [single-current-transcript](../single-current-transcript/design.md). Ниже сохранена
+> история прежней реализации/приёмки; её counts/UAT не являются проверкой beta.7.
+> Ручные text/name edits, CAS, export и playback сохранены. Новая приёмка pending,
+> физический UAT beta.7 — WAITING_UAT; архивирование не выполняется.
+
 # Design
 
 ## Context
@@ -122,11 +129,12 @@ SQLite разумно пересмотреть при общей поисков�
 и разрешение аудиопутей внутри папки записи, включая символические ссылки.
 
 Новый результат сначала готовится во временном каталоге, проверяется и публикуется
-атомарно. Незавершённые каталоги не предлагаются в выборе версий. Выбранный resultID
-сохраняется в состоянии истории: новый результат не переключает открытый редактор.
-При первом открытии без выбора берётся последний успешно опубликованный результат.
-Старые версии не удаляются автоматически. Существующий TXT остаётся совместимым
-экспортом машинного результата; экспорт пользовательских правок всегда отдельный.
+атомарно вместе с обязательным TXT внутри каталога результата. Current определяется
+по creation date каталога и имени при равенстве до schema validation; старый выбор
+игнорируется. Новейший повреждённый результат не открывает предыдущий. До retry
+черновик разрешается через save/discard/cancel, редактор закрывается до terminal.
+Старые результаты не удаляются. Корневой TXT — производный совместимый cache;
+экспорт пользовательских правок всегда отдельный и использует текущий JSON.
 
 Порядок публикации: получить распознавание и baseline -> закрепить фактически
 использованную AEC-копию в staging-каталоге версии -> подготовить и проверить микс ->
@@ -134,13 +142,15 @@ SQLite разумно пересмотреть при общей поисков�
 переименовать каталог. Сбой смешивания завершает версию с playback.unavailable и
 предупреждением, не отменяя текст. Опубликованная версия не дополняется миксом
 задним числом; новая подготовка создаёт новую версию. При сбое публикации старые
-версии и выбор остаются неизменными. Фиксированное рабочее имя AEC-копии не
+результаты остаются неизменными. До rename текущим остаётся прежний результат;
+после rename новый сохраняется текущим даже при сбое cache/ack/status, с warning.
+Фиксированное рабочее имя AEC-копии не
 используется как ссылка на обработанное аудио ранее опубликованной версии.
 
 ### Окно и плеер
 
 История: выбранная запись -> "Открыть расшифровку" -> отдельное окно.
-Вверху название и выбор версии (если их несколько), в центре лениво отображаемые
+Вверху название текущей расшифровки, в центре лениво отображаемые
 абзацы, внизу плеер с общей временной шкалой. Таймкод запускает фрагмент,
 метка голоса открывает назначение имени, карандаш открывает текстовый редактор.
 
@@ -263,3 +273,8 @@ VoiceOver, соответствие микса выбранной версии �
 Сначала постоянный документ и тесты совместимости, затем просмотр, затем правки.
 Старые файлы автоматически не мигрируются. Старое приложение продолжит читать TXT
 и игнорировать новый каталог; откат не удаляет документы. Публикация релиза отдельно.
+
+
+## Latest owner cutoff — ADR-0005 (2026-11-03)
+
+Full functionality requires canonical folder basename == recording stem, independent of raw existence/age/producer/markers. Standard capture starts before raw exists; valid structured data without originals retains editor/playback. Retry separately requires exact contained raw host+remote WAVs, never automatic flat fallback. Nonstandard placement is list + available standalone contained saved TXT read-only, with no shared structured lookup, context/calendar mutation, durable history writes, capture or processing. Flat display metadata stays at its exact root path even if raw appears. Enforce guards before side effects in Application enqueue/start, every durable history writer, Platform Recorder/Transcription, and Worker recording mode. Explicit developer pair mode keeps its separate output-directory contract. Preserve all files and prior one-current/publication/draft/service safeguards; no migration. This supersedes earlier flat-retry clauses only; accepted ADR1–4 remain unchanged.

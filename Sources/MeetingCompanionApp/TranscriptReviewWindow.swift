@@ -3,17 +3,45 @@ import SwiftUI
 import UniformTypeIdentifiers
 #if !TRANSCRIPT_WINDOW_HARNESS
 import MeetingCompanionCore
+import MeetingCompanionPlatform
 #endif
 
 @MainActor
 final class TranscriptReviewWindowManager {
     let coordinator = TranscriptWindowCoordinator()
+    private let isProcessing: @Sendable (URL) async -> Bool
+
+    init(isProcessing: @escaping @Sendable (URL) async -> Bool = { _ in false }) {
+        self.isProcessing = isProcessing
+    }
+
+    func prepareForRetry(_ recording: URL) async -> Bool {
+        let key = await Task.detached { RecordingEntry.canonicalURL(recording) }.value
+        if let pending = opening[key] { _ = try? await pending.value }
+        guard let model = hosts[key]?.model else { coordinator.closeWindow(for: key); return true }
+        guard await model.resolveForRetry() else { return false }
+        windows[key]?.close()
+        return true
+    }
+
     private(set) var windows: [URL: NSWindow] = [:]
     private var hosts: [URL: TranscriptWindowHost] = [:]
+    private var opening: [URL: Task<NSWindow, Error>] = [:]
 
-    func open(recordingURL: URL, title: String,
-              persistSelection: @escaping TranscriptReviewSession.PersistSelectionHandler) throws -> NSWindow {
-        let opened = try coordinator.openWindow(for: recordingURL, onPersistSelection: persistSelection)
+    func open(recordingURL: URL, title: String) async throws -> NSWindow {
+        let key = await Task.detached { RecordingEntry.canonicalURL(recordingURL) }.value
+        guard !(await isProcessing(key)) else { throw TranscriptWindowError.readOnlyLegacy("Идёт повторная обработка; откройте расшифровку после её завершения.") }
+        if let pending = opening[key] { return try await pending.value }
+        let task = Task {
+            try await createWindow(recordingURL: key, title: title)
+        }
+        opening[key] = task
+        defer { opening.removeValue(forKey: key) }
+        return try await task.value
+    }
+
+    private func createWindow(recordingURL: URL, title: String) async throws -> NSWindow {
+        let opened = try await coordinator.openWindow(for: recordingURL)
         let state = opened.state
         if let window = windows[state.id] {
             window.deminiaturize(nil)
@@ -22,7 +50,8 @@ final class TranscriptReviewWindowManager {
             return window
         }
         do {
-            let model = try TranscriptReviewWindowModel(state: state)
+            let model = try await TranscriptReviewWindowModel(state: state)
+            guard !state.isClosed, !(await isProcessing(recordingURL)) else { throw TranscriptWindowError.closed }
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 620),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: false)
@@ -90,7 +119,7 @@ private final class TranscriptWindowHost: NSObject, NSWindowDelegate {
 
 @MainActor
 final class TranscriptReviewWindowModel: ObservableObject {
-    struct Row: Identifiable {
+    struct Row: Identifiable, Sendable {
         let id: String
         let start: Double
         let name: String
@@ -179,7 +208,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
-    struct PresentationWarningItem: Identifiable, Equatable {
+    struct PresentationWarningItem: Identifiable, Equatable, Sendable {
         let id: String
         let code: String
         let sourceID: TranscriptDocument.SourceID?
@@ -211,8 +240,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     let state: TranscriptWindowState
     @Published private(set) var rows: [Row] = []
-    @Published private(set) var versions: [TranscriptVersionInfo] = []
-    @Published private(set) var selectedResultID: String?
+    @Published private(set) var currentResultID: String?
     @Published private(set) var legacyText: String?
     @Published private(set) var explanation: String?
     @Published private(set) var error: String?
@@ -233,11 +261,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         )
     }
 
-    enum PendingNavigation: Equatable {
-        case close
-        case switchVersion(targetResultID: String)
-    }
-
     enum UnsavedPromptResolution {
         case save
         case discard
@@ -246,13 +269,30 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     struct UnsavedChangesPrompt: Identifiable, Equatable {
         let id: UUID
-        let navigation: PendingNavigation
         let targetResultID: String
         let expectedDraft: DraftIdentity
     }
 
     @Published private(set) var unsavedPrompt: UnsavedChangesPrompt? = nil
     private var authorizedCloseAction: (() -> Void)? = nil
+    private var cancelledCloseAction: (() -> Void)? = nil
+
+    func resolveForRetry() async -> Bool {
+        await withCheckedContinuation { continuation in
+            requestWindowClose(onAuthorizedClose: { [self] in
+                close()
+                state.close()
+                continuation.resume(returning: true)
+            }, onCancelled: { continuation.resume(returning: false) })
+        }
+    }
+
+    private func cancelPendingClose() {
+        authorizedCloseAction = nil
+        let callback = cancelledCloseAction
+        cancelledCloseAction = nil
+        callback?()
+    }
 
     var currentDraftIdentity: DraftIdentity? {
         if let textDraft = activeTextDraft {
@@ -287,30 +327,17 @@ final class TranscriptReviewWindowModel: ObservableObject {
         isTextDraftDirty || isNameDraftDirty
     }
 
-    func requestVersionSwitch(to targetResultID: String) {
-        guard !isClosed, !state.isClosed, targetResultID != selectedResultID, let currentResultID = selectedResultID else { return }
-        if let draftIdentity = currentDraftIdentity, hasUnsavedChanges {
-            unsavedPrompt = UnsavedChangesPrompt(
-                id: UUID(),
-                navigation: .switchVersion(targetResultID: targetResultID),
-                targetResultID: currentResultID,
-                expectedDraft: draftIdentity
-            )
-        } else {
-            switchVersion(to: targetResultID)
-        }
-    }
-
-    func requestWindowClose(onAuthorizedClose: @escaping () -> Void) {
-        guard !isClosed, !state.isClosed, let currentResultID = selectedResultID else { return }
-        guard let draftIdentity = currentDraftIdentity, hasUnsavedChanges else {
+    func requestWindowClose(onAuthorizedClose: @escaping () -> Void, onCancelled: (() -> Void)? = nil) {
+        guard !isClosed, !state.isClosed else { onCancelled?(); return }
+        guard let draftIdentity = currentDraftIdentity, hasUnsavedChanges, let currentResultID else {
             onAuthorizedClose()
             return
         }
+        cancelPendingClose()
         authorizedCloseAction = onAuthorizedClose
+        cancelledCloseAction = onCancelled
         unsavedPrompt = UnsavedChangesPrompt(
             id: UUID(),
-            navigation: .close,
             targetResultID: currentResultID,
             expectedDraft: draftIdentity
         )
@@ -319,26 +346,26 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func resolveUnsavedPrompt(_ resolution: UnsavedPromptResolution, promptID: UUID) {
         guard !isClosed, !state.isClosed else {
             unsavedPrompt = nil
-            authorizedCloseAction = nil
+            cancelPendingClose()
             return
         }
 
         // Strict NOOP for foreign prompt ID or mismatched result:
-        guard let prompt = unsavedPrompt, prompt.id == promptID, prompt.targetResultID == selectedResultID else {
+        guard let prompt = unsavedPrompt, prompt.id == promptID, prompt.targetResultID == currentResultID else {
             return
         }
 
         // Matching prompt: verify draft has not changed under prompt
         guard currentDraftIdentity == prompt.expectedDraft else {
             unsavedPrompt = nil
-            authorizedCloseAction = nil
+            cancelPendingClose()
             return
         }
 
         switch resolution {
         case .stay:
             unsavedPrompt = nil
-            authorizedCloseAction = nil
+            cancelPendingClose()
 
         case .discard:
             switch prompt.expectedDraft {
@@ -350,12 +377,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
             unsavedPrompt = nil
             let closeAction = authorizedCloseAction
             authorizedCloseAction = nil
-            switch prompt.navigation {
-            case .close:
-                closeAction?()
-            case .switchVersion(let targetID):
-                switchVersion(to: targetID)
-            }
+            cancelledCloseAction = nil
+            closeAction?()
 
         case .save:
             var saveSucceeded = false
@@ -385,15 +408,11 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 unsavedPrompt = nil
                 let closeAction = authorizedCloseAction
                 authorizedCloseAction = nil
-                switch prompt.navigation {
-                case .close:
-                    closeAction?()
-                case .switchVersion(let targetID):
-                    switchVersion(to: targetID)
-                }
+                cancelledCloseAction = nil
+                closeAction?()
             } else {
                 unsavedPrompt = nil
-                authorizedCloseAction = nil
+                cancelPendingClose()
             }
         }
     }
@@ -413,7 +432,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     private func updateCanUndo() {
-        guard !isClosed, !state.isClosed, activeDraft == nil, activeTextDraft == nil, let resultID = selectedResultID, let session = state.session else {
+        guard !isClosed, !state.isClosed, activeDraft == nil, activeTextDraft == nil, let resultID = currentResultID, let session = state.session else {
             canUndo = false
             return
         }
@@ -459,7 +478,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         activeDraft = nil
         activeTextDraft = nil
         unsavedPrompt = nil
-        authorizedCloseAction = nil
+        cancelPendingClose()
         activeExportRequest = nil
         canUndo = false
     }
@@ -471,7 +490,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         playback.close()
         playback = TranscriptPlaybackController(transport: TranscriptAVPlayerTransport())
         playbackState = .loading
-        playbackMessage = "Загрузка аудио выбранной версии…"
+        playbackMessage = "Загрузка аудио текущего результата…"
         playbackPosition = 0
         playbackDuration = 0
         activeTurnIDs = []
@@ -484,67 +503,86 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     private func refreshPlayback() {
-        guard !isClosed, playback.resultID == selectedResultID else { return }
+        guard !isClosed, playback.resultID == currentResultID else { return }
         playbackState = playback.state
         playbackPosition = playback.position
         playbackDuration = playback.duration
         switch playback.state {
         case .unavailable:
-            playbackMessage = "Аудио этой версии не подготовлено. Текст и сохранённые правки доступны; другая дорожка не подставляется."
+            playbackMessage = "Аудио текущего результата не подготовлено. Текст и сохранённые правки доступны; другая дорожка не подставляется."
         case .failed:
-            playbackMessage = "Не удалось воспроизвести аудио выбранной версии: файл отсутствует, повреждён или недоступен. Текст и сохранённые правки доступны; другая дорожка не подставляется."
+            playbackMessage = "Не удалось воспроизвести аудио текущего результата: файл отсутствует, повреждён или недоступен. Текст и сохранённые правки доступны; другая дорожка не подставляется."
         case .ready, .playing: playbackMessage = nil
-        case .loading: playbackMessage = "Загрузка аудио выбранной версии…"
+        case .loading: playbackMessage = "Загрузка аудио текущего результата…"
         case .idle, .closed: break
         }
         activeTurnIDs = index?.activeTurnIDs(at: playback.position) ?? []
         follow.update(activeIDs: activeTurnIDs, playing: playback.state == .playing)
     }
 
-    init(state: TranscriptWindowState) throws {
+    init(state: TranscriptWindowState) async throws {
         self.state = state
         switch state.mode {
         case .review(let id):
             guard let session = state.session else { throw TranscriptWindowError.closed }
-            versions = try session.selector.availableVersions()
-            rows = try Self.loadRows(resultID: id, session: session)
-            calendarAttendees = Self.loadCalendarAttendees(resultID: id, session: session)
-            contextAttendees = Self.loadContextAttendees(resultID: id, session: session)
-            presentationWarnings = Self.loadPresentationWarnings(resultID: id, session: session)
-            selectedResultID = id
+            let storage = ReviewStorage(session: session)
+            let content = try await Task.detached {
+                (try Self.loadRows(resultID: id, storage: storage),
+                 Self.loadCalendarAttendees(resultID: id, storage: storage),
+                 Self.loadContextAttendees(resultID: id, storage: storage),
+                 Self.loadPresentationWarnings(resultID: id, storage: storage),
+                 try Self.loadIndex(resultID: id, storage: storage))
+            }.value
+            rows = content.0
+            calendarAttendees = content.1
+            contextAttendees = content.2
+            presentationWarnings = content.3
+            currentResultID = id
             updateCanUndo()
-            index = try Self.loadIndex(resultID: id, session: session)
+            index = content.4
             preparePlayback(resultID: id)
         case .legacyReadOnly(let url):
-            explanation = "Старый TXT — только чтение. Редактирование и переход по аудио недоступны."
-            loadLegacy(url)
-        case .unavailable(let version, let fallback):
-            explanation = "Выбранная версия \(version) недоступна. Старый TXT показан только для чтения; это не выбранная версия."
-            if let fallback { loadLegacy(fallback) }
+            explanation = "Сохранённый TXT — только чтение. Редактирование и переход по аудио недоступны."
+            await loadLegacy(url)
         case .corrupt(_, let fallback):
-            explanation = "Не удалось прочитать структурированный результат или сведения о версии. Старый TXT показан только для чтения; ошибка не исправлена."
-            if let fallback { loadLegacy(fallback) }
+            explanation = "Не удалось прочитать текущий структурированный результат. Старый TXT показан только для чтения; ошибка не исправлена."
+            if let fallback { await loadLegacy(fallback) }
         }
     }
 
-    private func loadLegacy(_ url: URL) {
-        // Recheck final destination at read time; coordinator already validates discovery.
-        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-        guard resolved.path.hasPrefix(state.recordingDirectory.path + "/") else {
-            error = "Не удалось прочитать TXT: путь выходит за пределы записи."
-            return
+    private func loadLegacy(_ url: URL) async {
+        let directory = state.recordingDirectory
+        do {
+            legacyText = try await Task.detached {
+                let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+                guard resolved.path.hasPrefix(directory.path + "/") else {
+                    throw TranscriptWindowError.pathEscapesRecording(url.path)
+                }
+                return try String(contentsOf: resolved, encoding: .utf8)
+            }.value
+        } catch { self.error = "Не удалось прочитать TXT: " + error.localizedDescription }
+    }
+
+    private struct ReviewStorage: Sendable {
+        let recordingDirectory: URL
+        let editsRepository: TranscriptEditsRepository
+        @MainActor init(session: TranscriptReviewSession) {
+            recordingDirectory = session.recordingDirectory
+            editsRepository = session.editsRepository
         }
-        do { legacyText = try String(contentsOf: resolved, encoding: .utf8) }
-        catch { self.error = "Не удалось прочитать старый TXT." }
     }
 
     private static func loadRows(resultID: String, session: TranscriptReviewSession) throws -> [Row] {
-        let document = try TranscriptDocument.load(from: session.editsRepository.resultURL(for: resultID),
-                                                   recordingDirectory: session.recordingDirectory)
+        try loadRows(resultID: resultID, storage: ReviewStorage(session: session))
+    }
+
+    nonisolated private static func loadRows(resultID: String, storage: ReviewStorage) throws -> [Row] {
+        let document = try TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID),
+                                                   recordingDirectory: storage.recordingDirectory)
         guard document.resultID == resultID else {
-            throw TranscriptVersionSelectionError.selectedVersionUnavailable(resultID)
+            throw TranscriptStorageError.currentResultUnavailable(resultID)
         }
-        let edits = try session.editsRepository.loadEdits(resultID: resultID)
+        let edits = try storage.editsRepository.loadEdits(resultID: resultID)
         let words = Dictionary(uniqueKeysWithValues: document.words.map { ($0.id, $0.text) })
         let speakers = Dictionary(uniqueKeysWithValues: document.speakers.map { ($0.id, $0) })
         return document.turns.map { turn in
@@ -567,16 +605,24 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     private static func loadCalendarAttendees(resultID: String, session: TranscriptReviewSession) -> [String] {
-        guard let doc = try? TranscriptDocument.load(from: session.editsRepository.resultURL(for: resultID),
-                                                     recordingDirectory: session.recordingDirectory) else {
+        loadCalendarAttendees(resultID: resultID, storage: ReviewStorage(session: session))
+    }
+
+    nonisolated private static func loadCalendarAttendees(resultID: String, storage: ReviewStorage) -> [String] {
+        guard let doc = try? TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID),
+                                                     recordingDirectory: storage.recordingDirectory) else {
             return []
         }
         return doc.context?.attendees ?? []
     }
 
     private static func loadContextAttendees(resultID: String, session: TranscriptReviewSession) -> [String]? {
-        guard let doc = try? TranscriptDocument.load(from: session.editsRepository.resultURL(for: resultID),
-                                                     recordingDirectory: session.recordingDirectory) else {
+        loadContextAttendees(resultID: resultID, storage: ReviewStorage(session: session))
+    }
+
+    nonisolated private static func loadContextAttendees(resultID: String, storage: ReviewStorage) -> [String]? {
+        guard let doc = try? TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID),
+                                                     recordingDirectory: storage.recordingDirectory) else {
             return nil
         }
         guard let attendees = doc.context?.attendees, !attendees.isEmpty else { return nil }
@@ -584,8 +630,12 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     private static func loadPresentationWarnings(resultID: String, session: TranscriptReviewSession) -> [PresentationWarningItem] {
-        guard let doc = try? TranscriptDocument.load(from: session.editsRepository.resultURL(for: resultID),
-                                                     recordingDirectory: session.recordingDirectory) else {
+        loadPresentationWarnings(resultID: resultID, storage: ReviewStorage(session: session))
+    }
+
+    nonisolated private static func loadPresentationWarnings(resultID: String, storage: ReviewStorage) -> [PresentationWarningItem] {
+        guard let doc = try? TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID),
+                                                     recordingDirectory: storage.recordingDirectory) else {
             return []
         }
         var counts: [String: Int] = [:]
@@ -611,43 +661,17 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     private static func loadIndex(resultID: String, session: TranscriptReviewSession) throws -> TranscriptIntervalIndex {
-        let document = try TranscriptDocument.load(from: session.editsRepository.resultURL(for: resultID), recordingDirectory: session.recordingDirectory)
-        guard document.resultID == resultID else { throw TranscriptVersionSelectionError.selectedVersionUnavailable(resultID) }
+        try loadIndex(resultID: resultID, storage: ReviewStorage(session: session))
+    }
+
+    nonisolated private static func loadIndex(resultID: String, storage: ReviewStorage) throws -> TranscriptIntervalIndex {
+        let document = try TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID), recordingDirectory: storage.recordingDirectory)
+        guard document.resultID == resultID else { throw TranscriptStorageError.currentResultUnavailable(resultID) }
         return TranscriptIntervalIndex(document: document)
     }
 
-    func switchVersion(to resultID: String) {
-        guard !isClosed, !state.isClosed, resultID != selectedResultID else { return }
-        do {
-            guard let session = state.session, !state.isClosed, !isClosed else { throw TranscriptWindowError.closed }
-            // Prepare a complete matching view before persistence; publish only on success.
-            let nextRows = try Self.loadRows(resultID: resultID, session: session)
-            let nextIndex = try Self.loadIndex(resultID: resultID, session: session)
-            try state.switchVersion(to: resultID)
-            guard !isClosed, !state.isClosed else { return }
-            rows = nextRows
-            selectedResultID = resultID
-            calendarAttendees = Self.loadCalendarAttendees(resultID: resultID, session: session)
-            contextAttendees = Self.loadContextAttendees(resultID: resultID, session: session)
-            presentationWarnings = Self.loadPresentationWarnings(resultID: resultID, session: session)
-            activeDraft = nil
-            activeTextDraft = nil
-            unsavedPrompt = nil
-            authorizedCloseAction = nil
-            activeExportRequest = nil
-            exportNotice = nil
-            updateCanUndo()
-            index = nextIndex
-            error = nil
-            preparePlayback(resultID: resultID)
-        } catch {
-            guard !isClosed, !state.isClosed else { return }
-            self.error = "Не удалось переключить версию. Предыдущая расшифровка сохранена в окне."
-        }
-    }
-
     func openSpeakerAssignment(for turnID: String) {
-        guard !isClosed, !state.isClosed, !state.isReadOnly, state.session != nil, let resultID = selectedResultID else { return }
+        guard !isClosed, !state.isClosed, !state.isReadOnly, state.session != nil, let resultID = currentResultID else { return }
         guard activeTextDraft == nil else {
             self.error = "Завершите или отмените редактирование текста перед назначением имени."
             return
@@ -724,7 +748,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func saveSpeakerAssignment(draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, var draft = activeDraft, let session = state.session, let resultID = selectedResultID, draft.targetResultID == resultID else {
+        guard !isClosed, !state.isClosed, var draft = activeDraft, let session = state.session, let resultID = currentResultID, draft.targetResultID == resultID else {
             activeDraft = nil
             return
         }
@@ -766,7 +790,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func confirmGroupAssignment(confirmation: GroupConfirmationPayload) {
-        guard !isClosed, !state.isClosed, let draft = activeDraft, let session = state.session, let resultID = selectedResultID else {
+        guard !isClosed, !state.isClosed, let draft = activeDraft, let session = state.session, let resultID = currentResultID else {
             return
         }
         guard draft.id == confirmation.draftID,
@@ -802,7 +826,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func resetSpeakerName(draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, let draft = activeDraft, let session = state.session, let resultID = selectedResultID, draft.targetResultID == resultID else {
+        guard !isClosed, !state.isClosed, let draft = activeDraft, let session = state.session, let resultID = currentResultID, draft.targetResultID == resultID else {
             activeDraft = nil
             return
         }
@@ -827,7 +851,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     // MARK: - Section 4.4a Text Editing Operations
 
     func openTextEditing(for turnID: String) {
-        guard !isClosed, !state.isClosed, !state.isReadOnly, state.session != nil, let resultID = selectedResultID else { return }
+        guard !isClosed, !state.isClosed, !state.isReadOnly, state.session != nil, let resultID = currentResultID else { return }
         guard activeDraft == nil else {
             self.error = "Завершите или отмените назначение имени перед редактированием текста."
             return
@@ -865,7 +889,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func saveTextEditing(draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, let draft = activeTextDraft, let session = state.session, let resultID = selectedResultID, draft.targetResultID == resultID else {
+        guard !isClosed, !state.isClosed, let draft = activeTextDraft, let session = state.session, let resultID = currentResultID, draft.targetResultID == resultID else {
             activeTextDraft = nil
             return
         }
@@ -883,7 +907,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func undoLastEdit() {
-        guard !isClosed, !state.isClosed, let session = state.session, let resultID = selectedResultID else { return }
+        guard !isClosed, !state.isClosed, let session = state.session, let resultID = currentResultID else { return }
         guard activeDraft == nil && activeTextDraft == nil else {
             self.error = "Отмените или сохраните текущий ввод перед отменой предыдущих сохранённых правок."
             return
@@ -921,8 +945,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
         guard !isClosed, !state.isClosed else { return false }
         switch state.mode {
         case .review:
-            return selectedResultID != nil
-        case .legacyReadOnly, .unavailable, .corrupt:
+            return currentResultID != nil
+        case .legacyReadOnly, .corrupt:
             return false
         }
     }
@@ -955,7 +979,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         { destinationURL in
             let alert = NSAlert()
             alert.messageText = "Файл уже существует"
-            alert.informativeText = "Файл «\(destinationURL.lastPathComponent)» уже существует. Перезаписать его сохранённым состоянием выбранной версии расшифровки?"
+            alert.informativeText = "Файл «\(destinationURL.lastPathComponent)» уже существует. Перезаписать его сохранённым состоянием текущего результата расшифровки?"
             alert.addButton(withTitle: "Перезаписать")
             alert.addButton(withTitle: "Отмена")
             alert.alertStyle = .warning
@@ -964,7 +988,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     @MainActor
-    func configureSavePanel(resultID: String? = nil, hasDirtyDraft: Bool = false) -> NSSavePanel {
+    func configureSavePanel(hasDirtyDraft: Bool = false) -> NSSavePanel {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = "transcript.txt"
@@ -973,11 +997,10 @@ final class TranscriptReviewWindowModel: ObservableObject {
         panel.isExtensionHidden = false
         panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
 
-        let versionLabel = resultID.map { "выбранной версии \($0)" } ?? "выбранной версии"
         if hasDirtyDraft {
-            panel.message = "Экспорт сохранённого состояния \(versionLabel), зафиксированного на момент запроса. Несохранённые изменения черновика исключены."
+            panel.message = "Экспорт сохранённого состояния текущей расшифровки, зафиксированного на момент запроса. Несохранённые изменения черновика исключены."
         } else {
-            panel.message = "Экспорт сохранённого состояния \(versionLabel), зафиксированного на момент запроса."
+            panel.message = "Экспорт сохранённого состояния текущей расшифровки, зафиксированного на момент запроса."
         }
         return panel
     }
@@ -987,7 +1010,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         savePanelRunner: SavePanelRunner? = nil,
         overwriteConsentHandler: OverwriteConsentHandler? = nil
     ) {
-        guard canExport, !isClosed, !state.isClosed, let resultID = selectedResultID, let session = state.session else { return }
+        guard canExport, !isClosed, !state.isClosed, let resultID = currentResultID, let session = state.session else { return }
 
         // Invalidate prior active export request immediately at the start of a replacement request:
         self.activeExportRequest = nil
@@ -996,7 +1019,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
         let dirtyDraft = hasUnsavedChanges || activeDraft != nil || activeTextDraft != nil
         if dirtyDraft {
-            self.exportNotice = "Внимание: открыт несохранённый черновик. Экспортируется только последняя сохранённая версия; черновик исключён из экспорта."
+            self.exportNotice = "Внимание: открыт несохранённый черновик. Экспортируется только сохранённое состояние; черновик исключён из экспорта."
         } else {
             self.exportNotice = nil
         }
@@ -1007,7 +1030,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
             let resultURL = session.editsRepository.resultURL(for: resultID)
             frozenDocument = try TranscriptDocument.load(from: resultURL, recordingDirectory: state.recordingDirectory)
             guard frozenDocument.resultID == resultID else {
-                throw TranscriptVersionSelectionError.selectedVersionUnavailable(resultID)
+                throw TranscriptStorageError.currentResultUnavailable(resultID)
             }
             let readOnlyRepo = TranscriptEditsRepository(recordingDirectory: state.recordingDirectory)
             frozenEdits = try readOnlyRepo.loadEdits(resultID: resultID)
@@ -1027,7 +1050,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         )
         self.activeExportRequest = request
 
-        let panel = configureSavePanel(resultID: resultID, hasDirtyDraft: dirtyDraft)
+        let panel = configureSavePanel(hasDirtyDraft: dirtyDraft)
         let runner: SavePanelRunner = savePanelRunner ?? defaultSavePanelRunner
 
         runner(panel) { [weak self] response, destinationURL in
@@ -1053,7 +1076,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
 
         guard case .review = state.mode,
-              selectedResultID == activeRequest.resultID,
+              currentResultID == activeRequest.resultID,
               state.recordingURL == activeRequest.recordingURL else {
             return
         }
@@ -1083,7 +1106,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
             allowOverwrite = false
         }
 
-        // Revalidate generation, window close, version switch, and replacement request AFTER modal consent:
+        // Revalidate generation, window close and replacement request AFTER modal consent:
         guard !isClosed, !state.isClosed else {
             self.activeExportRequest = nil
             return
@@ -1092,7 +1115,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
             return
         }
         guard case .review = state.mode,
-              selectedResultID == activeRequest.resultID,
+              currentResultID == activeRequest.resultID,
               state.recordingURL == activeRequest.recordingURL else {
             self.activeExportRequest = nil
             return
@@ -1145,15 +1168,7 @@ private struct TranscriptReviewWindowView: View {
                     .accessibilityLabel("Экспортировать расшифровку в файл")
                     .accessibilityIdentifier("transcript-export")
                 }
-                if let selected = model.selectedResultID, model.versions.count > 1 {
-                    Picker("Версия", selection: Binding(get: { model.selectedResultID ?? selected },
-                                                       set: { model.requestVersionSwitch(to: $0) })) {
-                        ForEach(model.versions, id: \.resultID) { version in
-                            Text(version.date.formatted(date: .abbreviated, time: .shortened) + " · " + version.resultID)
-                                .tag(version.resultID)
-                        }
-                    }.frame(maxWidth: 340)
-                }
+
             }
             if model.state.isReadOnly {
                 Text("Только чтение").font(.caption).foregroundStyle(.secondary)
@@ -1182,7 +1197,7 @@ private struct TranscriptReviewWindowView: View {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                         Text("Несохранённые изменения").font(.headline)
                     }
-                    Text(prompt.navigation == .close ? "В расшифровке есть несохранённые изменения. Сохранить их перед закрытием окна?" : "В расшифровке есть несохранённые изменения. Сохранить их перед сменой версии?")
+                    Text("В расшифровке есть несохранённые изменения. Сохранить их перед закрытием окна?")
                         .font(.callout)
                     HStack {
                         Button("Сохранить") {

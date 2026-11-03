@@ -160,7 +160,7 @@ struct RecorderSettingsView: View {
             } header: {
                 Text("Модели")
             } footer: {
-                Text("Загрузка может занять несколько минут. Затем транскрибация работает офлайн; записи никуда не отправляются.")
+                Text("Модели загружаются и проверяются по SHA-256 один раз. Затем транскрибация работает офлайн; записи никуда не отправляются.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -169,7 +169,7 @@ struct RecorderSettingsView: View {
                 Button("Сбросить кэш…") { Task { await model.resetCache() } }
                     .disabled(!model.canResetCache)
             } footer: {
-                Text("Удаляются только модели и Python-окружение приложения. Записи сохраняются.")
+                Text("Удаляются только подпапки native-models и runtime приложения. Записи сохраняются.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)

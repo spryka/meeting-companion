@@ -1,0 +1,276 @@
+diff --git a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Features/MelSpectrogram.swift b/Vendor/GigaAMKit/Features/MelSpectrogram.swift
+index 9c1daf1..4841fbf 100644
+--- a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Features/MelSpectrogram.swift
++++ b/Vendor/GigaAMKit/Features/MelSpectrogram.swift
+@@ -1,4 +1,5 @@
+ import Foundation
++@preconcurrency import MLX
+ 
+ public struct MelSpectrogramConfig: Sendable, Codable, Hashable {
+     public let sampleRate: Int
+@@ -29,10 +30,8 @@ public final class MelSpectrogramProcessor: @unchecked Sendable {
+     public let config: MelSpectrogramConfig
+     public let nFreqs: Int
+ 
+-    private let window: [Float]
+-    private let filterbank: [Float]
+-    private let cosTable: [Float]
+-    private let sinTable: [Float]
++    private let window: MLXArray
++    private let filterbank: MLXArray
+ 
+     public init(
+         config: MelSpectrogramConfig = MelSpectrogramConfig(),
+@@ -67,124 +66,31 @@ public final class MelSpectrogramProcessor: @unchecked Sendable {
+             )
+         }
+ 
+-        self.window = window
+-        self.filterbank = filterbank
+-
+-        let tables = Self.makeDFTTables(nFFT: config.nFFT, nFreqs: nFreqs)
+-        self.cosTable = tables.cos
+-        self.sinTable = tables.sin
++        self.window = MLXArray(window)
++        self.filterbank = MLXArray(filterbank, [config.nMels, nFreqs]).transposed()
++        eval(self.window, self.filterbank)
+     }
+ 
+     public func compute(samples: [Float]) throws -> [[Float]] {
++        let flat = try computeFlat(samples: samples)
++        return (0..<config.nMels).map { mel in
++            Array(flat.features[(mel * flat.length)..<((mel + 1) * flat.length)])
++        }
++    }
++
++    public func computeFlat(samples: [Float]) throws -> (features: [Float], shape: [Int], length: Int) {
+         guard samples.count >= config.winLength else {
+             throw GigaAMError.invalidArguments(
+                 "Audio is shorter than winLength: samples=\(samples.count), winLength=\(config.winLength)"
+             )
+         }
+-
+         let frameCount = Self.outputLength(sampleCount: samples.count, config: config)
+-
+-        var power = [Float](
+-            repeating: 0,
+-            count: nFreqs * frameCount
+-        )
+-
+-        // STFT power, layout [freq, frame], matching torch.stft(...).abs().pow(2).
+-        for frameIndex in 0..<frameCount {
+-            let frameOffset = frameIndex * config.hopLength
+-
+-            for freqIndex in 0..<nFreqs {
+-                let tableOffset = freqIndex * config.nFFT
+-
+-                var real = Float(0)
+-                var imag = Float(0)
+-
+-                for n in 0..<config.nFFT {
+-                    let sample = samples[frameOffset + n] * window[n]
+-                    real += sample * cosTable[tableOffset + n]
+-                    imag -= sample * sinTable[tableOffset + n]
+-                }
+-
+-                power[freqIndex * frameCount + frameIndex] = real * real + imag * imag
+-            }
+-        }
+-
+-        var resultFlat = [Float](
+-            repeating: 0,
+-            count: config.nMels * frameCount
+-        )
+-
+-        // mel_power = filterbank [mel, freq] @ power [freq, frame]
+-        for melIndex in 0..<config.nMels {
+-            let melOffset = melIndex * nFreqs
+-            let outputOffset = melIndex * frameCount
+-
+-            for frameIndex in 0..<frameCount {
+-                var value = Float(0)
+-
+-                for freqIndex in 0..<nFreqs {
+-                    value += filterbank[melOffset + freqIndex] * power[freqIndex * frameCount + frameIndex]
+-                }
+-
+-                let clamped = min(max(value, 1e-9), 1e9)
+-                resultFlat[outputOffset + frameIndex] = logf(clamped)
+-            }
+-        }
+-
+-        var result = Array(
+-            repeating: Array(repeating: Float(0), count: frameCount),
+-            count: config.nMels
+-        )
+-
+-        for melIndex in 0..<config.nMels {
+-            let offset = melIndex * frameCount
+-
+-            result[melIndex].withUnsafeMutableBufferPointer { destination in
+-                resultFlat.withUnsafeBufferPointer { source in
+-                    destination.baseAddress!.update(
+-                        from: source.baseAddress!.advanced(by: offset),
+-                        count: frameCount
+-                    )
+-                }
+-            }
+-        }
+-
+-        return result
+-    }
+-
+-    public func computeFlat(samples: [Float]) throws -> (features: [Float], shape: [Int], length: Int) {
+-        let matrix = try compute(samples: samples)
+-        let frameCount = matrix.first?.count ?? 0
+-
+-        return (
+-            features: matrix.flatMap { $0 },
+-            shape: [1, config.nMels, frameCount],
+-            length: frameCount
+-        )
+-    }
+-
+-    private struct DFTTables {
+-        let cos: [Float]
+-        let sin: [Float]
+-    }
+-
+-    private static func makeDFTTables(nFFT: Int, nFreqs: Int) -> DFTTables {
+-        var cosTable = [Float](repeating: 0, count: nFreqs * nFFT)
+-        var sinTable = [Float](repeating: 0, count: nFreqs * nFFT)
+-
+-        let twoPi = 2.0 * Double.pi
+-
+-        for freqIndex in 0..<nFreqs {
+-            let offset = freqIndex * nFFT
+-
+-            for n in 0..<nFFT {
+-                let angle = twoPi * Double(freqIndex * n) / Double(nFFT)
+-                cosTable[offset + n] = Float(cos(angle))
+-                sinTable[offset + n] = Float(sin(angle))
+-            }
+-        }
+-
+-        return DFTTables(cos: cosTable, sin: sinTable)
++        let positions = MLXArray(Int32(0)..<Int32(frameCount)).reshaped(-1, 1) * config.hopLength
++            + MLXArray(Int32(0)..<Int32(config.winLength)).reshaped(1, -1)
++        let frames = MLXArray(samples)[positions] * window
++        let power = pow(abs(MLXFFT.rfft(frames)), 2)
++        let features = log(clip(matmul(power, filterbank), min: 1e-9, max: 1e9)).transposed()
++        return (features.reshaped(-1).asArray(Float.self), [1, config.nMels, frameCount], frameCount)
+     }
+ 
+     private static func outputLength(sampleCount: Int, config: MelSpectrogramConfig) -> Int {
+diff --git a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Model/GigaAMRNNTHead.swift b/Vendor/GigaAMKit/Model/GigaAMRNNTHead.swift
+index 36605e6..b7a6787 100644
+--- a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Model/GigaAMRNNTHead.swift
++++ b/Vendor/GigaAMKit/Model/GigaAMRNNTHead.swift
+@@ -1,6 +1,25 @@
+ import Foundation
++import Accelerate
+ @preconcurrency import MLX
+ 
++// Apple Silicon shares MLX memory; a CPU reduction avoids one GPU launch per token step.
++func bestRNNTToken(_ logProbs: MLXArray) throws -> (token: Int, logProb: Float) {
++    let flat = logProbs.dtype == .float32 ? logProbs : logProbs.asType(.float32)
++    guard flat.size > 0 else {
++        throw GigaAMError.invalidManifest("RNNT step produced empty log_probs")
++    }
++    return withExtendedLifetime(flat) {
++        let data = flat.asData(access: .noCopyIfContiguous)
++        return data.data.withUnsafeBytes { bytes in
++            let values = bytes.bindMemory(to: Float.self)
++            var score: Float = 0
++            var index: vDSP_Length = 0
++            vDSP_maxvi(values.baseAddress!, 1, &score, &index, vDSP_Length(values.count))
++            return (Int(index), score)
++        }
++    }
++}
++
+ public struct GigaAMRNNTStepResult {
+     public let logProbs: MLXArray
+     public let decoderOutput: MLXArray
+@@ -64,11 +83,7 @@ public final class GigaAMRNNTHead: @unchecked Sendable {
+         let jointSec = Self.now() - jointStart
+ 
+         let readbackStart = Self.now()
+-        let flat = logProbs.asType(Float.self).asArray(Float.self)
+-
+-        guard let best = flat.enumerated().max(by: { lhs, rhs in lhs.element < rhs.element }) else {
+-            throw GigaAMError.invalidManifest("RNNT step produced empty log_probs")
+-        }
++        let best = try bestRNNTToken(logProbs)
+ 
+         let readbackSec = Self.now() - readbackStart
+         let totalSec = Self.now() - totalStart
+@@ -78,9 +93,9 @@ public final class GigaAMRNNTHead: @unchecked Sendable {
+                 logProbs: logProbs,
+                 decoderOutput: decoderResult.dec,
+                 state: decoderResult.state,
+-                bestToken: best.offset,
+-                bestLogProb: best.element,
+-                isBlank: best.offset == blankId
++                bestToken: best.token,
++                bestLogProb: best.logProb,
++                isBlank: best.token == blankId
+             ),
+             timing: GigaAMRNNTStepTiming(
+                 decoderSec: decoderSec,
+diff --git a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Model/RNNTGreedyDecoder.swift b/Vendor/GigaAMKit/Model/RNNTGreedyDecoder.swift
+index e123330..6233c62 100644
+--- a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Model/RNNTGreedyDecoder.swift
++++ b/Vendor/GigaAMKit/Model/RNNTGreedyDecoder.swift
+@@ -137,16 +137,12 @@ public final class RNNTGreedyDecoder: @unchecked Sendable {
+                 jointSec += Self.now() - jointStart
+ 
+                 let readbackStart = Self.now()
+-                let flat = logProbs.asType(Float.self).asArray(Float.self)
+-
+-                guard let best = flat.enumerated().max(by: { lhs, rhs in lhs.element < rhs.element }) else {
+-                    throw GigaAMError.invalidManifest("RNNT step produced empty log_probs")
+-                }
++                let best = try bestRNNTToken(logProbs)
+ 
+                 readbackSec += Self.now() - readbackStart
+ 
+-                let bestToken = best.offset
+-                let bestLogProb = best.element
++                let bestToken = best.token
++                let bestLogProb = best.logProb
+                 let isBlank = bestToken == config.blankId
+ 
+                 stepCount += 1
+diff --git a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Runtime/GigaAMTensorStore.swift b/Vendor/GigaAMKit/Runtime/GigaAMTensorStore.swift
+index f1e8f47..19f92a9 100644
+--- a/experiments/swift-gigaam-poc/.build/checkouts/gigaam-v3-mlx/Sources/GigaAMKit/Runtime/GigaAMTensorStore.swift
++++ b/Vendor/GigaAMKit/Runtime/GigaAMTensorStore.swift
+@@ -6,9 +6,11 @@ public final class GigaAMTensorStore: @unchecked Sendable {
+     public let index: SafetensorsIndex
+ 
+     private var cache: [String: MLXArray] = [:]
++    private let computeDType: DType?
+ 
+-    public init(weightsURL: URL) throws {
++    public init(weightsURL: URL, computeDType: DType? = nil) throws {
+         self.weightsURL = weightsURL
++        self.computeDType = computeDType
+         self.index = try SafetensorsIndex.loadHeader(url: weightsURL)
+     }
+ 
+@@ -54,11 +56,12 @@ public final class GigaAMTensorStore: @unchecked Sendable {
+             tensorName: name
+         )
+ 
++        let array = computeDType.map { loaded.array.asType($0) } ?? loaded.array
+         if cache {
+-            self.cache[name] = loaded.array
++            self.cache[name] = array
+         }
+ 
+-        return loaded.array
++        return array
+     }
+ 
+     public func clearCache() {

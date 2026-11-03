@@ -1,12 +1,13 @@
 import Foundation
 
 /// An immutable recognition snapshot; loading never runs models or prepares audio.
-public struct TranscriptDocument: Decodable, Sendable {
-    public enum SourceID: String, Decodable, Sendable { case host, remote }
-    public enum ProcessingStatus: String, Decodable, Sendable { case completed, disabled, failed }
-    public enum AECOutcome: String, Decodable, Sendable { case disabled, applied, bypassed, failed }
-    public enum PlaybackStatus: String, Decodable, Sendable { case ready, unavailable }
-    public struct Source: Decodable, Sendable {
+/// JSON v1 encoding keeps required nullable fields present.
+public struct TranscriptDocument: Codable, Sendable {
+    public enum SourceID: String, Codable, Sendable { case host, remote }
+    public enum ProcessingStatus: String, Codable, Sendable { case completed, disabled, failed }
+    public enum AECOutcome: String, Codable, Sendable { case disabled, applied, bypassed, failed }
+    public enum PlaybackStatus: String, Codable, Sendable { case ready, unavailable }
+    public struct Source: Codable, Sendable {
         public let id: SourceID
         public let originalAudioPath: String
         public let recognitionAudioPath: String
@@ -14,8 +15,33 @@ public struct TranscriptDocument: Decodable, Sendable {
         public let detectedVoiceCount: Int?
         public let correctionStatus: ProcessingStatus
 
+        public init(
+            id: SourceID,
+            originalAudioPath: String,
+            recognitionAudioPath: String,
+            diarizationStatus: ProcessingStatus,
+            detectedVoiceCount: Int?,
+            correctionStatus: ProcessingStatus
+        ) {
+            self.id = id
+            self.originalAudioPath = originalAudioPath
+            self.recognitionAudioPath = recognitionAudioPath
+            self.diarizationStatus = diarizationStatus
+            self.detectedVoiceCount = detectedVoiceCount
+            self.correctionStatus = correctionStatus
+        }
+
         private enum CodingKeys: String, CodingKey {
             case id, originalAudioPath, recognitionAudioPath, diarizationStatus, detectedVoiceCount, correctionStatus
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(id, forKey: .id)
+            try c.encode(originalAudioPath, forKey: .originalAudioPath)
+            try c.encode(recognitionAudioPath, forKey: .recognitionAudioPath)
+            try c.encode(diarizationStatus, forKey: .diarizationStatus)
+            try c.encode(detectedVoiceCount, forKey: .detectedVoiceCount)
+            try c.encode(correctionStatus, forKey: .correctionStatus)
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -27,41 +53,80 @@ public struct TranscriptDocument: Decodable, Sendable {
             correctionStatus = try c.decode(ProcessingStatus.self, forKey: .correctionStatus)
         }
     }
-    public struct Speaker: Decodable, Sendable {
+    public struct Speaker: Codable, Sendable {
         public let id: String
         public let sourceID: SourceID
         public let localID: Int
         public let displayNumber: Int
+
+        public init(id: String, sourceID: SourceID, localID: Int, displayNumber: Int) {
+            self.id = id
+            self.sourceID = sourceID
+            self.localID = localID
+            self.displayNumber = displayNumber
+        }
     }
-    public struct Word: Decodable, Sendable {
+    public struct Word: Codable, Sendable {
         public let id: String
         public let speakerID: String
         public let start: Double
         public let end: Double
         public let text: String
+
+        public init(id: String, speakerID: String, start: Double, end: Double, text: String) {
+            self.id = id
+            self.speakerID = speakerID
+            self.start = start
+            self.end = end
+            self.text = text
+        }
     }
-    public struct Turn: Decodable, Sendable {
+    public struct Turn: Codable, Sendable {
         public let id: String
         public let speakerID: String
         public let start: Double
         public let end: Double
         public let wordIDs: [String]
+
+        public init(id: String, speakerID: String, start: Double, end: Double, wordIDs: [String]) {
+            self.id = id
+            self.speakerID = speakerID
+            self.start = start
+            self.end = end
+            self.wordIDs = wordIDs
+        }
     }
-    public struct AEC: Decodable, Sendable {
+    public struct AEC: Codable, Sendable {
         public let requested: Bool
         public let outcome: AECOutcome
+
+        public init(requested: Bool, outcome: AECOutcome) {
+            self.requested = requested
+            self.outcome = outcome
+        }
     }
-    public struct Playback: Decodable, Sendable {
+    public struct Playback: Codable, Sendable {
         public let status: PlaybackStatus
         public let mixPath: String?
+
+        public init(status: PlaybackStatus, mixPath: String?) {
+            self.status = status
+            self.mixPath = mixPath
+        }
+
         private enum CodingKeys: String, CodingKey { case status, mixPath }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(status, forKey: .status)
+            try c.encode(mixPath, forKey: .mixPath)
+        }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             status = try c.decode(PlaybackStatus.self, forKey: .status)
             mixPath = try c.decode(String?.self, forKey: .mixPath)
         }
     }
-    public struct Warning: Decodable, Sendable, Equatable {
+    public struct Warning: Codable, Sendable, Equatable {
         public let code: String
         public let sourceID: SourceID?
         public let message: String
@@ -73,6 +138,12 @@ public struct TranscriptDocument: Decodable, Sendable {
             self.message = message
         }
 
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(code, forKey: .code)
+            try c.encode(sourceID, forKey: .sourceID)
+            try c.encode(message, forKey: .message)
+        }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             code = try c.decode(String.self, forKey: .code)
@@ -80,12 +151,26 @@ public struct TranscriptDocument: Decodable, Sendable {
             message = try c.decode(String.self, forKey: .message)
         }
     }
-    public struct Context: Decodable, Sendable {
+    public struct Context: Codable, Sendable {
         public let title: String?
         public let startAt: String?
         public let timeZone: String?
         public let agenda: String?
         public let attendees: [String]?
+
+        public init(
+            title: String? = nil,
+            startAt: String? = nil,
+            timeZone: String? = nil,
+            agenda: String? = nil,
+            attendees: [String]? = nil
+        ) {
+            self.title = title
+            self.startAt = startAt
+            self.timeZone = timeZone
+            self.agenda = agenda
+            self.attendees = attendees
+        }
     }
     public let schemaVersion: Int
     public let resultID: String
@@ -100,6 +185,35 @@ public struct TranscriptDocument: Decodable, Sendable {
     public let warnings: [Warning]
     public let context: Context?
 
+    public init(
+        schemaVersion: Int = 1,
+        resultID: String,
+        createdAt: String,
+        sources: [Source],
+        speakers: [Speaker],
+        words: [Word],
+        turns: [Turn],
+        baselineWords: [Word],
+        aec: AEC,
+        playback: Playback,
+        warnings: [Warning] = [],
+        context: Context? = nil
+    ) throws {
+        self.schemaVersion = schemaVersion
+        self.resultID = resultID
+        self.createdAt = createdAt
+        self.sources = sources
+        self.speakers = speakers
+        self.words = words
+        self.turns = turns
+        self.baselineWords = baselineWords
+        self.aec = aec
+        self.playback = playback
+        self.warnings = warnings
+        self.context = context
+        try validate()
+    }
+
     public enum LoadError: LocalizedError, Sendable {
         case unsupportedVersion(Int)
         case malformed(String)
@@ -110,7 +224,7 @@ public struct TranscriptDocument: Decodable, Sendable {
             case .unsupportedVersion(let version): "Версия документа \(version) не поддерживается."
             case .malformed(let detail): "Некорректный документ расшифровки: \(detail)"
             case .invalidReference(let detail): "Некорректная ссылка в расшифровке: \(detail)"
-            case .invalidPath(let detail): "Некорректный аудиопуть или выход из папки записи: \(detail)"
+            case .invalidPath(let detail): "Некорректный аудиопть или выход из папки записи: \(detail)"
             }
         }
     }
@@ -191,6 +305,21 @@ public struct TranscriptDocument: Decodable, Sendable {
         case schemaVersion, resultID, createdAt, sources, speakers, words, turns, baselineWords, aec, playback, warnings, context
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion)
+        try c.encode(resultID, forKey: .resultID)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(sources, forKey: .sources)
+        try c.encode(speakers, forKey: .speakers)
+        try c.encode(words, forKey: .words)
+        try c.encode(turns, forKey: .turns)
+        try c.encode(baselineWords, forKey: .baselineWords)
+        try c.encode(aec, forKey: .aec)
+        try c.encode(playback, forKey: .playback)
+        try c.encode(warnings, forKey: .warnings)
+        try c.encode(context, forKey: .context)
+    }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)

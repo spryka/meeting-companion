@@ -1,0 +1,6 @@
+Phonon-2 and Phonon-2.5 (Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/Phonon2)
+Copyright 2026 Fermion Research
+
+Container decoding and packed layer integration adapted from fermion-research (0.2.11).
+Fermion Research code is licensed under Apache-2.0 (SPDX-License-Identifier: Apache-2.0).
+Model weights derive from NVIDIA Parakeet TDT 0.6B v3 and are licensed under CC-BY-4.0.

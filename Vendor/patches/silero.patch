@@ -1,0 +1,108 @@
+diff --git a/experiments/swift-pipeline-poc/.deps/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/README.md b/experiments/swift-pipeline-poc/.deps/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/README.md
+deleted file mode 100644
+index b5cc4a4..0000000
+--- a/experiments/swift-pipeline-poc/.deps/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/README.md
++++ /dev/null
+@@ -1,43 +0,0 @@
+-# Silero VAD
+-
+-Swift / MLX port of the Silero voice activity detector (`silero_vad`).
+-
+-## Supported Models
+-
+-| Model | HuggingFace Repo |
+-|-------|------------------|
+-| Silero VAD v5 | [`mlx-community/silero-vad`](https://huggingface.co/mlx-community/silero-vad) |
+-| Silero VAD v6 | [`mlx-community/silero-vad-v6`](https://huggingface.co/mlx-community/silero-vad-v6) |
+-
+-Both ship the same `vad_16k.*` / `vad_8k.*` weight layout — the loader works for either.
+-
+-## Usage
+-
+-```swift
+-import MLXAudioVAD
+-import MLXAudioCore
+-
+-let model = try await SileroVAD.fromPretrained("mlx-community/silero-vad")
+-
+-let (sampleRate, audio) = try loadAudioArray(from: audioURL)
+-let timestamps = try model.getSpeechTimestamps(audio, sampleRate: sampleRate)
+-for ts in timestamps {
+-    let start = Float(ts.start) / Float(sampleRate)
+-    let end = Float(ts.end) / Float(sampleRate)
+-    print("[\(start)s - \(end)s]")
+-}
+-```
+-
+-## Streaming
+-
+-Feed 512 samples at 16 kHz (or 256 samples at 8 kHz) per call:
+-
+-```swift
+-var state = try model.initialState(sampleRate: 16000)
+-let (probability, newState) = try model.feed(chunk: chunk, state: state, sampleRate: 16000)
+-state = newState
+-```
+-
+-## Sample Rate
+-
+-Silero supports 16 kHz and 8 kHz. Other rates are rejected with `SileroVADError.unsupportedSampleRate`. The Swift port does not auto-resample — convert your audio with `MLXAudioCore.resampleAudio` first if needed.
+diff --git a/experiments/swift-pipeline-poc/.deps/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/SileroVAD.swift b/Vendor/Silero/SileroVAD.swift
+index 4cd61d9..22cfd04 100644
+--- a/experiments/swift-pipeline-poc/.deps/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/SileroVAD.swift
++++ b/Vendor/Silero/SileroVAD.swift
+@@ -1,5 +1,4 @@
+ import Foundation
+-import HuggingFace
+ @preconcurrency import MLX
+ import MLXAudioCore
+ import MLXNN
+@@ -135,18 +134,19 @@ private final class SileroVADBranch: Module {
+ public final class SileroVAD: Module {
+     public let config: SileroVADConfig
+     fileprivate let branch16k: SileroVADBranch
+-    fileprivate let branch8k: SileroVADBranch
++    fileprivate let branch8k: SileroVADBranch?
+ 
+-    public init(_ config: SileroVADConfig) {
++    public init(_ config: SileroVADConfig, include8k: Bool = true) {
+         self.config = config
+         self.branch16k = SileroVADBranch(config.branch16k)
+-        self.branch8k = SileroVADBranch(config.branch8k)
++        self.branch8k = include8k ? SileroVADBranch(config.branch8k) : nil
+     }
+ 
+     private func branch(forSampleRate sr: Int) throws -> SileroVADBranch {
+         switch sr {
+         case 16000: return branch16k
+-        case 8000: return branch8k
++        case 8000:
++            guard let branch8k else { throw SileroVADError.unsupportedSampleRate(sr) }; return branch8k
+         default: throw SileroVADError.unsupportedSampleRate(sr)
+         }
+     }
+@@ -344,23 +344,12 @@ public final class SileroVAD: Module {
+         return out
+     }
+ 
+-    public static func fromPretrained(_ repoId: String) async throws -> SileroVAD {
+-        guard let repoID = Repo.ID(rawValue: repoId) else {
+-            throw SileroVADError.invalidRepositoryID(repoId)
+-        }
+-        let modelURL = try await ModelUtils.resolveOrDownloadModel(
+-            repoID: repoID,
+-            requiredExtension: "safetensors"
+-        )
+-        return try fromModelDirectory(modelURL)
+-    }
+-
+     public static func fromModelDirectory(_ modelURL: URL) throws -> SileroVAD {
+         let configURL = modelURL.appendingPathComponent("config.json")
+         let configData = try Data(contentsOf: configURL)
+         let config = try JSONDecoder().decode(SileroVADConfig.self, from: configData)
+ 
+-        let model = SileroVAD(config)
++        let model = SileroVAD(config, include8k: false)
+         let weightFiles = try FileManager.default.contentsOfDirectory(
+             at: modelURL,
+             includingPropertiesForKeys: nil

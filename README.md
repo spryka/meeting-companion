@@ -9,7 +9,7 @@
 Нужен Mac с процессором M-серии (Apple Silicon) и macOS 15+.
 Intel не поддерживается. Для готовой сборки не нужны Xcode, Swift, Python,
 агент или скил. Перед первой транскрибацией нажми «Скачать модели» в основном
-окне: приложение установит Python, пакеты и модели. Нужен интернет; подготовка
+окне: приложение скачает и проверит необходимые веса моделей. Нужен интернет; подготовка
 может занять несколько минут, при медленном соединении — дольше.
 
 ### Через Homebrew
@@ -136,15 +136,15 @@ open "/Applications/Meeting Companion.app"
    нажми "Открыть результаты", чтобы перейти к этой записи в истории.
    Основное окно автоматически не открывается.
 
-Python, пакеты и модели устанавливаются приложением автоматически при подготовке.
+Модели загружаются и проверяются приложением автоматически при подготовке.
 При запуске приложение только проверяет готовность без скачивания.
 Пока модели не готовы, в основном окне виден блок подготовки с кнопкой загрузки
 и раскрываемыми подробностями. Точное время зависит от соединения и уже скачанных файлов.
 Они хранятся в `~/Library/Application Support/MeetingCompanion/`.
-Кнопка «Сбросить кэш…» в настройках удаляет только подпапки `models` и `runtime`
+Кнопка «Сбросить кэш…» в настройках удаляет только подпапки `native-models` и `runtime`
 после подтверждения с размером. Записи, тексты, настройки и разрешения сохраняются.
 Сброс недоступен во время записи, проверки звука, транскрибации и подготовки.
-После сброса нужно заново нажать «Скачать модели». Общие кэши uv и Hugging Face
+После сброса нужно заново нажать «Скачать модели». Общие пользовательские кэши
 не затрагиваются.
 Записи никуда не отправляются. При сбое звук сохраняется; кнопку «Получить текст»
 можно использовать для повторной транскрибации последней записи.
@@ -283,15 +283,36 @@ Silero VAD (около 2,3 МБ) пропускает целиком окна б
 Если моделей не хватает, история объясняет, что скачать в настройках перед повтором.
 
 В новых текстах пути к аудио относительные; диагностические заголовки скрывают
-домашний каталог пользователя. Для старых текстов в истории есть «Экспорт текста
-без локальных путей…»: сохраняется отдельная копия, исходник не меняется.
+домашний каталог пользователя. Экспорт поддерживаемой структурированной записи
+сохраняет отдельную копию без технических абсолютных путей; исходник не меняется.
 Это удаление технических путей, не анонимизация участников или содержания речи.
+
+У записи одна текущая расшифровка. Это новейший contained каталог результата по
+дате создания файловой системой (при равенстве — по имени), выбранный до проверки JSON.
+Предыдущие результаты остаются на диске; интерфейса их выбора нет. Повреждённый или
+неподдерживаемый текущий результат не подменяется более старым.
+Полные функции поддерживаются для отдельной папки `NAME/NAME.m4a` с совпадающим
+каноническим именем папки и записи — этот layout используется с 1.4.0 (2026-10-18).
+Наличие `raw/` само по себе не подтверждает владение записью. В такой папке совместимость
+определяется JSON v1 и доступными файлами, независимо от даты и Python/Swift.
+Поддерживаемый JSON без исходных WAV сохраняет редактор и плеер доступного микса.
+Старое плоское или другое нестандартное размещение поддерживает только список и
+сохранённый contained TXT для чтения; никаких записей metadata, обработки или миграции.
+`recordingFormatVersion` и старый `selectedResultID` не используются; существующие
+значения сохраняются как неизвестные поля без миграции или записи при обнаружении.
+Без поддерживаемого JSON имеющийся TXT открывается встроенным просмотром только для
+чтения. Ручной retry в стандартной папке отдельно требует точную contained пару
+`raw/NAME.host_record.wav` и `raw/NAME.remote_record.wav`; flat-подстановки нет.
+Перед retry редактор предлагает сохранить/отбросить черновик или отменить действие,
+закрывается до конца обработки и при повторном открытии разрешает текущий результат заново.
+Новый результат и его `transcript.txt` публикуются одним atomic rename каталога;
+корневой TXT — производная копия. Ошибка её обновления оставляет результат и warning.
 
 Для записей доступно окно «Открыть расшифровку»: совместное воспроизведение
 с синхронным следованием за текстом, редактирование текста реплик, назначение
 имён говорящим с подсказками из календаря и массовой заменой по группе голоса,
-сессионная отмена (Undo), защита несохранённого ввода и экспорт выбранной
-сохранённой версии в текстовый файл через системный диалог. Подробная
+сессионная отмена (Undo), защита несохранённого ввода и экспорт текущей
+сохранённой расшифровки в текстовый файл через системный диалог. Подробная
 инструкция пользователя, сценарии работы и поведение при ошибках описаны в
 [docs/transcript-editor.md](docs/transcript-editor.md).
 
@@ -353,8 +374,8 @@ EventKit, после пробуждения Mac и при открытии ос�
 «Проверить звук» в диагностике.
 Статусы разрешений обновляются автоматически: зелёный — доступ есть, оранжевый —
 ещё не запрошен, красный — доступа нет. Во время подготовки видны таймер и живой
-лог скачивания Python, пакетов и моделей, объём файлов на диске и время
-последнего изменения. Объём на диске включает распакованные пакеты и не является
+лог загрузки и компиляции нативных MLX-моделей, объём файлов на диске и время
+последнего изменения. Объём на диске включает подготовленные веса моделей и не является
 процентом загрузки. На медленном соединении подготовка может
 занять больше нескольких минут. Если доступ запрещён, открой «Разрешения macOS»
 и разреши его вручную.
@@ -455,14 +476,14 @@ uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest
 Для изменённых компонентов запусти соответствующие Swift-проверки:
 
 ```bash
-swiftc Sources/MeetingCompanionCore/AudioCapture.swift Sources/MeetingCompanionCore/RecorderCore.swift Sources/MeetingCompanionCore/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --cache-path /private/tmp/meeting-companion-swiftpm-cache
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Products/Debug Sources/MeetingCompanionCore/AudioCaptureTypes.swift Sources/MeetingCompanionCore/RecordingTypes.swift Sources/MeetingCompanionCore/RecordingPaths.swift Sources/MeetingCompanionCore/RecorderTypes.swift Sources/MeetingCompanionPlatform/AudioCapture.swift Sources/MeetingCompanionPlatform/RecorderCore.swift Sources/MeetingCompanionPlatform/SourceAudioFiles.swift scripts/check-source-audio.swift -o /tmp/check-source-audio
 /tmp/check-source-audio
-swiftc Sources/MeetingCompanionCore/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Products/Debug Sources/MeetingCompanionCore/TranscriptionProgress.swift Sources/MeetingCompanionCore/TranscriptionTypes.swift Sources/MeetingCompanionPlatform/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
 /tmp/check-transcription
-swiftc Sources/MeetingCompanionCore/Transcription.swift scripts/check-transcription-progress.swift -o /tmp/check-transcription-progress
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Products/Debug Sources/MeetingCompanionCore/TranscriptionProgress.swift Sources/MeetingCompanionCore/TranscriptionTypes.swift Sources/MeetingCompanionPlatform/Transcription.swift scripts/check-transcription-progress.swift -o /tmp/check-transcription-progress
 /tmp/check-transcription-progress
-swiftc Sources/MeetingCompanionCore/Transcription.swift Sources/MeetingCompanionApp/RecordingHistory.swift Sources/MeetingCompanionApp/RecordingWorkQueue.swift scripts/check-recording-history.swift -o /tmp/check-recording-history
-/tmp/check-recording-history
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter 'ApplicationServiceTests|ProductionCompositionTests'
 
 swiftc Sources/MeetingCompanionApp/MeetingCalendar.swift scripts/check-meeting-context.swift -o /tmp/check-meeting-context
 /tmp/check-meeting-context
@@ -529,10 +550,10 @@ appcast; стабильные записи остаются без канала.
 Не перезаписывай опубликованные архивы и сохраняй прежний сертификат подписи:
 смена сертификата может потребовать заново выдать разрешения macOS.
 
-Готовые архивы содержат uv и конвейер обработки. Python, пакеты и модели
-скачиваются при первоначальной подготовке на Mac получателя.
-Сборка `.app` и DMG требует macOS; Linux runner может проверять Python,
-публиковать готовые архивы и обновлять рецепт Homebrew.
+Готовые сборки `.app` содержат изолированный бинарник конвейера транскрибации
+`MeetingTranscriptionWorker`. Веса моделей скачиваются и проверяются
+при первоначальной подготовке на Mac пользователя.
+Сборка `.app` и DMG требует macOS.
 
 Сторонние компоненты и модели: [THIRD_PARTY.md](THIRD_PARTY.md).
 

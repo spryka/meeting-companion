@@ -1,3 +1,10 @@
+> Актуализация 2026-11-03: history picker, selectedResultID и async-switch clauses
+> superseded [ADR-0004](../../../adr/0004-single-current-transcript.md) и
+> [single-current-transcript](../single-current-transcript/design.md). Ниже сохранена
+> история прежней реализации/приёмки; её counts/UAT не являются проверкой beta.7.
+> Ручные text/name edits, CAS, export и playback сохранены. Новая приёмка pending,
+> физический UAT beta.7 — WAITING_UAT; архивирование не выполняется.
+
 # Tasks
 
 ## 1. Структурированный документ

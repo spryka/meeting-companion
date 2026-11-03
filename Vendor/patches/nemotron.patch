@@ -1,0 +1,664 @@
+diff --git a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/Nemotron3Diarizer.swift b/Vendor/Nemotron/Nemotron3Diarizer.swift
+index 881f0af..af5d114 100644
+--- a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/Nemotron3Diarizer.swift
++++ b/Vendor/Nemotron/Nemotron3Diarizer.swift
+@@ -1,5 +1,5 @@
+-import AudioCommon
+ import Foundation
++import CryptoKit
+ 
+ enum Nemotron3DiarizationError: LocalizedError {
+     case missingArtifact(String)
+@@ -53,6 +53,20 @@ struct Nemotron3ArtifactConfiguration: Decodable, Sendable {
+         guard FileManager.default.fileExists(atPath: url.path) else {
+             throw Nemotron3DiarizationError.missingArtifact(url.path)
+         }
++        let data = try Data(contentsOf: url)
++        if (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["model_type"] as? String == "nemotron_diarization" {
++            // Disposable probe: accept only the exact baseline config, including all DSP/cache settings.
++            guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined()
++                == "f215091252bc54f8dcc7d682962a659e03a6bcb26d1c86e4728b8c6730130eb4" else {
++                throw Nemotron3DiarizationError.invalidConfiguration("unsupported BF16 baseline configuration")
++            }
++            return Self(modelType: "nemotron_diarization", sourceModel: "nvidia/Nemotron-3-Diarization",
++                sourceRevision: "723e19c601d99b7e58fba6a14e32153e0afe48d9", dtype: "bfloat16",
++                sampleRate: 16000, nMels: 128, dModel: 512, tfModel: 192, numLayers: 31,
++                numHeads: 8, numSpeakers: 8, subsamplingFactor: 8, upsampleFactor: 8,
++                spkcacheLen: 264, fifoLen: 40, chunkLen: 340, rightContext: 40,
++                spkcacheUpdatePeriod: 300, quantization: Quantization(groupSize: nil, bits: nil, mode: nil))
++        }
+         let decoder = JSONDecoder()
+         decoder.keyDecodingStrategy = .convertFromSnakeCase
+         let configuration = try decoder.decode(Self.self, from: Data(contentsOf: url))
+@@ -99,15 +113,15 @@ protocol Nemotron3InferenceBackend: AnyObject {
+ /// The model predicts 10 ms speaker activity while keeping cache state at 80 ms.
+ public final class Nemotron3Diarizer {
+     private let backend: Nemotron3InferenceBackend
+-    private let melExtractor: SortformerMelExtractor
++    private let melExtractor: ([Float]) -> ([Float], Int)
+     let config: SortformerConfig
+     private var state: SortformerStreamingState
+     private let updater: SortformerStateUpdater
+ 
+-    init(backend: Nemotron3InferenceBackend) {
++    init(backend: Nemotron3InferenceBackend, extract: (([Float]) -> ([Float], Int))? = nil) {
+         self.backend = backend
+         self.config = .nemotron3Offline
+-        self.melExtractor = SortformerMelExtractor(config: config)
++        self.melExtractor = extract ?? SortformerMelExtractor(config: config).extract
+         self.state = SortformerStreamingState(config: config)
+         self.updater = SortformerStateUpdater(
+             config: config,
+@@ -119,18 +133,6 @@ public final class Nemotron3Diarizer {
+         state.reset()
+     }
+ 
+-    /// Open an independent recording-wide stream. The fixed Core ML/MLX graph
+-    /// is padded, but only completed core frames advance the speaker cache.
+-    public func makeStreamingSession(
+-        coreEncoderFrames: Int = 6,
+-        rightContextEncoderFrames: Int = 7
+-    ) throws -> Nemotron3StreamingSession {
+-        try Nemotron3StreamingSession(
+-            backend: backend,
+-            coreEncoderFrames: coreEncoderFrames,
+-            rightContextEncoderFrames: rightContextEncoderFrames)
+-    }
+-
+     public func diarize(
+         audio: [Float],
+         sampleRate: Int,
+@@ -149,7 +151,7 @@ public final class Nemotron3Diarizer {
+         guard !samples.isEmpty else { return Self.emptyResult }
+ 
+         resetState()
+-        let (melSpec, totalMelFrames) = melExtractor.extract(samples)
++        let (melSpec, totalMelFrames) = melExtractor(samples)
+         guard totalMelFrames > 0 else { return Self.emptyResult }
+ 
+         let encoderStride = config.subsamplingFactor
+@@ -295,332 +297,3 @@ public final class Nemotron3Diarizer {
+     }
+ }
+ 
+-/// Incremental Nemotron 3 diarization with recording-local, stable cache slots.
+-/// Input is 16 kHz mono PCM. A complete snapshot is returned whenever a core
+-/// window and its lookahead have arrived; shorter pushes reuse the last result.
+-public final class Nemotron3StreamingSession {
+-    private let backend: Nemotron3InferenceBackend
+-    private let config: SortformerConfig = .nemotron3Offline
+-    private let melExtractor: SortformerMelExtractor
+-    private let updater: SortformerStateUpdater
+-    private var state: SortformerStreamingState
+-    private let coreEncoderFrames: Int
+-    private let rightContextEncoderFrames: Int
+-    private var pcm: [Float] = []
+-    private var pcmBaseSample = 0
+-    private var totalSamples = 0
+-    private var nextMelFrame = 0
+-    private var confirmedProbabilities: [Float] = []
+-    private var processedProbabilityFrames = 0
+-    private var closedSegments = [[DiarizedSegment]](
+-        repeating: [], count: 8)
+-    private var openSpeechStarts = [Int?](repeating: nil, count: 8)
+-    private var cachedResult = DiarizationResult(
+-        segments: [], numSpeakers: 0, speakerEmbeddings: [])
+-    private var resultDirty = false
+-    private var thresholdsDirty = false
+-    private var finished = false
+-
+-    public var binarization: DiarizationConfig = .sortformer {
+-        didSet {
+-            thresholdsDirty = true
+-            resultDirty = true
+-        }
+-    }
+-    public private(set) var confirmedThroughSample = 0
+-
+-    private static let marginMelFrames = 2
+-
+-    fileprivate init(
+-        backend: Nemotron3InferenceBackend,
+-        coreEncoderFrames: Int,
+-        rightContextEncoderFrames: Int
+-    ) throws {
+-        guard (1...340).contains(coreEncoderFrames),
+-              (0...40).contains(rightContextEncoderFrames),
+-              coreEncoderFrames + rightContextEncoderFrames <= 380 else {
+-            throw Nemotron3DiarizationError.invalidConfiguration(
+-                "stream chunk geometry exceeds the fixed pre-encoder input")
+-        }
+-        self.backend = backend
+-        self.coreEncoderFrames = coreEncoderFrames
+-        self.rightContextEncoderFrames = rightContextEncoderFrames
+-        melExtractor = SortformerMelExtractor(config: config)
+-        updater = SortformerStateUpdater(
+-            config: config,
+-            learnedSilenceEmbedding: backend.learnedSilenceEmbedding)
+-        state = SortformerStreamingState(config: config)
+-    }
+-
+-    public func reset() {
+-        state.reset()
+-        pcm.removeAll(keepingCapacity: true)
+-        pcmBaseSample = 0
+-        totalSamples = 0
+-        nextMelFrame = 0
+-        confirmedProbabilities.removeAll(keepingCapacity: true)
+-        processedProbabilityFrames = 0
+-        closedSegments = [[DiarizedSegment]](
+-            repeating: [], count: config.maxSpeakers)
+-        openSpeechStarts = [Int?](
+-            repeating: nil, count: config.maxSpeakers)
+-        cachedResult = DiarizationResult(
+-            segments: [], numSpeakers: 0, speakerEmbeddings: [])
+-        confirmedThroughSample = 0
+-        resultDirty = false
+-        thresholdsDirty = false
+-        finished = false
+-    }
+-
+-    @discardableResult
+-    public func push(audio: [Float]) throws -> DiarizationResult {
+-        precondition(!finished, "push(audio:) after finish(); call reset() first")
+-        pcm.append(contentsOf: audio)
+-        totalSamples += audio.count
+-        try drain(flushing: false)
+-        return currentResult()
+-    }
+-
+-    public func finish() throws -> DiarizationResult {
+-        guard !finished else { return currentResult() }
+-        if totalSamples > 0 {
+-            try drain(flushing: true)
+-        }
+-        finished = true
+-        return currentResult()
+-    }
+-
+-    public func currentResult() -> DiarizationResult {
+-        guard resultDirty else { return cachedResult }
+-        if thresholdsDirty {
+-            processedProbabilityFrames = 0
+-            closedSegments = [[DiarizedSegment]](
+-                repeating: [], count: config.maxSpeakers)
+-            openSpeechStarts = [Int?](
+-                repeating: nil, count: config.maxSpeakers)
+-            thresholdsDirty = false
+-        }
+-        consumeNewProbabilities()
+-        let frameDuration = Float(config.hopLength)
+-            / Float(config.sampleRate)
+-        let frames = confirmedProbabilities.count / config.maxSpeakers
+-        var segments = closedSegments.flatMap { $0 }
+-        for speaker in 0..<config.maxSpeakers {
+-            guard let start = openSpeechStarts[speaker] else { continue }
+-            let startTime = Float(start) * frameDuration
+-            let endTime = Float(frames) * frameDuration
+-            guard endTime - startTime >= binarization.minSpeechDuration else {
+-                continue
+-            }
+-            let provisional = DiarizedSegment(
+-                startTime: startTime,
+-                endTime: min(
+-                    endTime,
+-                    Float(confirmedThroughSample) / Float(config.sampleRate)),
+-                speakerId: speaker)
+-            if let previous = closedSegments[speaker].last,
+-               provisional.startTime - previous.endTime
+-                    < binarization.minSilenceDuration {
+-                segments.removeAll { segment in
+-                    segment.speakerId == speaker
+-                        && segment.startTime == previous.startTime
+-                        && segment.endTime == previous.endTime
+-                }
+-                segments.append(DiarizedSegment(
+-                    startTime: previous.startTime,
+-                    endTime: provisional.endTime,
+-                    speakerId: speaker))
+-            } else {
+-                segments.append(provisional)
+-            }
+-        }
+-        segments.sort { $0.startTime < $1.startTime }
+-        segments = DiarizationHelpers.compactSpeakerIds(segments)
+-        cachedResult = DiarizationResult(
+-            segments: segments,
+-            numSpeakers: Set(segments.map(\.speakerId)).count,
+-            speakerEmbeddings: [])
+-        resultDirty = false
+-        return cachedResult
+-    }
+-
+-    private func consumeNewProbabilities() {
+-        let speakers = config.maxSpeakers
+-        let frames = confirmedProbabilities.count / speakers
+-        let frameDuration = Float(config.hopLength)
+-            / Float(config.sampleRate)
+-        guard processedProbabilityFrames < frames else { return }
+-        for frame in processedProbabilityFrames..<frames {
+-            let time = Float(frame) * frameDuration
+-            for speaker in 0..<speakers {
+-                var probability = confirmedProbabilities[
+-                    frame * speakers + speaker]
+-                if probability > 1 || probability < 0 {
+-                    probability = 1 / (1 + exp(-probability))
+-                }
+-                if openSpeechStarts[speaker] == nil {
+-                    if probability >= binarization.onset {
+-                        openSpeechStarts[speaker] = frame
+-                    }
+-                } else if probability < binarization.offset {
+-                    let startTime = Float(openSpeechStarts[speaker]!)
+-                        * frameDuration
+-                    openSpeechStarts[speaker] = nil
+-                    guard time - startTime >= binarization.minSpeechDuration else {
+-                        continue
+-                    }
+-                    if let previousIndex = closedSegments[speaker].indices.last,
+-                       startTime - closedSegments[speaker][previousIndex].endTime
+-                            < binarization.minSilenceDuration {
+-                        let previous = closedSegments[speaker][previousIndex]
+-                        closedSegments[speaker][previousIndex] = DiarizedSegment(
+-                            startTime: previous.startTime,
+-                            endTime: time,
+-                            speakerId: speaker)
+-                    } else {
+-                        closedSegments[speaker].append(DiarizedSegment(
+-                            startTime: startTime,
+-                            endTime: time,
+-                            speakerId: speaker))
+-                    }
+-                }
+-            }
+-        }
+-        processedProbabilityFrames = frames
+-    }
+-
+-    public static func firstConfirmationSampleCount(
+-        coreEncoderFrames: Int = 6,
+-        rightContextEncoderFrames: Int = 7
+-    ) -> Int {
+-        (coreEncoderFrames + rightContextEncoderFrames) * 8 * 160
+-            + marginMelFrames * 160
+-    }
+-
+-    private func drain(flushing: Bool) throws {
+-        let hop = config.hopLength
+-        let stride = config.subsamplingFactor
+-        let coreMelFrames = coreEncoderFrames * stride
+-        let rightMelFrames = rightContextEncoderFrames * stride
+-        let totalMelFrames = flushing
+-            ? totalSamples / hop + 1
+-            : totalSamples / hop
+-        while nextMelFrame < totalMelFrames {
+-            let endMelFrame = min(nextMelFrame + coreMelFrames, totalMelFrames)
+-            let rightAvailable = totalMelFrames - endMelFrame
+-            if !flushing {
+-                guard endMelFrame - nextMelFrame == coreMelFrames,
+-                      rightAvailable >= rightMelFrames + Self.marginMelFrames else {
+-                    break
+-                }
+-            }
+-            let rightOffset = min(rightMelFrames, rightAvailable)
+-            try runChunk(
+-                startMelFrame: nextMelFrame,
+-                endMelFrame: endMelFrame,
+-                rightOffset: rightOffset)
+-            nextMelFrame = endMelFrame
+-            confirmedThroughSample = min(totalSamples, nextMelFrame * hop)
+-            resultDirty = true
+-        }
+-        let neededFromSample = max(
+-            0, nextMelFrame - Self.marginMelFrames) * hop
+-        if neededFromSample > pcmBaseSample {
+-            let count = min(pcm.count, neededFromSample - pcmBaseSample)
+-            pcm.removeFirst(count)
+-            pcmBaseSample += count
+-        }
+-    }
+-
+-    private func runChunk(
+-        startMelFrame: Int,
+-        endMelFrame: Int,
+-        rightOffset: Int
+-    ) throws {
+-        let hop = config.hopLength
+-        let stride = config.subsamplingFactor
+-        let melCount = config.nMels
+-        let speakers = config.maxSpeakers
+-        let margin = Self.marginMelFrames
+-        let extractStartMel = max(0, startMelFrame - margin)
+-        let extractStartSample = extractStartMel * hop
+-        let extractEndSample = min(
+-            totalSamples,
+-            (endMelFrame + rightOffset + margin) * hop + config.nFFT)
+-        let sliceStart = extractStartSample - pcmBaseSample
+-        let sliceEnd = extractEndSample - pcmBaseSample
+-        guard sliceStart >= 0, sliceEnd <= pcm.count, sliceEnd > sliceStart else {
+-            throw Nemotron3DiarizationError.runtime(
+-                "stream mel span is no longer present in the PCM buffer")
+-        }
+-        let (mel, extractedFrames) = melExtractor.extract(
+-            Array(pcm[sliceStart..<sliceEnd]))
+-        let localStart = startMelFrame - extractStartMel
+-        let localEnd = min(
+-            extractedFrames,
+-            endMelFrame + rightOffset - extractStartMel)
+-        guard localEnd > localStart else {
+-            throw Nemotron3DiarizationError.runtime(
+-                "stream mel extraction returned no frames")
+-        }
+-        let validMelFrames = localEnd - localStart
+-        var chunk = [Float](repeating: 0, count: 3_040 * melCount)
+-        Nemotron3Diarizer.copy(
+-            source: mel,
+-            sourceOffset: localStart * melCount,
+-            destination: &chunk,
+-            destinationOffset: 0,
+-            count: validMelFrames * melCount)
+-        let allEmbeddings = try autoreleasepool {
+-            try backend.preencode(chunk: chunk)
+-        }
+-        let validEmbeddingFrames = min(380, (validMelFrames + stride - 1) / stride)
+-        let dim = config.fcDModel
+-        guard allEmbeddings.count == 380 * dim else {
+-            throw Nemotron3DiarizationError.runtime(
+-                "stream pre-encoder returned an unexpected shape")
+-        }
+-        let previousCache = state.spkcacheLength
+-        let previousFifo = state.fifoLength
+-        var packed = [Float](repeating: 0, count: 684 * dim)
+-        var packedRows = 0
+-        for (source, rows) in [
+-            (state.spkcache, previousCache),
+-            (state.fifo, previousFifo),
+-            (allEmbeddings, validEmbeddingFrames),
+-        ] {
+-            Nemotron3Diarizer.copy(
+-                source: source,
+-                sourceOffset: 0,
+-                destination: &packed,
+-                destinationOffset: packedRows * dim,
+-                count: rows * dim)
+-            packedRows += rows
+-        }
+-        let output = try autoreleasepool {
+-            try backend.predictHead(
+-                packedEmbeddings: packed, validLength: packedRows)
+-        }
+-        guard output.probabilities80ms.count == 684 * speakers,
+-              output.probabilities10ms.count == 684 * stride * speakers else {
+-            throw Nemotron3DiarizationError.runtime(
+-                "stream head returned an unexpected shape")
+-        }
+-        let highStart = (previousCache + previousFifo) * stride * speakers
+-        let coreHighCount = (endMelFrame - startMelFrame) * speakers
+-        guard highStart + coreHighCount <= output.probabilities10ms.count else {
+-            throw Nemotron3DiarizationError.runtime(
+-                "stream core slice exceeds head output")
+-        }
+-        confirmedProbabilities.append(contentsOf:
+-            output.probabilities10ms[
+-                highStart..<(highStart + coreHighCount)])
+-        let rightEncoderFrames = (rightOffset + stride - 1) / stride
+-        _ = updater.update(
+-            state: &state,
+-            chunkEmbs: Array(allEmbeddings.prefix(validEmbeddingFrames * dim)),
+-            preds: output.probabilities80ms,
+-            leftContext: 0,
+-            rightContext: rightEncoderFrames)
+-    }
+-}
+
+diff --git a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/DiarizationHelpers.swift b/Vendor/Nemotron/DiarizationHelpers.swift
+index 64e42d6..33a5a38 100644
+--- a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/DiarizationHelpers.swift
++++ b/Vendor/Nemotron/DiarizationHelpers.swift
+@@ -1,5 +1,4 @@
+ import Foundation
+-import AudioCommon
+ 
+ /// Shared helpers for diarization post-processing, used by both
+ /// PyannoteDiarizationPipeline and SortformerDiarizer.
+@@ -89,7 +88,8 @@ enum DiarizationHelpers {
+ 
+     /// Resample audio via AVAudioConverter (delegates to AudioFileLoader).
+     static func resample(_ audio: [Float], from sourceSR: Int, to targetSR: Int) -> [Float] {
+-        AudioFileLoader.resample(audio, from: sourceSR, to: targetSR)
++        precondition(sourceSR == targetSR, "PoC accepts native 16 kHz input only")
++        return audio
+     }
+ 
+     // MARK: - Constrained Agglomerative Clustering
+
+diff --git a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/Nemotron3MLXModel.swift b/Vendor/Nemotron/Nemotron3MLXModel.swift
+index f195c2d..7ac1b70 100644
+--- a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/Nemotron3MLXModel.swift
++++ b/Vendor/Nemotron/Nemotron3MLXModel.swift
+@@ -1,7 +1,5 @@
+-import AudioCommon
+ import Foundation
+ import MLX
+-import MLXCommon
+ import MLXNN
+ 
+ private final class Nemotron3RoPE {
+@@ -24,6 +22,10 @@ private final class Nemotron3RoPE {
+     }
+ 
+     func apply(_ value: MLXArray) -> MLXArray {
++        if value.dtype == .bfloat16 {
++            return MLXFast.RoPE(value, dimensions: 64, traditional: false,
++                base: 10_000, scale: 1, offset: 0)
++        }
+         // value: [B, H, T, D], NeMo/GPT-NeoX split-half rotation.
+         let time = value.dim(2)
+         let dimensions = value.dim(3)
+@@ -184,7 +186,8 @@ private final class Nemotron3MLXHead: Module {
+         let valid = MLXArray(0..<Int32(frames * 8))
+             .< MLXArray(Int32(validLength * 8))
+         high = high * valid.reshaped(1, frames * 8, 1).asType(high.dtype)
+-        let low = high.reshaped(batch, frames, 8, 8).mean(axis: 2)
++        let cacheProbabilities = high.dtype == .bfloat16 ? high.asType(.float32) : high
++        let low = cacheProbabilities.reshaped(batch, frames, 8, 8).mean(axis: 2)
+         return (high, low)
+     }
+ }
+@@ -211,23 +214,26 @@ private final class Nemotron3MLXNetwork: Module {
+             .< MLXArray(Int32(validLength))
+         let zero = MLXArray(Float(0))
+         let negative = MLXArray(Float(-10_000))
+-        let mask = MLX.where(valid, zero, negative)
++        let mask = (embeddings.dtype == .bfloat16 ? valid : MLX.where(valid, zero, negative))
+             .reshaped(1, 1, 1, frames)
+         return head(encoder.encode(embeddings, mask: mask), validLength: validLength)
+     }
+ }
+ 
+ final class Nemotron3MLXBackend: Nemotron3InferenceBackend {
+-    var mlxCacheLimitLease = MLXCacheLimitCoordinator.shared.acquireDefault()
+ 
+     private let network: Nemotron3MLXNetwork
+     let learnedSilenceEmbedding: [Float]
++    let baselineFrontend: BaselineMelExtractor?
++    private let computeType: DType
+ 
+     init(directory: URL) throws {
+         let configuration = try Nemotron3ArtifactConfiguration.load(from: directory)
+-        guard configuration.quantization.groupSize == 64,
+-              configuration.quantization.bits == 8,
+-              configuration.quantization.mode == "affine" else {
++        let baseline = configuration.dtype == "bfloat16"
++        computeType = baseline ? .bfloat16 : .float32
++        guard baseline || (configuration.quantization.groupSize == 64 &&
++              configuration.quantization.bits == 8 &&
++              configuration.quantization.mode == "affine") else {
+             throw Nemotron3DiarizationError.invalidConfiguration(
+                 "MLX runtime requires affine group-64 INT8 weights")
+         }
+@@ -236,6 +242,21 @@ final class Nemotron3MLXBackend: Nemotron3InferenceBackend {
+             throw Nemotron3DiarizationError.missingArtifact(weightsURL.path)
+         }
+         var weights = try MLX.loadArrays(url: weightsURL)
++        baselineFrontend = baseline ? try BaselineMelExtractor(weights: weights) : nil
++        if baseline {
++            // These training-only heads are not called by the baseline inference path.
++            for key in ["activity_head.layers.0.bias", "activity_head.layers.0.weight",
++                        "activity_head.layers.1.bias", "activity_head.layers.1.weight",
++                        "hidden_to_spks.bias", "hidden_to_spks.weight"] {
++                guard weights.removeValue(forKey: "sortformer_modules." + key) != nil else {
++                    throw Nemotron3DiarizationError.incompatibleWeights("missing auxiliary tensor " + key)
++                }
++            }
++            guard weights.filter({ $0.key.hasPrefix("encoder.") || $0.key.hasPrefix("sortformer_modules.") })
++                .allSatisfy({ $0.value.dtype == .bfloat16 }) else {
++                throw Nemotron3DiarizationError.incompatibleWeights("expected unquantized BF16 network")
++            }
++        }
+         guard let silence = weights.removeValue(
+             forKey: "sortformer_modules.learnable_sil_emb") else {
+             throw Nemotron3DiarizationError.incompatibleWeights(
+@@ -286,7 +307,7 @@ final class Nemotron3MLXBackend: Nemotron3InferenceBackend {
+                 "MLX pre-encoder expects 3040 × 128 values")
+         }
+         let output = network.preencode(
+-            MLXArray(chunk).reshaped(1, 3_040, 128))
++            MLXArray(chunk).reshaped(1, 3_040, 128).asType(computeType))
+         eval(output)
+         let values = output.asType(.float32).asArray(Float.self)
+         Memory.clearCache()
+@@ -301,7 +322,7 @@ final class Nemotron3MLXBackend: Nemotron3InferenceBackend {
+             throw Nemotron3DiarizationError.runtime(
+                 "MLX head received invalid packed embeddings")
+         }
+-        let embeddings = MLXArray(packedEmbeddings).reshaped(1, 684, 512)
++        let embeddings = MLXArray(packedEmbeddings).reshaped(1, 684, 512).asType(computeType)
+         let output = network.inferHead(embeddings, validLength: validLength)
+         eval(output.high, output.low)
+         let result = Nemotron3HeadOutput(
+@@ -316,35 +337,9 @@ public extension Nemotron3Diarizer {
+     static let defaultMLXModelId =
+         "aufklarer/Nemotron-3-Diarization-100M-MLX-INT8"
+ 
+-    /// Download and load the final MLX INT8 bundle.
+-    static func fromMLXPretrained(
+-        modelId: String = defaultMLXModelId,
+-        cacheDir: URL? = nil,
+-        offlineMode: Bool = false,
+-        downloadOptions: DownloadOptions = .init(),
+-        progressHandler: ((Double, String) -> Void)? = nil
+-    ) async throws -> Nemotron3Diarizer {
+-        let directory = try cacheDir
+-            ?? HuggingFaceDownloader.getCacheDirectory(for: modelId)
+-        progressHandler?(0, "Downloading Nemotron 3 MLX bundle...")
+-        try await HuggingFaceDownloader.downloadWeights(
+-            modelId: modelId,
+-            to: directory,
+-            additionalFiles: ["model.safetensors", "config.json"],
+-            offlineMode: offlineMode,
+-            downloadOptions: downloadOptions,
+-            progressHandler: { fraction in
+-                progressHandler?(fraction * 0.8, "Downloading Nemotron 3 MLX bundle...")
+-            }
+-        )
+-        progressHandler?(0.8, "Loading Nemotron 3 MLX weights...")
+-        let model = try fromMLXDirectory(directory)
+-        progressHandler?(1, "Ready")
+-        return model
+-    }
+-
+     /// Load a previously downloaded MLX INT8 bundle.
+     static func fromMLXDirectory(_ directory: URL) throws -> Nemotron3Diarizer {
+-        Nemotron3Diarizer(backend: try Nemotron3MLXBackend(directory: directory))
++        let backend = try Nemotron3MLXBackend(directory: directory)
++        return Nemotron3Diarizer(backend: backend, extract: backend.baselineFrontend.map { frontend in frontend.extract })
+     }
+ }
+
+diff --git a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/SpeechVAD+Protocols.swift b/Vendor/Nemotron/Binarize.swift
+index e82f2bd..bb1edad 100644
+--- a/private/tmp/speech-swift-upstream/Sources/SpeechVAD/SpeechVAD+Protocols.swift
++++ b/Vendor/Nemotron/Binarize.swift
+@@ -1,29 +1,54 @@
+-import AudioCommon
+-
+-// MARK: - VoiceActivityDetectionModel
+-
+-extension PyannoteVADModel: VoiceActivityDetectionModel {
+-    public var inputSampleRate: Int { segConfig.sampleRate }
+-}
+-
+-// MARK: - SpeakerEmbeddingModel
+-
+-extension WeSpeakerModel: SpeakerEmbeddingModel {}
+-
+-// MARK: - SpeakerDiarizationModel
+-
+-extension PyannoteDiarizationPipeline: SpeakerDiarizationModel {
+-    public var inputSampleRate: Int { segConfig.sampleRate }
+-
+-    public func diarize(audio: [Float], sampleRate: Int) -> [DiarizedSegment] {
+-        diarize(audio: audio, sampleRate: sampleRate, config: .default).segments
++import Foundation
++enum SortformerDiarizer {
++    static func binarize(
++        probs: [Float],
++        frameCount: Int,
++        audioDuration: Float,
++        config: SortformerConfig,
++        thresholds: DiarizationConfig
++    ) -> [DiarizedSegment] {
++        guard frameCount > 0 else { return [] }
++        let numSpeakers = config.maxSpeakers
++        var allProbs = probs
++
++        // Apply sigmoid if predictions are logits
++        for i in 0..<allProbs.count {
++            if allProbs[i] > 1.0 || allProbs[i] < 0.0 {
++                allProbs[i] = 1.0 / (1.0 + exp(-allProbs[i]))
++            }
++        }
++
++        let frameDuration = Float(config.predictionSubsamplingFactor * config.hopLength)
++            / Float(config.sampleRate)
++        var allSegments = [DiarizedSegment]()
++        for spk in 0..<numSpeakers {
++            var track = [Float](repeating: 0, count: frameCount)
++            for f in 0..<frameCount {
++                track[f] = allProbs[f * numSpeakers + spk]
++            }
++
++            let rawSegments = PowersetDecoder.binarize(
++                probs: track,
++                onset: thresholds.onset,
++                offset: thresholds.offset,
++                frameDuration: frameDuration
++            )
++
++            for seg in rawSegments {
++                let duration = seg.endTime - seg.startTime
++                guard duration >= thresholds.minSpeechDuration else { continue }
++                allSegments.append(DiarizedSegment(
++                    startTime: seg.startTime,
++                    endTime: min(seg.endTime, audioDuration),
++                    speakerId: spk
++                ))
++            }
++        }
++
++        allSegments.sort { $0.startTime < $1.startTime }
++        let merged = DiarizationHelpers.mergeSegments(
++            allSegments, minSilence: thresholds.minSilenceDuration)
++        return DiarizationHelpers.compactSpeakerIds(merged)
+     }
+-}
+ 
+-// MARK: - SpeakerExtractionCapable
+-
+-extension PyannoteDiarizationPipeline: SpeakerExtractionCapable {
+-    public func extractSpeaker(audio: [Float], sampleRate: Int, targetEmbedding: [Float]) -> [SpeechSegment] {
+-        extractSpeaker(audio: audio, sampleRate: sampleRate, targetEmbedding: targetEmbedding, config: .default)
+-    }
+ }
+

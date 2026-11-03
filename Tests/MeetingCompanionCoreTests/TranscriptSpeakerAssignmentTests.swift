@@ -653,7 +653,7 @@ import CryptoKit
 
     // MARK: - 12. Session Preview Apply Rejects Inactive ResultID After Switch
 
-    @Test @MainActor func testSessionPreviewApplyRejectsInactiveResultIDAfterSwitch() throws {
+    @Test @MainActor func testSessionPreviewApplyRejectsPriorResultAfterReopen() async throws {
         let root = try temporaryDirectory()
         let resultIDA = "res_switch_a"
         let resultIDB = "res_switch_b"
@@ -699,9 +699,9 @@ import CryptoKit
         let metadataURL = rawDir.appendingPathComponent("\(root.lastPathComponent).processing.json")
         try Data("{}".utf8).write(to: metadataURL)
 
-        let session = try #require(try TranscriptReviewSession.open(recordingDirectory: root))
-        // Explicitly switch to A first
-        try session.switchVersion(to: resultIDA)
+        try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: versionDirB.path)
+        let sessionA = try #require(try TranscriptReviewSession.open(recordingDirectory: root))
+        let session = sessionA
         #expect(session.activeResultID == resultIDA)
 
         // Generate preview for version A
@@ -709,12 +709,14 @@ import CryptoKit
         #expect(previewA.resultID == resultIDA)
 
         // Switch active version to B
-        try session.switchVersion(to: resultIDB)
-        #expect(session.activeResultID == resultIDB)
+        session.close()
+        try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 0)], ofItemAtPath: versionDirA.path)
+        let reopened = try #require(try TranscriptReviewSession.open(recordingDirectory: root))
+        #expect(reopened.activeResultID == resultIDB)
 
         // Attempting to apply preview for inactive version A must be rejected
         #expect {
-            try session.assignSpeakerName(preview: previewA, displayName: "Группа А")
+            try reopened.assignSpeakerName(preview: previewA, displayName: "Группа А")
         } throws: { error in
             if case .conflict = (error as? TranscriptEditsError) { return true }
             return false

@@ -3,10 +3,26 @@ import Combine
 import ServiceManagement
 import SwiftUI
 import MeetingCompanionCore
+import MeetingCompanionApplication
 
 @MainActor
 final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let model = RecorderViewModel()
+    private let historyRepository = RecordingHistoryRepository()
+    private lazy var sessionService = RecordingSessionService(historyRepo: historyRepository)
+    private lazy var processingService: ProcessingService = ProcessingService(
+        transcriptionRunner: PlatformTranscriptionRunner(),
+        audioExporter: PlatformAudioExporter(),
+        historyRepository: historyRepository,
+        retryAdmission: { [weak self] recording in
+            guard let self else { return false }
+            return await self.transcriptWindows.prepareForRetry(recording)
+        }
+    )
+    private lazy var model = RecorderViewModel(
+        sessionService: sessionService,
+        processingService: processingService,
+        historyRepository: historyRepository
+    )
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem!
@@ -15,18 +31,24 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private var busyObserver: AnyCancellable?
     private var updateObserver: AnyCancellable?
     private let appUpdater = AppUpdater()
-    private let transcriptWindows = TranscriptReviewWindowManager()
+    private lazy var transcriptWindows = makeTranscriptWindows()
+
+    private func makeTranscriptWindows() -> TranscriptReviewWindowManager {
+        let service = processingService
+        return TranscriptReviewWindowManager(isProcessing: { recording in
+            await service.isProcessing(recordingURL: recording)
+        })
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model.onOpenTranscript = { [weak self] entry in
             guard let self else { return }
+            Task {
             do {
-                _ = try self.transcriptWindows.open(recordingURL: entry.recording, title: entry.title) { [weak history = self.model.history] id in
-                    guard let history else { throw TranscriptWindowError.closed }
-                    try history.selectResultIDThrowing(id, for: entry.id)
-                }
+                _ = try await self.transcriptWindows.open(recordingURL: entry.recording, title: entry.title)
             } catch {
                 self.model.history.reportError("Не удалось открыть расшифровку: " + error.localizedDescription)
+            }
             }
         }
         NSApp.appearance = model.appearance.value

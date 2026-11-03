@@ -1,5 +1,7 @@
 import Foundation
 import MeetingCompanionCore
+import MeetingCompanionPlatform
+import MeetingCompanionApplication
 
 @available(macOS 15.0, *)
 @main
@@ -16,18 +18,27 @@ struct MeetingCompanionCLI {
                 return
             }
 
+            let historyRepo = RecordingHistoryRepository()
+            let sessionService = RecordingSessionService(historyRepo: historyRepo)
+            let processingService = ProcessingService(
+                transcriptionRunner: CLITranscriptionRunner(),
+                audioExporter: CLIAudioExporter(),
+                historyRepository: historyRepo
+            )
+
             let outputURL = try RecordingPaths.makeOutputURL(outputDirectory: options.outputDirectory, outputKind: options.outputKind)
             let recorder = try await Recorder(
                 outputURL: outputURL,
                 outputKind: options.outputKind,
                 microphoneDeviceID: options.microphoneDeviceID
             )
+            let controller = CLIAudioCaptureController(recorder: recorder)
 
             print("Recording to: \(outputURL.path)")
             print("Capturing: system audio + microphone")
             print(options.duration == nil ? "Press Enter to stop." : "Will stop after \(formatDuration(options.duration!)).")
 
-            try await recorder.start()
+            _ = try await sessionService.start(controller: controller, outputURL: outputURL)
 
             if let duration = options.duration {
                 try await Task.sleep(for: .seconds(duration))
@@ -35,16 +46,58 @@ struct MeetingCompanionCLI {
                 _ = readLine()
             }
 
-            let result = try await recorder.stop()
-            print("Recording finished: \(formatDuration(result.duration))")
-            print("Saved: \(result.outputURL.path) (\(formatBytes(result.fileSize)))")
-            for warning in result.warnings { fputs("Warning: " + warning + "\n", stderr) }
+            let stopResult = try await sessionService.stop()
+            if stopResult.wasCancelledShort {
+                print("Recording was under short threshold; cancelled.")
+                return
+            }
+
+            print("Recording finished: \(formatDuration(stopResult.duration))")
+            print("Saved: \(stopResult.outputURL.path) (\(formatBytes(fileSize(at: stopResult.outputURL))))")
+            for warning in stopResult.warnings { fputs("Warning: " + warning + "\n", stderr) }
             print("Transcribing locally...")
-            do {
-                let transcript = try await Transcription.run(recording: result.outputURL)
-                print("Transcript: " + transcript.path)
-            } catch {
-                fputs("\(error.localizedDescription)\n", stderr)
+
+            let (stream, continuation) = AsyncStream<ProcessingService.Event>.makeStream()
+            await processingService.addEventHandler { event in
+                continuation.yield(event)
+            }
+            await processingService.enqueue(
+                recordingURL: stopResult.outputURL,
+                settings: ProcessingJobSettings(parakeet: false, echoCancellation: false),
+                stoppedCapture: stopResult.stoppedCapture
+            )
+
+            var transcriptURL: URL?
+            var processingError: String?
+            for await event in stream {
+                switch event {
+                case .completed(_, let url, let warning):
+                    transcriptURL = url
+                    if let warning {
+                        fputs("Warning: " + warning + "\n", stderr)
+                    }
+                    continuation.finish()
+                case .failed(_, let error, let warning):
+                    processingError = error
+                    if let warning {
+                        fputs("Warning: " + warning + "\n", stderr)
+                    }
+                    continuation.finish()
+                case .cancelled(_, let warning):
+                    if let warning { fputs("Warning: " + warning + "\n", stderr) }
+                    processingError = "Cancelled"
+                    continuation.finish()
+                case .persistenceWarning(_, let warning):
+                    fputs("Warning: " + warning + "\n", stderr)
+                default:
+                    break
+                }
+            }
+
+            if let transcriptURL {
+                print("Transcript: " + transcriptURL.path)
+            } else {
+                fputs("\(processingError ?? "Transcription failed")\n", stderr)
                 exit(1)
             }
         } catch {
@@ -75,43 +128,50 @@ struct Options {
         while index < arguments.count {
             let argument = arguments[index]
             switch argument {
-            case "--help", "-h":
-                print(Self.usage)
-                exit(0)
-            case "--output-dir":
-                index += 1
-                guard index < arguments.count else { throw RecorderError.missingValue(argument) }
-                outputDirectory = URL(fileURLWithPath: NSString(string: arguments[index]).expandingTildeInPath)
-            case "--duration":
-                index += 1
-                guard index < arguments.count else { throw RecorderError.missingValue(argument) }
-                guard let value = TimeInterval(arguments[index]), value > 0 else {
-                    throw RecorderError.invalidValue(argument, arguments[index])
-                }
-                duration = value
-            case "--microphone-id":
-                index += 1
-                guard index < arguments.count else { throw RecorderError.missingValue(argument) }
-                microphoneDeviceID = arguments[index]
             case "--list-microphones":
                 listMicrophones = true
             case "--monitor-levels":
                 monitorLevels = true
-            case "--type":
+            case "--output-dir":
                 index += 1
-                guard index < arguments.count else { throw RecorderError.missingValue(argument) }
-                switch arguments[index].lowercased() {
+                guard index < arguments.count else {
+                    throw CLIError.invalidOption("--output-dir requires a path")
+                }
+                outputDirectory = URL(fileURLWithPath: arguments[index], isDirectory: true)
+            case "--format":
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIError.invalidOption("--format requires m4a or mp4")
+                }
+                switch arguments[index] {
                 case "m4a":
                     outputKind = .m4a
                 case "mp4":
                     outputKind = .mp4
                 default:
-                    throw RecorderError.invalidValue(argument, arguments[index])
+                    throw CLIError.invalidOption("Unsupported format: \(arguments[index])")
                 }
+            case "--duration":
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIError.invalidOption("--duration requires seconds")
+                }
+                guard let parsed = Double(arguments[index]), parsed > 0 else {
+                    throw CLIError.invalidOption("Duration must be a positive number of seconds")
+                }
+                duration = parsed
+            case "--microphone":
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIError.invalidOption("--microphone requires an ID")
+                }
+                microphoneDeviceID = arguments[index]
+            case "--help", "-h":
+                printUsage()
+                exit(0)
             default:
-                throw RecorderError.unknownArgument(argument)
+                throw CLIError.unknownOption(argument)
             }
-
             index += 1
         }
 
@@ -124,77 +184,65 @@ struct Options {
             monitorLevels: monitorLevels
         )
     }
-
-    static let usage = """
-    Usage:
-      meeting-companion [--output-dir DIR] [--duration SECONDS] [--type m4a|mp4] [--microphone-id ID]
-      meeting-companion --list-microphones
-      meeting-companion --monitor-levels [--duration SECONDS] [--microphone-id ID]
-
-    Defaults:
-      --output-dir ~/Downloads/Meetings
-      --type m4a
-
-    The utility records system audio and the default microphone until Enter is pressed.
-    """
 }
 
-@available(macOS 15.0, *)
-func monitorLevels(options: Options) async throws {
-    let state = LevelState()
-    let duration = options.duration ?? 10
-    let monitor = try await AudioLevelMonitor(microphoneDeviceID: options.microphoneDeviceID) { mic, system in
-        Task {
-            await state.update(mic: mic, system: system)
+enum CLIError: LocalizedError {
+    case invalidOption(String)
+    case unknownOption(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidOption(let message):
+            return message
+        case .unknownOption(let option):
+            return "Unknown option: \(option)"
         }
-    }
-
-    print("Monitoring levels for \(formatDuration(duration))...")
-    print("Play system audio and speak into the selected microphone.")
-    try await monitor.start()
-
-    let ticks = max(1, Int(duration / 0.5))
-    for _ in 0..<ticks {
-        try await Task.sleep(for: .milliseconds(500))
-        let snapshot = await state.snapshotAndDecay()
-        print("mic=\(snapshot.mic) system=\(snapshot.system)")
-    }
-
-    try await monitor.stop()
-}
-
-actor LevelState {
-    private var micLevel = 0.0
-    private var systemLevel = 0.0
-
-    func update(mic: Double, system: Double) {
-        if mic.isFinite {
-            micLevel = mic
-        }
-        if system.isFinite {
-            systemLevel = system
-        }
-    }
-
-    func snapshotAndDecay() -> (mic: String, system: String) {
-        let snapshot = (
-            mic: String(format: "%.3f", micLevel),
-            system: String(format: "%.3f", systemLevel)
-        )
-        micLevel *= 0.86
-        systemLevel *= 0.86
-        return snapshot
     }
 }
 
-func printMicrophones() {
-    let microphones = Microphones.available()
-    if microphones.isEmpty {
-        print("No microphones found.")
+private func printMicrophones() {
+    let devices = Microphones.available()
+    if devices.isEmpty {
+        print("No microphone devices found.")
         return
     }
 
-    for microphone in microphones {
-        print("\(microphone.id)\t\(microphone.name)")
+    print("Available microphone devices:")
+    for device in devices {
+        print("  \(device.id)\t\(device.name)")
     }
+}
+
+private func monitorLevels(options: Options) async throws {
+    let monitor = try await AudioLevelMonitor(
+        microphoneDeviceID: options.microphoneDeviceID
+    ) { mic, system in
+        print(String(format: "mic: %4.0f%%  sys: %4.0f%%", mic * 100, system * 100), terminator: "\r")
+        fflush(stdout)
+    }
+
+    print("Monitoring audio levels. Press Enter to stop.")
+    try await monitor.start()
+    _ = readLine()
+    try? await monitor.stop()
+    print("")
+}
+
+private func printUsage() {
+    let text = """
+    meeting-companion: dual-channel meeting audio recorder + native MLX transcription
+
+    USAGE:
+      meeting-companion [options]
+
+    OPTIONS:
+      --duration <seconds>      Stop automatically after the given duration
+      --output-dir <path>       Directory for output files (default: ~/Documents/Recordings)
+      --format <m4a|mp4>        Audio container format (default: m4a)
+      --microphone <id>         Specific microphone device ID
+      --list-microphones        List available microphone input devices and exit
+      --monitor-levels          Continuously print input levels without recording
+      -h, --help                Show this help message
+    """
+    print(text)
 }

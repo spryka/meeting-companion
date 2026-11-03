@@ -1,12 +1,14 @@
 import AppKit
 import AVFoundation
 import Foundation
+import MeetingCompanionCore
+import MeetingCompanionPlatform
 
 @main struct PlayerWindowCheck {
     enum Failure: Error { case check(String), timeout(String), persistence }
     @MainActor static func main() async throws {
         _ = NSApplication.shared
-        let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+        let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true).appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         func check(_ value: Bool, _ message: String) throws {
             guard value else { throw Failure.check(message) }
@@ -42,12 +44,7 @@ import Foundation
         try Data("{}".utf8).write(to: root.appendingPathComponent("raw/meeting.processing.json"))
         let recording = root.appendingPathComponent("meeting.m4a")
         let manager = TranscriptReviewWindowManager()
-        var reject = true
-        let selector = TranscriptVersionSelector(recordingURL: recording)
-        let window = try manager.open(recordingURL: recording, title: "Player synthetic") { id in
-            if reject { throw Failure.persistence }
-            try selector.persistSelectedResultID(id)
-        }
+        let window = try await manager.open(recordingURL: recording, title: "Player synthetic")
         let model = manager.model(for: recording)!
         // Immediate assertion provides semantic RED for the compiled API skeleton.
         try check(model.playbackState == .loading, "window starts asynchronous player preparation")
@@ -80,22 +77,12 @@ import Foundation
         model.beginEditing()
         try check(!model.follow.isFollowing, "editing hook suspends without providing editing UI")
         model.togglePlayback()
-        let oldRows = model.rows.map(\.id)
-        model.switchVersion(to: "v1")
-        try check(model.selectedResultID == "v2" && model.playbackDuration == 6 && model.rows.map(\.id) == oldRows && model.error != nil,
-                  "failed picker persistence preserves audio and text snapshot")
-        reject = false
-        model.switchVersion(to: "v1")
-        try check(!model.playbackEnabled && model.playbackPosition == 0, "successful switch immediately disables old audio")
-        try await wait("v1 ready") { model.playbackState == .ready }
-        try check(model.selectedResultID == "v1" && abs(model.playbackDuration - 4) < 0.05, "picker prepares exact older version clip not latest/master")
-        try check(!model.follow.isFollowing && model.follow.targetID == nil, "version change preserves suspension and clears stale target")
         let actualController = Mirror(reflecting: model).children.first { $0.label == "playback" }!.value as! TranscriptPlaybackController
         let actualTransport = Mirror(reflecting: actualController).children.first { $0.label == "transport" }!.value as! TranscriptAVPlayerTransport
         let actualPlayer = Mirror(reflecting: actualTransport).children.first { $0.label == "player" }!.value as! AVPlayer
-        try check(!actualTransport.hasPeriodicObserver, "paused new version has zero periodic observers")
+        try check(!actualTransport.hasPeriodicObserver, "paused current result has zero periodic observers")
         let actualURL = (actualPlayer.currentItem!.asset as! AVURLAsset).url
-        try check(actualURL.resolvingSymlinksInPath().standardizedFileURL == root.appendingPathComponent("raw/transcripts/v1/mix.wav").resolvingSymlinksInPath().standardizedFileURL, "actual AVPlayer asset URL matches selected older version")
+        try check(actualURL.resolvingSymlinksInPath().standardizedFileURL == root.appendingPathComponent("raw/transcripts/v2/mix.wav").resolvingSymlinksInPath().standardizedFileURL, "actual AVPlayer asset URL matches current result")
         await model.seekPlayback(to: model.rows[0].start)
         try check(abs(model.playbackPosition - model.rows[0].start) < 0.05, "timestamp uses same global seek handler")
         model.togglePlayback()
@@ -113,20 +100,14 @@ import Foundation
         try check(actualPlayer.currentItem == nil && !actualTransport.hasPeriodicObserver && actualTransport.onEvent == nil,
                   "actual close releases item observer and callbacks")
         try check(model.follow.isClosed && model.follow.targetID == nil, "close clears follow target and ignores further return")
-        let rapid = try manager.open(recordingURL: recording, title: "Rapid switching") { try selector.persistSelectedResultID($0) }
+        let rapid = try await manager.open(recordingURL: recording, title: "Reopen")
         let rapidModel = manager.model(for: recording)!
-        rapidModel.switchVersion(to: "v2")
-        rapidModel.switchVersion(to: "v1")
-        try await wait("rapid ready") { rapidModel.playbackState == .ready }
-        try check(rapidModel.selectedResultID == "v1" && abs(rapidModel.playbackDuration - 4) < 0.05, "rapid switches publish only final selected audio")
-        rapidModel.switchVersion(to: "v2")
         rapid.close()
         try await Task.sleep(for: .milliseconds(150))
         try check(rapidModel.playbackState == .closed && rapidModel.playbackDuration == 0, "close during preparation rejects late ready callback")
-        // Missing selected mix preserves all transcript rows and displays audio failure.
-        try selector.persistSelectedResultID("v1")
-        try FileManager.default.removeItem(at: root.appendingPathComponent("raw/transcripts/v1/mix.wav"))
-        let broken = try manager.open(recordingURL: recording, title: "Missing mix") { _ in }
+        // Missing current mix preserves all transcript rows and displays audio failure.
+        try FileManager.default.removeItem(at: root.appendingPathComponent("raw/transcripts/v2/mix.wav"))
+        let broken = try await manager.open(recordingURL: recording, title: "Missing mix")
         let brokenModel = manager.model(for: recording)!
         try await wait("failed") { brokenModel.playbackState == .failed }
         try check(!brokenModel.rows.isEmpty && !brokenModel.playbackEnabled, "missing mix preserves text with disabled player")
@@ -135,7 +116,7 @@ import Foundation
         try FileManager.default.createDirectory(at: legacyDir, withIntermediateDirectories: true)
         let legacyURL = legacyDir.appendingPathComponent("old.m4a")
         try "Legacy text".write(to: legacyDir.appendingPathComponent("old.sources.transcript.txt"), atomically: true, encoding: .utf8)
-        let legacy = try manager.open(recordingURL: legacyURL, title: "Legacy") { _ in }
+        let legacy = try await manager.open(recordingURL: legacyURL, title: "Legacy")
         let legacyModel = manager.model(for: legacyURL)!
         try check(!legacyModel.playbackEnabled && legacyModel.legacyText == "Legacy text" && legacyModel.explanation != nil,
                   "legacy retains TXT and disabled audio")

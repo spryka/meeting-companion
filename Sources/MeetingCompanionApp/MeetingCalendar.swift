@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import EventKit
 import Foundation
+import MeetingCompanionCore
 
 struct MeetingContext: Encodable, Identifiable, Hashable {
     let id: String
@@ -60,6 +61,7 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
     }
 
     func save(beside recording: URL) throws {
+        try RecordingPaths.requireStandardLayout(recording)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

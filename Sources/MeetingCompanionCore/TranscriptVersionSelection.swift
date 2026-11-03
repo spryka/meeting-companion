@@ -3,24 +3,10 @@ import Foundation
 import Darwin
 #endif
 
-/// Information about a published transcript recognition version.
-public struct TranscriptVersionInfo: Equatable, Sendable {
-    public let resultID: String
-    public let createdAt: String
-    public let date: Date
-
-    public init(resultID: String, createdAt: String, date: Date) {
-        self.resultID = resultID
-        self.createdAt = createdAt
-        self.date = date
-    }
-}
-
-/// Errors occurring during transcript version selection.
-public enum TranscriptVersionSelectionError: LocalizedError, Sendable, Equatable {
+public enum TranscriptStorageError: LocalizedError, Sendable, Equatable {
     case malformedMetadata(String)
     case pathEscapesRecording(String)
-    case selectedVersionUnavailable(String)
+    case currentResultUnavailable(String)
     case metadataNotFound(String)
 
     public var errorDescription: String? {
@@ -29,37 +15,26 @@ public enum TranscriptVersionSelectionError: LocalizedError, Sendable, Equatable
             return "Некорректный файл истории: \(detail)"
         case .pathEscapesRecording(let detail):
             return "Путь выходит за пределы каталога записи: \(detail)"
-        case .selectedVersionUnavailable(let resultID):
-            return "Выбранная версия недоступна: \(resultID)"
+        case .currentResultUnavailable(let resultID):
+            return "Текущий результат недоступен: \(resultID)"
         case .metadataNotFound(let detail):
             return "Файл истории не найден: \(detail)"
         }
     }
 }
 
-/// Selector and resolver for transcript recognition versions based on persisted recording history.
-public struct TranscriptVersionSelector: Sendable {
+/// Contained current-result resolution and lossless recording metadata storage.
+public struct TranscriptResultStorage: Sendable {
     public let recordingDirectory: URL
     public let recordingURL: URL?
-    public var onPersistSelection: (@Sendable (_ resultID: String) throws -> Void)?
 
-    public init(
-        recordingDirectory: URL,
-        recordingURL: URL? = nil,
-        onPersistSelection: (@Sendable (_ resultID: String) throws -> Void)? = nil
-    ) {
+    public init(recordingDirectory: URL, recordingURL: URL? = nil) {
         self.recordingDirectory = recordingDirectory
         self.recordingURL = recordingURL
-        self.onPersistSelection = onPersistSelection
     }
-
-    public init(
-        recordingURL: URL,
-        onPersistSelection: (@Sendable (_ resultID: String) throws -> Void)? = nil
-    ) {
+    public init(recordingURL: URL) {
         self.recordingDirectory = recordingURL.deletingLastPathComponent()
         self.recordingURL = recordingURL
-        self.onPersistSelection = onPersistSelection
     }
 
     private func isContained(fileURL: URL, within parentURL: URL) -> Bool {
@@ -95,29 +70,29 @@ public struct TranscriptVersionSelector: Sendable {
                     if (isFinal && allowFinalAbsence) || allowIntermediateAbsence {
                         return (next, false)
                     }
-                    throw TranscriptVersionSelectionError.pathEscapesRecording("Path component missing: \(component)")
+                    throw TranscriptStorageError.pathEscapesRecording("Path component missing: \(component)")
                 }
-                throw TranscriptVersionSelectionError.pathEscapesRecording("lstat failed with errno \(err) for \(component)")
+                throw TranscriptStorageError.pathEscapesRecording("lstat failed with errno \(err) for \(component)")
             }
 
             if (st.st_mode & S_IFMT) == S_IFLNK {
                 let resolved = next.resolvingSymlinksInPath().standardizedFileURL
                 guard isContained(fileURL: resolved, within: realRecordingURL) else {
-                    throw TranscriptVersionSelectionError.pathEscapesRecording("Symlink escapes recording directory at \(component)")
+                    throw TranscriptStorageError.pathEscapesRecording("Symlink escapes recording directory at \(component)")
                 }
                 guard FileManager.default.fileExists(atPath: resolved.path) else {
-                    throw TranscriptVersionSelectionError.pathEscapesRecording("Dangling symlink at \(component)")
+                    throw TranscriptStorageError.pathEscapesRecording("Dangling symlink at \(component)")
                 }
                 current = resolved
             } else {
                 current = next.standardizedFileURL
                 guard isContained(fileURL: current, within: realRecordingURL) else {
-                    throw TranscriptVersionSelectionError.pathEscapesRecording("Path escapes recording directory at \(component)")
+                    throw TranscriptStorageError.pathEscapesRecording("Path escapes recording directory at \(component)")
                 }
             }
             #else
             guard isContained(fileURL: next, within: realRecordingURL) else {
-                throw TranscriptVersionSelectionError.pathEscapesRecording(component)
+                throw TranscriptStorageError.pathEscapesRecording(component)
             }
             current = next
             #endif
@@ -134,83 +109,80 @@ public struct TranscriptVersionSelector: Sendable {
             baseName = recordingDirectory.lastPathComponent
         }
 
-        let (_, rawExists) = try verifyContainedPath(components: ["raw"], allowFinalAbsence: true)
-        if rawExists {
+        let recording = recordingURL ?? recordingDirectory.appendingPathComponent(baseName + ".m4a")
+        if RecordingPaths.isStandardLayout(recording) {
             return (["raw"], "\(baseName).processing.json")
         } else {
             return ([], "\(baseName).processing.json")
         }
     }
 
-    /// Discovers all valid, published (non-staging) versions, sorted descending by creation date (latest first).
-    public func availableVersions() throws -> [TranscriptVersionInfo] {
-        let realRecordingURL = recordingDirectory.resolvingSymlinksInPath().standardizedFileURL
-        guard isContained(fileURL: recordingDirectory, within: realRecordingURL) else {
-            throw TranscriptVersionSelectionError.pathEscapesRecording("recordingDirectory escapes")
+    /// Choose the directory BEFORE validating its result; never fall back to older content.
+    public func currentResultDirectory() throws -> URL? {
+        let recording = recordingURL ?? recordingDirectory.appendingPathComponent(recordingDirectory.lastPathComponent + ".m4a")
+        try RecordingPaths.requireStandardLayout(recording)
+        guard RecordingEntry.canonicalURL(recording).deletingLastPathComponent() == recordingDirectory.resolvingSymlinksInPath().standardizedFileURL else {
+            throw TranscriptStorageError.pathEscapesRecording(recording.path)
         }
-
-        let (transcriptsDir, exists) = try verifyContainedPath(
-            components: ["raw", "transcripts"],
-            allowFinalAbsence: true,
-            allowIntermediateAbsence: true
-        )
-        guard exists else { return [] }
-
-        let fm = FileManager.default
-        let entries = try fm.contentsOfDirectory(at: transcriptsDir, includingPropertiesForKeys: nil)
-        var results: [TranscriptVersionInfo] = []
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-        fallbackFormatter.formatOptions = [.withInternetDateTime]
-
+        let (directory, exists) = try verifyContainedPath(components: ["raw", "transcripts"], allowFinalAbsence: true, allowIntermediateAbsence: true)
+        guard exists else { return nil }
+        let entries = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        var candidates: [(URL, Date)] = []
         for entry in entries {
             let name = entry.lastPathComponent
-            guard !name.hasPrefix("staging"),
-                  !name.hasPrefix("."),
-                  !name.contains(".tmp") else {
-                continue
+            guard !name.hasPrefix("staging"), !name.hasPrefix("."), !name.contains(".tmp") else { continue }
+            let (contained, _) = try verifyContainedPath(components: ["raw", "transcripts", name], allowFinalAbsence: false)
+            let values = try contained.resourceValues(forKeys: [.isDirectoryKey, .creationDateKey])
+            guard values.isDirectory == true else { continue }
+            guard let created = values.creationDate else {
+                throw TranscriptStorageError.currentResultUnavailable("Нет даты создания каталога " + name)
             }
-
-            // Verify full containment chain including result.json before any read
-            guard let (resultURL, rExists) = try? verifyContainedPath(
-                components: ["raw", "transcripts", name, "result.json"],
-                allowFinalAbsence: false
-            ), rExists else {
-                continue
-            }
-
-            guard let doc = try? TranscriptDocument.load(from: resultURL, recordingDirectory: recordingDirectory) else {
-                continue
-            }
-            guard doc.resultID == name else { continue }
-
-            let date = formatter.date(from: doc.createdAt) ?? fallbackFormatter.date(from: doc.createdAt) ?? .distantPast
-            results.append(TranscriptVersionInfo(resultID: doc.resultID, createdAt: doc.createdAt, date: date))
+            candidates.append((entry, created))
         }
+        return candidates.sorted {
+            $0.1 == $1.1 ? $0.0.lastPathComponent > $1.0.lastPathComponent : $0.1 > $1.1
+        }.first?.0
+    }
 
-        results.sort {
-            if $0.date != $1.date {
-                return $0.date > $1.date
-            }
-            return $0.resultID > $1.resultID
+    public func currentDocument() throws -> TranscriptDocument? {
+        guard let directory = try currentResultDirectory() else { return nil }
+        let id = directory.lastPathComponent
+        let (url, exists) = try verifyContainedPath(components: ["raw", "transcripts", id, "result.json"], allowFinalAbsence: true)
+        guard exists else { throw TranscriptStorageError.currentResultUnavailable(id + ": result.json отсутствует") }
+        let document = try TranscriptDocument.load(from: url, recordingDirectory: recordingDirectory)
+        guard document.resultID == id else { throw TranscriptStorageError.currentResultUnavailable(id) }
+        return document
+    }
+
+    /// Only a newly committed result's mandatory text can acknowledge processing success.
+    public func committedText(after previousResultID: String?) throws -> URL? {
+        guard let document = try currentDocument(), document.resultID != previousResultID else { return nil }
+        let (url, exists) = try verifyContainedPath(components: ["raw", "transcripts", document.resultID, "transcript.txt"], allowFinalAbsence: true)
+        guard exists, try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+              FileManager.default.isReadableFile(atPath: url.path) else {
+            throw TranscriptStorageError.currentResultUnavailable(document.resultID + ": transcript.txt отсутствует")
         }
-        return results
+        return url
+    }
+
+    public func metadataData() throws -> Data? {
+        let (components, filename) = try resolveMetadataPath()
+        let (url, exists) = try verifyContainedPath(components: components + [filename], allowFinalAbsence: true)
+        guard exists else { return nil }
+        let data = try Data(contentsOf: url)
+        _ = try Self.parseTopLevelFields(data: data)
+        return data
     }
 
     private struct TopLevelField {
         let key: String
         let keyRange: Range<Int>
         let valueRange: Range<Int>
-        let isString: Bool
-        let isNull: Bool
-        let stringValue: String?
     }
 
     private static func parseTopLevelFields(data: Data) throws -> [TopLevelField] {
         guard (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] != nil else {
-            throw TranscriptVersionSelectionError.malformedMetadata("Not a JSON object")
+            throw TranscriptStorageError.malformedMetadata("Not a JSON object")
         }
 
         let n = data.count
@@ -285,7 +257,7 @@ public struct TranscriptVersionSelector: Sendable {
 
         skipWhitespace()
         guard i < n, data[i] == 0x7B else {
-            throw TranscriptVersionSelectionError.malformedMetadata("Expected opening brace")
+            throw TranscriptStorageError.malformedMetadata("Expected opening brace")
         }
         i += 1
 
@@ -294,29 +266,23 @@ public struct TranscriptVersionSelector: Sendable {
             skipWhitespace()
             if i < n && data[i] == 0x7D { break }
             guard let keyRange = scanString() else {
-                throw TranscriptVersionSelectionError.malformedMetadata("Expected string key")
+                throw TranscriptStorageError.malformedMetadata("Expected string key")
             }
             guard let decodedKey = try? JSONDecoder().decode(String.self, from: data[keyRange]) else {
-                throw TranscriptVersionSelectionError.malformedMetadata("Invalid string key")
+                throw TranscriptStorageError.malformedMetadata("Invalid string key")
             }
             skipWhitespace()
             guard i < n, data[i] == 0x3A else {
-                throw TranscriptVersionSelectionError.malformedMetadata("Expected colon")
+                throw TranscriptStorageError.malformedMetadata("Expected colon")
             }
             i += 1
             skipWhitespace()
 
-            let isStr = (i < n && data[i] == 0x22)
-            let isNul = (i + 4 <= n && String(decoding: data[i..<(i+4)], as: UTF8.self) == "null")
             guard let valRange = skipValue() else {
-                throw TranscriptVersionSelectionError.malformedMetadata("Expected value")
+                throw TranscriptStorageError.malformedMetadata("Expected value")
             }
 
-            var strVal: String? = nil
-            if isStr {
-                strVal = try? JSONDecoder().decode(String.self, from: data[valRange])
-            }
-            fields.append(TopLevelField(key: decodedKey, keyRange: keyRange, valueRange: valRange, isString: isStr, isNull: isNul, stringValue: strVal))
+            fields.append(TopLevelField(key: decodedKey, keyRange: keyRange, valueRange: valRange))
 
             skipWhitespace()
             if i < n && data[i] == 0x2C { i += 1 }
@@ -325,94 +291,12 @@ public struct TranscriptVersionSelector: Sendable {
         return fields
     }
 
-    /// Reads the persisted `selectedResultID` from the recording history metadata (`processing.json`), if present.
-    public func persistedSelectedResultID() throws -> String? {
-        let (folderComponents, filename) = try resolveMetadataPath()
-        let (verifiedURL, exists) = try verifyContainedPath(
-            components: folderComponents + [filename],
-            allowFinalAbsence: true
-        )
-        guard exists else { return nil }
-
-        let data: Data
-        do {
-            data = try Data(contentsOf: verifiedURL)
-        } catch {
-            throw TranscriptVersionSelectionError.malformedMetadata("Cannot read metadata: \(error.localizedDescription)")
-        }
-
-        let fields = try Self.parseTopLevelFields(data: data)
-        return try Self.selectedResultID(in: fields)
-    }
-
-    private static func selectedResultID(in fields: [TopLevelField]) throws -> String? {
-        let matching = fields.filter { $0.key == "selectedResultID" }
-        if matching.count > 1 {
-            throw TranscriptVersionSelectionError.malformedMetadata("Duplicate selectedResultID key")
-        }
-        guard let field = matching.first else {
-            return nil
-        }
-        if field.isNull { return nil }
-        guard field.isString, let value = field.stringValue else {
-            throw TranscriptVersionSelectionError.malformedMetadata("selectedResultID must be a string or null")
-        }
-        return value
-    }
-
-    private static func patchSelectedResultIDNonLossy(data: Data, newResultID: String) throws -> Data {
-        let fields = try parseTopLevelFields(data: data)
-        _ = try selectedResultID(in: fields)
-        let matching = fields.filter { $0.key == "selectedResultID" }
-        if matching.count > 1 {
-            throw TranscriptVersionSelectionError.malformedMetadata("Duplicate selectedResultID key")
-        }
-
-        let encodedValue = try String(decoding: JSONEncoder().encode(newResultID), as: UTF8.self)
-
-        if let existingField = matching.first {
-            // Replace existing value in place
-            var patched = Data()
-            patched.append(data[0..<existingField.valueRange.lowerBound])
-            patched.append(Data(encodedValue.utf8))
-            patched.append(data[existingField.valueRange.upperBound..<data.count])
-            guard (try? JSONSerialization.jsonObject(with: patched)) as? [String: Any] != nil else {
-                throw TranscriptVersionSelectionError.malformedMetadata("Patched JSON is invalid")
-            }
-            return patched
-        }
-
-        // Insert before last }
-        let string = String(decoding: data, as: UTF8.self)
-        guard let lastBrace = string.lastIndex(of: "}"),
-              let firstBrace = string.firstIndex(of: "{") else {
-            throw TranscriptVersionSelectionError.malformedMetadata("Missing braces")
-        }
-
-        let inside = string[string.index(after: firstBrace)..<lastBrace].trimmingCharacters(in: .whitespacesAndNewlines)
-        let patchedString: String
-        if inside.isEmpty {
-            patchedString = "{\n  \"selectedResultID\": \(encodedValue)\n}"
-        } else {
-            var prefix = String(string[..<lastBrace]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if prefix.hasSuffix(",") { prefix.removeLast() }
-            patchedString = prefix + ",\n  \"selectedResultID\": \(encodedValue)\n}"
-        }
-
-        let patchedData = Data(patchedString.utf8)
-        guard (try? JSONSerialization.jsonObject(with: patchedData)) as? [String: Any] != nil else {
-            throw TranscriptVersionSelectionError.malformedMetadata("Patched JSON is invalid")
-        }
-        return patchedData
-    }
-
     /// Merges unknown top-level fields from `existingData` into `encodedData` without numeric loss.
     public static func mergeUnknownFields(from existingData: Data, into encodedData: Data) throws -> Data {
         let knownKeys: Set<String> = [
-            "recording", "date", "title", "duration", "phase", "problems", "meeting", "log", "selectedResultID"
+            "recording", "date", "title", "duration", "phase", "problems", "meeting", "log"
         ]
         let existingFields = try parseTopLevelFields(data: existingData)
-        _ = try selectedResultID(in: existingFields)
         _ = try parseTopLevelFields(data: encodedData)
         let unknownFields = existingFields.filter { !knownKeys.contains($0.key) }
         guard !unknownFields.isEmpty else { return encodedData }
@@ -420,7 +304,7 @@ public struct TranscriptVersionSelector: Sendable {
         let targetString = String(decoding: encodedData, as: UTF8.self)
         guard let lastBrace = targetString.lastIndex(of: "}"),
               let firstBrace = targetString.firstIndex(of: "{") else {
-            throw TranscriptVersionSelectionError.malformedMetadata("Missing braces in encoded history")
+            throw TranscriptStorageError.malformedMetadata("Missing braces in encoded history")
         }
 
         var prefix = String(targetString[..<lastBrace]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -437,74 +321,9 @@ public struct TranscriptVersionSelector: Sendable {
         prefix += "\n}"
         let result = Data(prefix.utf8)
         guard (try? JSONSerialization.jsonObject(with: result)) != nil else {
-            throw TranscriptVersionSelectionError.malformedMetadata("Merged history is invalid")
+            throw TranscriptStorageError.malformedMetadata("Merged history is invalid")
         }
         return result
     }
 
-    /// Persists the selected resultID into the recording history metadata (`processing.json`),
-    /// preserving all existing metadata fields without numeric loss.
-    public func persistSelectedResultID(_ resultID: String) throws {
-        if let handler = onPersistSelection {
-            try handler(resultID)
-            return
-        }
-
-        let available = try availableVersions()
-        guard available.contains(where: { $0.resultID == resultID }) else {
-            throw TranscriptVersionSelectionError.selectedVersionUnavailable(resultID)
-        }
-
-        let (folderComponents, filename) = try resolveMetadataPath()
-        let (verifiedURL, exists) = try verifyContainedPath(
-            components: folderComponents + [filename],
-            allowFinalAbsence: true
-        )
-        guard exists else {
-            throw TranscriptVersionSelectionError.metadataNotFound(filename)
-        }
-
-        let existingData: Data
-        do {
-            existingData = try Data(contentsOf: verifiedURL)
-        } catch {
-            throw TranscriptVersionSelectionError.malformedMetadata("Cannot read metadata: \(error.localizedDescription)")
-        }
-
-        let patchedData = try Self.patchSelectedResultIDNonLossy(data: existingData, newResultID: resultID)
-
-        let tempURL = verifiedURL.deletingLastPathComponent().appendingPathComponent("metadata.tmp.\(UUID().uuidString)")
-        try patchedData.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        #if canImport(Darwin)
-        guard rename(tempURL.path, verifiedURL.path) == 0 else {
-            throw TranscriptVersionSelectionError.malformedMetadata("rename failed with errno \(errno)")
-        }
-        #else
-        _ = try FileManager.default.replaceItemAt(verifiedURL, withItemAt: tempURL)
-        #endif
-    }
-
-    /// Resolves the effective resultID to open: returns explicit persisted selection if valid,
-    /// or falls back to the latest successfully published non-staging version.
-    public func resolveSelectedResultID() throws -> String? {
-        let persisted = try persistedSelectedResultID()
-        let available = try availableVersions()
-
-        if let explicit = persisted {
-            guard available.contains(where: { $0.resultID == explicit }) else {
-                throw TranscriptVersionSelectionError.selectedVersionUnavailable(explicit)
-            }
-            return explicit
-        }
-        return available.first?.resultID
-    }
-
-    /// Opens a `TranscriptEditsRepository` for the resolved version resultID.
-    public func selectAndOpenRepository() throws -> (resultID: String, repository: TranscriptEditsRepository)? {
-        guard let selectedID = try resolveSelectedResultID() else { return nil }
-        let repo = TranscriptEditsRepository(recordingDirectory: recordingDirectory)
-        return (selectedID, repo)
-    }
 }

@@ -1,0 +1,2 @@
+# Expose upstream test media files hidden by root *.wav pattern
+!Tests/media/*.wav

@@ -22,8 +22,10 @@ and behavior-preserving changes do not need a new specification.
 
 ## Layout
 
-- `Sources/MeetingCompanionCore`: ScreenCaptureKit / Core Audio Tap audio capture, synchronized source
-  WAV files, subprocess transcription.
+- `Sources/MeetingCompanionCore`: Foundation contracts, progress, recording paths,
+  transcript storage and existing editor components.
+- `Sources/MeetingCompanionPlatform`: ScreenCaptureKit / Core Audio Tap audio capture,
+  synchronized source WAV files, subprocess transcription and AVPlayer transport.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
@@ -48,7 +50,9 @@ artifact layout, failure behavior and evaluation method.
 - Transcription must work offline after preparation. Never upload audio.
 - Merge channels by word timestamps before grouping turns; preserve overlaps.
 - New recordings use `YYYY-MM/DD/NAME/`; final transcript, context and mixed audio stay
-  there, intermediate files and source audio go in `raw/`. Keep reading legacy flat recordings.
+  there, intermediate files and source audio go in `raw/`. Full functionality requires
+  canonical folder basename == recording stem (standard since 1.4.0). Legacy flat
+  placement is list + contained saved TXT read-only; never process or write it.
 - VAD gates whole existing ASR windows; keep absolute timestamps and original audio.
   Only a detection copy is amplified. Preserve baseline GigaAM text with Parakeet enabled.
 - Keep processing UI event-driven and discrete; no continuous animation for transcription.

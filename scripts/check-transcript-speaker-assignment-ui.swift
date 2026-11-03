@@ -1,5 +1,7 @@
 import AppKit
 import Foundation
+import MeetingCompanionCore
+import MeetingCompanionPlatform
 import UniformTypeIdentifiers
 
 @main struct SpeakerAssignmentUIWindowCheck {
@@ -8,7 +10,7 @@ import UniformTypeIdentifiers
     @MainActor static func main() async throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
-        let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+        let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true).appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let args = CommandLine.arguments
@@ -167,11 +169,27 @@ import UniformTypeIdentifiers
 
         let recording = root.appendingPathComponent("meeting.m4a")
         let manager = TranscriptReviewWindowManager()
-        let selector = TranscriptVersionSelector(recordingURL: recording)
-        let window = try manager.open(recordingURL: recording, title: "Speaker UI Test") { id in
-            try selector.persistSelectedResultID(id)
+        for (id, date) in [("v1", 1.0), ("v2", 2.0), ("v3", 0.0)] {
+            try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: date)], ofItemAtPath: root.appendingPathComponent("raw/transcripts/" + id).path)
         }
-        let model = manager.model(for: recording)!
+        var window = try await manager.open(recordingURL: recording, title: "Speaker UI Test")
+        var model = manager.model(for: recording)!
+        // Fixture import policy: close the editor, then reopen against directory creation dates.
+        func importedCurrent(_ id: String, manager: TranscriptReviewWindowManager, root: URL) async throws -> (NSWindow, TranscriptReviewWindowModel) {
+            let recording = root.appendingPathComponent("meeting.m4a")
+            if let old = manager.model(for: recording) {
+                var authorized = false
+                old.requestWindowClose { authorized = true }
+                if let prompt = old.unsavedPrompt { old.resolveUnsavedPrompt(.discard, promptID: prompt.id) }
+                try check(authorized, "fixture replacement resolves draft explicitly")
+                manager.windows[old.state.id]?.close()
+            }
+            for candidate in ["v1", "v2", "v3"] {
+                try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: candidate == id ? 2 : 1)], ofItemAtPath: root.appendingPathComponent("raw/transcripts/" + candidate).path)
+            }
+            let window = try await manager.open(recordingURL: recording, title: "Imported current")
+            return (window, manager.model(for: recording)!)
+        }
         try check(window.isVisible, "real NSWindow opens")
 
         if targetCase == nil || targetCase == "decline-replacement" {
@@ -219,21 +237,6 @@ import UniformTypeIdentifiers
                 )
                 try check(try String(contentsOf: target, encoding: .utf8) == "EXISTING", "export rejected when model closed during consent, target unchanged")
                 print("ISOLATED CASE reentrancy-close PASSED")
-                return
-
-            case "reentrancy-switch":
-                model.switchVersion(to: "v2")
-                let target = outsideDir.appendingPathComponent("reentrancy_switch.txt")
-                try Data("EXISTING".utf8).write(to: target)
-                model.requestExport(
-                    savePanelRunner: { _, c in c(.OK, target) },
-                    overwriteConsentHandler: { _ in
-                        model.switchVersion(to: "v1")
-                        return true
-                    }
-                )
-                try check(try String(contentsOf: target, encoding: .utf8) == "EXISTING", "export rejected when version switched during consent, target unchanged")
-                print("ISOLATED CASE reentrancy-switch PASSED")
                 return
 
             case "reentrancy-replace":
@@ -339,11 +342,11 @@ import UniformTypeIdentifiers
         try check(model.rows[0].name == "Speaker 1", "undo restored turn_1 default Speaker 1")
         try check(!model.canUndo, "no more undo available")
 
-        // 9. Stale preview / Version switch safety
+        // 9. Stale preview / closed session safety
         model.openSpeakerAssignment(for: "turn_1")
         try check(model.activeDraft != nil, "draft open on v2")
-        model.switchVersion(to: "v1")
-        try check(model.activeDraft == nil, "version switch clears open draft to prevent stale callbacks")
+        (window, model) = try await importedCurrent("v1", manager: manager, root: root)
+        try check(model.activeDraft == nil, "explicit discard before reopen clears old draft to prevent stale callbacks")
 
         // 10. Legacy / Corrupt mode does not allow opening form
         let legacyURL = root.appendingPathComponent("raw/legacy.txt")
@@ -354,7 +357,7 @@ import UniformTypeIdentifiers
             recordingURL: recording,
             mode: .legacyReadOnly(transcriptURL: legacyURL)
         )
-        let legacyModel = try TranscriptReviewWindowModel(state: legacyState)
+        let legacyModel = try await TranscriptReviewWindowModel(state: legacyState)
         legacyModel.openSpeakerAssignment(for: "turn_1")
         try check(legacyModel.activeDraft == nil, "legacy mode does not open speaker assignment draft")
 
@@ -396,14 +399,14 @@ import UniformTypeIdentifiers
 
         model.cancelDraft()
 
-        // 13. Stale Old Callback With Captured DraftID / Version Switch
+        // 13. Stale Old Callback With Captured DraftID / Reopen
         model.openSpeakerAssignment(for: "turn_1")
         let staleDraftID = try require(model.activeDraft?.id, "captured draft id")
         model.updateDraftName("Новое Имя")
 
         // Switch to v2
-        model.switchVersion(to: "v2")
-        try check(model.selectedResultID == "v2", "active version is now v2")
+        (window, model) = try await importedCurrent("v2", manager: manager, root: root)
+        try check(model.currentResultID == "v2", "active version is now v2")
 
         // Triggering old callback with staleDraftID
         model.saveSpeakerAssignment(draftID: staleDraftID)
@@ -451,8 +454,8 @@ import UniformTypeIdentifiers
         model.cancelDraft()
 
         // 16. Diarization 8+8 Warnings and Editing Allowed on 8-voice Limit
-        model.switchVersion(to: "v3")
-        try check(model.selectedResultID == "v3", "switched to version 3 (8+8 voices)")
+        (window, model) = try await importedCurrent("v3", manager: manager, root: root)
+        try check(model.currentResultID == "v3", "switched to version 3 (8+8 voices)")
         try check(model.diarizationWarnings.count == 2, "2 diarization warnings rendered for 8+8 sources")
         try check(model.diarizationWarnings.contains(where: { $0.contains("Микрофон") }), "warning for host microphone rendered")
         try check(model.diarizationWarnings.contains(where: { $0.contains("Системный звук") }), "warning for remote system sound rendered")
@@ -570,12 +573,12 @@ import UniformTypeIdentifiers
         try check(v3ResultBytesBefore == v3ResultBytesAfter, "result.json bytes unchanged")
         try check(v3MixBytesBefore == v3MixBytesAfter, "mix.m4a bytes unchanged")
 
-        // 18. Section 4.4b: Unsaved Changes Navigation Prompts (Window Close & Version Switch)
+        // 18. Section 4.4b: Unsaved Changes Navigation Prompts (Window Close & Reopen)
         // Probe 1: Prompt A -> Draft B (Draft replacement under prompt)
         model.openTextEditing(for: "turn_h1")
         let draftA = try require(model.activeTextDraft, "draft A open")
         model.updateDraftText("Текст черновика А", draftID: draftA.id)
-        model.requestVersionSwitch(to: "v1")
+        model.requestWindowClose {}
         let promptA = try require(model.unsavedPrompt, "prompt A created")
 
         // User cancels draft A and opens draft B on turn_h2
@@ -613,43 +616,17 @@ import UniformTypeIdentifiers
         let unconfirmedGroupDraft = try require(model.activeDraft, "group draft open")
         model.selectDraftScope(.allVoiceGroup, draftID: unconfirmedGroupDraft.id)
         model.updateDraftName("Неподтверждённая группа", draftID: unconfirmedGroupDraft.id)
-        model.requestVersionSwitch(to: "v1")
+        model.requestWindowClose {}
         let unconfirmedNavPrompt = try require(model.unsavedPrompt, "nav prompt for unconfirmed group")
         model.resolveUnsavedPrompt(.save, promptID: unconfirmedNavPrompt.id)
         try check(model.activeDraft != nil, "unconfirmed group draft retained on nav save")
         try check(model.error != nil, "unconfirmed group nav save reports error")
-        try check(model.selectedResultID == "v3", "remains on v3 after failed unconfirmed group save")
+        try check(model.currentResultID == "v3", "remains on v3 after failed unconfirmed group save")
         model.cancelDraft(draftID: unconfirmedGroupDraft.id)
-
-        // Test 1: Dirty text on version switch -> requestVersionSwitch
-        model.openTextEditing(for: "turn_h1")
-        let navDraft = try require(model.activeTextDraft, "draft open for version nav test")
-        model.updateDraftText("Текст до переключения версии", draftID: navDraft.id)
-        try check(model.hasUnsavedChanges, "hasUnsavedChanges is true")
-
-        // User tries to switch version to v1
-        model.requestVersionSwitch(to: "v1")
-        try check(model.selectedResultID == "v3", "selectedResultID does not tentatively switch while dirty")
-        let versionPrompt = try require(model.unsavedPrompt, "unsaved prompt shown on version switch")
-
-        // Choice 1: "Остаться"
-        model.resolveUnsavedPrompt(.stay, promptID: versionPrompt.id)
-        try check(model.unsavedPrompt == nil, "prompt dismissed after stay")
-        try check(model.selectedResultID == "v3", "remains on v3 after stay")
-        try check(model.activeTextDraft != nil, "draft preserved after stay")
-        try check(model.activeTextDraft?.text == "Текст до переключения версии", "entered text preserved after stay")
-
-        // Request switch again and choose "Отбросить"
-        model.requestVersionSwitch(to: "v1")
-        let versionPrompt2 = try require(model.unsavedPrompt, "unsaved prompt shown again")
-        model.resolveUnsavedPrompt(.discard, promptID: versionPrompt2.id)
-        try check(model.unsavedPrompt == nil, "prompt dismissed after discard")
-        try check(model.selectedResultID == "v1", "switched to v1 after discard")
-        try check(model.activeTextDraft == nil, "draft discarded")
 
         // Test 2: Dirty text on window close -> window.performClose
         // Switch back to v3
-        model.switchVersion(to: "v3")
+        (window, model) = try await importedCurrent("v3", manager: manager, root: root)
         model.openTextEditing(for: "turn_h1")
         let closeDraft = try require(model.activeTextDraft, "draft open for close test")
         model.updateDraftText("Текст перед закрытием окна", draftID: closeDraft.id)
@@ -676,9 +653,7 @@ import UniformTypeIdentifiers
 
         // Probe 4a: Same-content confirmation regeneration under prompt must reject old prompt A
         // Reopen window to test on live window
-        let window2 = try manager.open(recordingURL: recording, title: "Speaker UI Test 2") { id in
-            try selector.persistSelectedResultID(id)
-        }
+        let window2 = try await manager.open(recordingURL: recording, title: "Speaker UI Test 2")
         let model2 = manager.model(for: recording)!
         try check(window2.isVisible, "window 2 opened")
 
@@ -688,7 +663,7 @@ import UniformTypeIdentifiers
         model2.updateDraftName("Одинаковое Имя", draftID: regenDraft.id)
         model2.saveSpeakerAssignment(draftID: regenDraft.id)
         let confA = try require(model2.activeDraft?.pendingConfirmation, "confirmation A created")
-        model2.requestVersionSwitch(to: "v1")
+        model2.requestWindowClose {}
         let regenPromptA = try require(model2.unsavedPrompt, "regen prompt A created")
 
         // Invalidate confirmation and re-confirm with same content (fresh confirmation B)
@@ -702,14 +677,14 @@ import UniformTypeIdentifiers
         model2.resolveUnsavedPrompt(.save, promptID: regenPromptA.id)
         let v3EditsAfterRegen = try repoV3.loadEdits(resultID: "v3")
         try check(v3EditsBeforeRegen == v3EditsAfterRegen, "prompt A cannot apply regenerated confirmation B")
-        try check(model2.selectedResultID == "v3", "remains on v3 after rejected stale prompt A")
+        try check(model2.currentResultID == "v3", "remains on v3 after rejected stale prompt A")
         model2.cancelDraft(draftID: regenDraft.id)
 
         // Probe 4b: Foreign old prompt ID callback must NOOP and preserve newer prompt B
         model2.openTextEditing(for: "turn_h1")
         let foreignDraft = try require(model2.activeTextDraft, "foreign draft open")
         model2.updateDraftText("Текст Пробы 4b", draftID: foreignDraft.id)
-        model2.requestVersionSwitch(to: "v1")
+        model2.requestWindowClose {}
         let promptB_active = try require(model2.unsavedPrompt, "prompt B active")
 
         // Invoke resolve with a foreign UUID (e.g. regenPromptA.id)
@@ -816,11 +791,8 @@ import UniformTypeIdentifiers
         }
 
         let manager3 = TranscriptReviewWindowManager()
-        let selector3 = TranscriptVersionSelector(recordingURL: recording)
-        let window3 = try manager3.open(recordingURL: recording, title: "Export UI Test") { id in
-            try selector3.persistSelectedResultID(id)
-        }
-        let model3 = try require(manager3.model(for: recording), "model 3 loaded")
+        var window3 = try await manager3.open(recordingURL: recording, title: "Export UI Test")
+        var model3 = try require(manager3.model(for: recording), "model 3 loaded")
         try check(window3.isVisible, "window 3 visible")
 
         // 20.1 Export availability
@@ -834,12 +806,12 @@ import UniformTypeIdentifiers
             recordingURL: recording,
             mode: .legacyReadOnly(transcriptURL: legacyURL)
         )
-        let legacyExportModel = try TranscriptReviewWindowModel(state: legacyState2)
+        let legacyExportModel = try await TranscriptReviewWindowModel(state: legacyState2)
         try check(!legacyExportModel.isExportAvailable, "export button not available for legacy read-only mode")
         try check(!legacyExportModel.canExport, "canExport is false for legacy mode")
 
         // 20.2 Real NSSavePanel configuration & Panel Message Wording
-        let savePanel = model3.configureSavePanel(resultID: "v3", hasDirtyDraft: true)
+        let savePanel = model3.configureSavePanel(hasDirtyDraft: true)
         try check(savePanel.allowedContentTypes == [.plainText], "save panel allowedContentTypes is plainText")
         try check(savePanel.nameFieldStringValue == "transcript.txt", "save panel nameFieldStringValue is transcript.txt")
         try check(savePanel.canCreateDirectories, "save panel canCreateDirectories is true")
@@ -848,17 +820,17 @@ import UniformTypeIdentifiers
         let expectedDocsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         try check(savePanel.directoryURL == expectedDocsDir, "save panel default directory is Documents")
 
-        // Panel message wording identifies request-time frozen selected saved state and dirty draft exclusion
+        // Panel message identifies the request-time saved state and dirty draft exclusion.
         let dirtyMsg = try require(savePanel.message, "save panel message exists for dirty draft")
         try check(dirtyMsg.contains("сохранённого состояния"), "panel message identifies saved state")
-        try check(dirtyMsg.contains("v3"), "panel message identifies selected version v3")
+        try check(dirtyMsg.contains("текущей расшифровки"), "panel message identifies current transcript")
         try check(dirtyMsg.contains("зафиксированного на момент запроса"), "panel message states state is frozen when request begins")
         try check(dirtyMsg.contains("Несохранённые изменения черновика исключены"), "panel message explains dirty draft exclusion")
         try check(!dirtyMsg.contains("последней") && !dirtyMsg.lowercased().contains("latest"), "panel message avoids promising latest result")
 
-        let cleanPanel = model3.configureSavePanel(resultID: "v1", hasDirtyDraft: false)
+        let cleanPanel = model3.configureSavePanel(hasDirtyDraft: false)
         let cleanMsg = try require(cleanPanel.message, "save panel message exists for clean draft")
-        try check(cleanMsg.contains("сохранённого состояния выбранной версии v1"), "clean message identifies selected saved state")
+        try check(cleanMsg.contains("сохранённого состояния текущей расшифровки"), "clean message identifies current saved state")
         try check(!cleanMsg.contains("черновика"), "clean message does not mention draft exclusion")
 
         // 20.3 Canceled panel writes no file, leaves drafts and undo intact
@@ -909,27 +881,16 @@ import UniformTypeIdentifiers
         )
         model3.cancelTextDraft(draftID: dirtyExportTextDraft.id)
 
-        // 20.5 Old pinned selected version exported, not latest
-        model3.switchVersion(to: "v1")
-        let exportV1Target = outsideExportDir.appendingPathComponent("export_v1.txt")
-        model3.requestExport(savePanelRunner: { panel, completion in
-            completion(.OK, exportV1Target)
-        })
-        let v1Content = try String(contentsOf: exportV1Target, encoding: .utf8)
-        try check(v1Content.contains("Синхронизация CX"), "v1 context title in export")
-        try check(v1Content.contains("Приглашены: Алиса Иванова, Борис Петров, Дмитрий Сидоров"), "v1 attendees in export")
-        try check(!v1Content.contains("Speaker 16"), "v1 export does not contain v3 content")
-
-        // 20.6 Stale callback rejected on version switch before callback
+        // 20.6 Stale callback rejected on close/reopen before callback
         var staleSwitchCompletion: ((NSApplication.ModalResponse, URL?) -> Void)?
         model3.requestExport(savePanelRunner: { panel, completion in
             staleSwitchCompletion = completion
         })
         try check(staleSwitchCompletion != nil, "switch completion captured")
-        model3.switchVersion(to: "v2")
+        (window3, model3) = try await importedCurrent("v2", manager: manager3, root: root)
         let staleSwitchTarget = outsideExportDir.appendingPathComponent("export_stale_switch.txt")
         staleSwitchCompletion?(.OK, staleSwitchTarget)
-        try check(!FileManager.default.fileExists(atPath: staleSwitchTarget.path), "stale callback after version switch rejected, no file written")
+        try check(!FileManager.default.fileExists(atPath: staleSwitchTarget.path), "stale callback after close/reopen rejected, no file written")
 
         // 20.7 Stale callback rejected on window close before callback
         var staleCloseCompletion: ((NSApplication.ModalResponse, URL?) -> Void)?
@@ -945,9 +906,7 @@ import UniformTypeIdentifiers
         try check(!model3.canExport, "closed model canExport is false")
 
         // 20.8 Stale callback rejected on replacement request (token invalidation)
-        let window4 = try manager3.open(recordingURL: recording, title: "Export UI Test 4") { id in
-            try selector3.persistSelectedResultID(id)
-        }
+        let window4 = try await manager3.open(recordingURL: recording, title: "Export UI Test 4")
         let model4 = try require(manager3.model(for: recording), "model 4 loaded")
         var completionA: ((NSApplication.ModalResponse, URL?) -> Void)?
         var completionB: ((NSApplication.ModalResponse, URL?) -> Void)?
@@ -1096,15 +1055,15 @@ import UniformTypeIdentifiers
         // Exercise usable Undo after each outcome, with real saved history and dirty input.
         // Earlier navigation probes retain repositories/locks; use an independent recording
         // rather than releasing or mutating their live state to make Undo appear usable.
-        let undoRoot = outsideExportDir.appendingPathComponent("undo-recording")
+        let undoRoot = outsideExportDir.appendingPathComponent("undo-recording/meeting")
         try FileManager.default.copyItem(at: root, to: undoRoot)
         let undoManager = TranscriptReviewWindowManager()
         let undoRecording = undoRoot.appendingPathComponent("meeting.m4a")
-        let undoWindow = try undoManager.open(recordingURL: undoRecording, title: "Export preservation") { _ in }
+        var undoWindow = try await undoManager.open(recordingURL: undoRecording, title: "Export preservation")
         let undoModel = try require(undoManager.model(for: undoRecording), "independent undo model")
         do {
-        let model4 = undoModel
-        model4.switchVersion(to: "v1")
+        var model4 = undoModel
+        (undoWindow, model4) = try await importedCurrent("v1", manager: undoManager, root: undoRoot)
         for outcome in ["cancel", "protected-error"] {
             for draftKind in ["text", "name"] {
                 let originalRows = model4.rows.map(\.text)
@@ -1135,7 +1094,7 @@ import UniformTypeIdentifiers
             }
         }
         // The v2 live CAS snapshot must still reject the external revision, not autoload it.
-        model4.switchVersion(to: "v2")
+        (undoWindow, model4) = try await importedCurrent("v2", manager: undoManager, root: undoRoot)
         model4.openTextEditing(for: "turn_1")
         let conflictDraft = try require(model4.activeTextDraft, "conflict draft")
         model4.updateDraftText("LOCAL CONFLICT INPUT", draftID: conflictDraft.id)
