@@ -621,7 +621,7 @@ struct ApplicationServiceTests {
 
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("transcription/fixtures/transcript-document/valid_parakeet_off.json")
+            .appendingPathComponent("Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         try FileManager.default.copyItem(at: fixtureURL, to: resultJSONURL)
 
         let nativeEntry = RecordingEntry.load(recording: m4aURL)

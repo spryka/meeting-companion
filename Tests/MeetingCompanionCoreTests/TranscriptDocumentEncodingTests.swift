@@ -8,7 +8,7 @@ import Testing
     func nativeEncodingPreservesJSONv1(_ name: String) throws {
         let fixtures = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("transcription/fixtures/transcript-document")
+            .appendingPathComponent("Tests/Fixtures/transcript-document")
         let input = try Data(contentsOf: fixtures.appendingPathComponent("valid_" + name + ".json"))
         let document = try JSONDecoder().decode(TranscriptDocument.self, from: input)
         let output = try JSONEncoder().encode(document)

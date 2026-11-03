@@ -29,8 +29,9 @@ and behavior-preserving changes do not need a new specification.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
-- `transcription/`: GigaAM ONNX speech recognition, Nemotron MLX diarization,
-  Silero VAD, optional Parakeet term correction, timestamp merge, runtime/model preparation and Python tests.
+- `Sources/MeetingTranscriptionPipeline` and `Sources/MeetingTranscriptionWorker`: native Swift/MLX recognition, diarization, VAD, term correction and model preparation.
+- `Sources/WebRTCAEC`: native C++ echo canceller; shell build preserves pinned WebRTC.
+- `Tests/Fixtures`: synthetic transcript JSON shared by Swift tests and editor checks.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
 
 Before changing transcription or term correction, read
@@ -67,11 +68,16 @@ artifact layout, failure behavior and evaluation method.
 
 ## Validation
 
-Run `swift build -c release`, then Python tests:
+Run `swift build -c release`, `swift test`, then:
 
 ```sh
-uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest discover -s transcription -p 'test_*.py' -q
+bash scripts/check-python-free.sh
+bash scripts/check-module-boundaries.sh
+swift skills/local-audio-transcriber/scripts/find-recording.swift --self-test
 ```
+
+Python and uv are not required. The old pipeline remains in Git at
+`research/swift-mlx-pipeline` (`56cf8a3`), not in the current source tree.
 
 For packaging run `./scripts/build-app.sh`; it validates bundle metadata,
 resources and signatures. Relevant Swift self-check commands are in README.

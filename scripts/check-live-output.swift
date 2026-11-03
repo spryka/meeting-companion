@@ -7,18 +7,19 @@ final class OutputProbe: @unchecked Sendable {
 
 @main struct Check {
     static func main() throws {
+        if CommandLine.arguments.dropFirst().first == "--emit-fixture" {
+            let output = FileHandle.standardOutput
+            output.write(Data("Шаг 1\n".utf8))
+            Thread.sleep(forTimeInterval: 0.2)
+            let word = Data("Загрузка".utf8)
+            output.write(word.prefix(1))
+            Thread.sleep(forTimeInterval: 0.1)
+            output.write(word.dropFirst() + Data("\nГотово\n".utf8))
+            return
+        }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-u", "-c", """
-import sys, time
-print('Шаг 1', flush=True)
-time.sleep(0.2)
-word = 'Загрузка'.encode()
-sys.stdout.buffer.write(word[:1]); sys.stdout.flush()
-time.sleep(0.1)
-sys.stdout.buffer.write(word[1:] + b'\\n'); sys.stdout.flush()
-print('Готово', flush=True)
-"""]
+        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        process.arguments = ["--emit-fixture"]
         let pipe = Pipe()
         process.standardOutput = pipe
         let probe = OutputProbe()

@@ -355,7 +355,7 @@ Python full-MLX snapshot остаётся reference моделей; он не з
 Сохраняются TXT, baseline GigaAM, per-source corrections и существующий JSON v1.
 Producer contract: `transcription/transcript_document.py`, `transcript_mix.py`;
 reader contract: `TranscriptDocument`, `TranscriptVersionSelection`, edits/export.
-Порт использует общие `transcription/fixtures/transcript-document/`, не создаёт
+Порт использует общие `Tests/Fixtures/transcript-document/`, не создаёт
 вторую схему и не меняет UI ради native output.
 JSON содержит обязательные `schemaVersion=1`, `resultID`, `createdAt`, `sources`,
 `speakers`, `words`, `turns`, `baselineWords`, `aec`, `playback`, `warnings`, `context`.

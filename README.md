@@ -90,8 +90,8 @@ Homebrew-установки обновляются через `brew upgrade`, в
 ## Сборка из исходников и свои изменения
 
 Нужны Mac с Apple Silicon, macOS 15+ и Swift 6 — он входит в Xcode 16+
-или соответствующие Command Line Tools. Для сборки нужен
-[uv](https://docs.astral.sh/uv/getting-started/installation/).
+или соответствующие Command Line Tools. Python и uv не нужны ни для сборки,
+ни для работы приложения.
 
 Если инструменты разработчика ещё не установлены:
 
@@ -99,12 +99,7 @@ Homebrew-установки обновляются через `brew upgrade`, в
 xcode-select --install
 ```
 
-После завершения установки проверь `swift --version`. Установи uv, например
-через Homebrew:
-
-```bash
-brew install uv
-```
+После завершения установки проверь `swift --version`.
 
 Клонируй репозиторий, собери и установи приложение:
 
@@ -443,10 +438,13 @@ printf '%s\n' 'имя сертификата в Keychain' > .codesign/identity
 Где искать код:
 
 - `Sources/MeetingCompanionApp/` — окно, строка меню, календарь и капсула обработки;
-- `Sources/MeetingCompanionCore/` — запись микрофона и системного звука,
-  синхронизация дорожек и запуск транскрибации;
-- `transcription/` — GigaAM для распознавания русской речи на CPU, Nemotron
-  для разделения голосов на GPU и объединение текста по временным меткам;
+- `Sources/MeetingCompanionCore/` — контракты, хранение и редактор расшифровки;
+- `Sources/MeetingCompanionApplication/` — история, запись и очередь обработки;
+- `Sources/MeetingCompanionPlatform/` — захват аудио, WAV, playback и запуск worker;
+- `Sources/MeetingTranscriptionPipeline/` и `Sources/MeetingTranscriptionWorker/` —
+  Swift/MLX распознавание, диаризация и публикация;
+- `Sources/WebRTCAEC/` — нативный C++ helper WebRTC AEC3;
+- `Tests/Fixtures/` — общие синтетические JSON-фикстуры;
 - `scripts/` и `Resources/Info.plist` — сборка, установка и проверки приложения.
 
 Правила для изменений и агентов — в [AGENTS.md](AGENTS.md).
@@ -455,15 +453,18 @@ printf '%s\n' 'имя сертификата в Keychain' > .codesign/identity
 
 ## Проверки
 
-Python unit-тесты и проверку синтаксиса shell-скриптов можно запускать на Linux.
-Модели для этих тестов не скачиваются. Сборка приложения, Swift-проверки
-и проверка записи выполняются на Mac.
+Сборка приложения, Swift-тесты и проверка записи выполняются на Mac.
+Прежний Python-пайплайн сохранён в ветке `research/swift-mlx-pipeline`
+на коммите `56cf8a3`; в текущей ветке он не нужен.
 
-Перед pull request проверь сборку и Python-тесты:
+Перед pull request проверь сборку и тесты:
 
 ```bash
 swift build -c release
-uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest discover -s transcription -p 'test_*.py' -q
+swift test
+bash scripts/check-python-free.sh
+bash scripts/check-module-boundaries.sh
+swift skills/local-audio-transcriber/scripts/find-recording.swift --self-test
 ```
 
 При изменении упаковки собери приложение и проверь bundle:
@@ -481,7 +482,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Pr
 /tmp/check-source-audio
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Products/Debug Sources/MeetingCompanionCore/TranscriptionProgress.swift Sources/MeetingCompanionCore/TranscriptionTypes.swift Sources/MeetingCompanionPlatform/Transcription.swift scripts/check-transcription.swift -o /tmp/check-transcription
 /tmp/check-transcription
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Products/Debug Sources/MeetingCompanionCore/TranscriptionProgress.swift Sources/MeetingCompanionCore/TranscriptionTypes.swift Sources/MeetingCompanionPlatform/Transcription.swift scripts/check-transcription-progress.swift -o /tmp/check-transcription-progress
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -I .build/out/Products/Debug Sources/MeetingCompanionPlatform/Transcription.swift scripts/check-transcription-progress.swift .build/out/Products/Debug/MeetingCompanionCore.o -o /tmp/check-transcription-progress
 /tmp/check-transcription-progress
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter 'ApplicationServiceTests|ProductionCompositionTests'
 

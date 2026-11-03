@@ -7,11 +7,14 @@
 
 | Файл | Ответственность |
 |---|---|
-| `transcription/transcribe-recording.py` | Последовательная обработка host и remote, события прогресса, объединение дорожек |
-| `transcription/transcribe.py` | Диаризация, GigaAM, назначение спикеров словам, сохранение результатов и обработка ошибок |
-| `transcription/audio_enhancement.py` | Сетка окон, Silero VAD, Parakeet |
-| `transcription/term_correction.py` | Выбор и применение замен к словам GigaAM |
-| `transcription/model_assets.py` | Проверки и загрузка закреплённых моделей |
+| `Sources/MeetingTranscriptionPipeline/PipelineRunner.swift` | Обработка дорожек, модели и сборка документа |
+| `Sources/MeetingTranscriptionPipeline/PipelineLogic.swift` | Окна, назначения голосов и каскад замен |
+| `Sources/MeetingTranscriptionPipeline/ModelAssets.swift` | Проверки и загрузка закреплённых моделей |
+| `Sources/MeetingTranscriptionPipeline/TranscriptPublisher.swift` | Атомарная публикация JSON и текста |
+| `Sources/MeetingCompanionPlatform/Transcription.swift` | Запуск worker, прогресс и отмена |
+| `Sources/WebRTCAEC/aec.cpp`, `scripts/build-aec.sh` | Нативное WebRTC AEC3 и сборка без Python |
+
+Прежняя Python-реализация доступна в Git: `research/swift-mlx-pipeline` (`56cf8a3`).
 
 ## Порядок обработки
 
@@ -55,7 +58,7 @@ Nemotron поддерживает до 8 голосов на каждой дор
 
 ## Правила каскада
 
-`SequenceMatcher` сравнивает нормализованные слова; варианты ищутся только
+Каскад сравнивает нормализованные слова; варианты ищутся только
 в блоках `replace`, по 1–2 слова с каждой стороны. Регистр и пунктуация при
 сопоставлении игнорируются; точка не является границей паузы.
 
@@ -113,7 +116,8 @@ Nemotron поддерживает до 8 голосов на каждой дор
 ## Как проверять изменения
 
 Команды сборки и тестов — в [AGENTS.md](../AGENTS.md). Поведенческие проверки
-каскада и журнала — `transcription/test_enhancement.py`.
+каскада и сборки JSON — `Tests/MeetingTranscriptionPipelineTests/PipelineLogicTests.swift`
+и `PipelineDocumentAssemblyTests.swift`.
 
 Для оценки качества повторно применяй варианты каскада к одним и тем же сохранённым
 токенам обеих моделей. Сохраняй одинаковыми эталон, нарезку, правила нормализации
@@ -201,7 +205,7 @@ cache; исходные файлы сохраняются. Discovery не пер
 ([ADR-0001](../adr/0001-preserve-recognition-and-user-edits.md)).
 Нормативные требования закреплены в [спецификации](../openspec/changes/transcript-editor/specs/transcript-document/spec.md),
 архитектурные решения — в [дизайне](../openspec/changes/transcript-editor/design.md),
-а эталонные наборы данных — в [фикстурах](../transcription/fixtures/transcript-document/README.md).
+а эталонные наборы данных — в [фикстурах](../Tests/Fixtures/transcript-document/README.md).
 
 ### Обязательные поля и nullable
 
@@ -329,7 +333,7 @@ selected-version persistence и async-switch path удалены. Обычная
 
 ### Пример документа (JSON v1)
 
-Полный эталонный пример из набора фикстур (`transcription/fixtures/transcript-document/valid_parakeet_off.json`):
+Полный эталонный пример из набора фикстур (`Tests/Fixtures/transcript-document/valid_parakeet_off.json`):
 
 ```json
 {

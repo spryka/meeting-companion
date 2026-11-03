@@ -161,7 +161,7 @@ private struct Capture: AudioCaptureControllerProtocol {
 
     private func published(_ id: String, in root: URL) throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("transcription/fixtures/transcript-document/valid_parakeet_off.json")
+            .appendingPathComponent("Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
         json["resultID"] = id
         if var playback = json["playback"] as? [String: Any] {

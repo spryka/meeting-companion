@@ -21,7 +21,7 @@ import MeetingCompanionPlatform
             }
             throw Failure.timeout(label)
         }
-        let fixture = URL(fileURLWithPath: "transcription/fixtures/transcript-document/valid_parakeet_off.json")
+        let fixture = URL(fileURLWithPath: "Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         for (id, seconds, date) in [("v1", 4, "2026-10-30T10:00:00Z"), ("v2", 6, "2026-10-31T10:00:00Z")] {
             let dir = root.appendingPathComponent("raw/transcripts/\(id)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

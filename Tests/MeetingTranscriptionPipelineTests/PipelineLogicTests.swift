@@ -308,7 +308,7 @@ struct SubprocessRunnerCancellationTests {
         try FileManager.default.createDirectory(at: preparedRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: recordingRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("transcription/fixtures/transcript-document/valid_parakeet_off.json")
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         let document = try TranscriptDocument.load(from: fixture, recordingDirectory: recordingRoot)
         let prepared = try TranscriptPublisher(recordingDirectory: preparedRoot).publish(document: document, audioMixData: Data([1])).deletingLastPathComponent()
         try FileManager.default.createDirectory(at: recordingRoot.appendingPathComponent("raw/transcripts"), withIntermediateDirectories: true)

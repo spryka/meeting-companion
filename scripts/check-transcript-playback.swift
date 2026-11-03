@@ -85,7 +85,7 @@ import Foundation
         adapter.onEvent = nil
         let version = root.appendingPathComponent("raw/transcripts/v1")
         try FileManager.default.createDirectory(at: version, withIntermediateDirectories: true)
-        let fixture = URL(fileURLWithPath: "transcription/fixtures/transcript-document/valid_parakeet_off.json")
+        let fixture = URL(fileURLWithPath: "Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         var json = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
         json["resultID"] = "v1"
         json["playback"] = ["status": "ready", "mixPath": "raw/transcripts/v1/mix.wav"]

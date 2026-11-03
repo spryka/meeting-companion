@@ -1,9 +1,11 @@
 import Foundation
 @main struct Check {
     static func main() async throws {
-        let folder = Transcription.scriptsDirectory
-        precondition(folder.path.contains(".app/Contents/Resources/transcription"))
-        print("Bundled scripts: " + folder.path)
+        guard let worker = Transcription.locateWorkerExecutable() else {
+            preconditionFailure("Bundled native worker not found")
+        }
+        precondition(worker.path.contains(".app/Contents/MacOS/MeetingTranscriptionWorker"))
+        print("Bundled native worker: " + worker.path)
         let result = try await Transcription.checkDependencies()
         print(result.output)
         precondition(result.succeeded, "Bundled model check failed")

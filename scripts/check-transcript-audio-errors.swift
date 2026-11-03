@@ -8,7 +8,7 @@ import Foundation
         _ = NSApplication.shared
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         let validClip = URL(fileURLWithPath: CommandLine.arguments[2])
-        let fixture = URL(fileURLWithPath: "transcription/fixtures/transcript-document/valid_parakeet_off.json")
+        let fixture = URL(fileURLWithPath: "Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         func check(_ value: Bool, _ message: String) throws {
             guard value else { throw Failure.assertion(message) }
             print("PASS: \(message)")

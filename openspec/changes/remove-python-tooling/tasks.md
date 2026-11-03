@@ -1,0 +1,6 @@
+- [x] Inspect callers, existing fixtures and ADRs; agree the bounded removal.
+- [x] Confirm Python-free checkout acceptance fails before removal.
+- [x] Replace AEC build, graph validation, subprocess probes and skill finder.
+- [x] Remove old recognizer and move retained fixtures/C++ source; update callers/docs.
+- [x] Verify graph counterexamples, finder, fixture/editor tests, release and AEC build.
+- [x] Record results, skipped checks and retained old branch.

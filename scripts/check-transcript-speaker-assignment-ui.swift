@@ -29,7 +29,7 @@ import UniformTypeIdentifiers
             print("PASS: \(message)")
         }
 
-        let fixtureURL = URL(fileURLWithPath: "transcription/fixtures/transcript-document/valid_parakeet_off.json")
+        let fixtureURL = URL(fileURLWithPath: "Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         let fixtureData = try Data(contentsOf: fixtureURL)
         var docJson = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
         docJson["resultID"] = "v1"

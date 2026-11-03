@@ -73,7 +73,9 @@ fi
 
 cp "$PACKAGE_DIR/Package.swift" "$TMP_PKG_DIR/Package.swift"
 
-DUMP_JSON=$(DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" swift package --package-path "$TMP_PKG_DIR" dump-package 2>/dev/null) || {
+DUMP_JSON=$(DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" swift package --package-path "$TMP_PKG_DIR" \
+    --cache-path "$TMP_PKG_DIR/cache" --config-path "$TMP_PKG_DIR/config" \
+    --security-path "$TMP_PKG_DIR/security" dump-package) || {
     echo "FAIL: swift package dump-package failed for $PACKAGE_DIR" >&2
     exit 1
 }
@@ -84,100 +86,7 @@ if [[ -z "$DUMP_JSON" ]]; then
 fi
 
 # 5. Validate structured target graph using standard JSON decoding
-PYTHON_VALIDATOR=$(cat << 'PYEOF'
-import json, sys
-
-forbidden = {"AVFoundation", "CoreMedia", "CoreAudio", "ScreenCaptureKit", "AppKit", "SwiftUI", "Combine", "MLX"}
-
-try:
-    data = json.load(sys.stdin)
-except Exception as e:
-    sys.exit(f"JSON_DECODE_ERROR: {e}")
-
-targets = {t.get("name"): t for t in data.get("targets", [])}
-
-def get_dep_name(dep):
-    if not isinstance(dep, dict):
-        return None
-    for k in ("byName", "target", "product"):
-        v = dep.get(k)
-        if isinstance(v, list) and v:
-            return v[0]
-        elif isinstance(v, dict):
-            return v.get("_0")
-        elif isinstance(v, str):
-            return v
-    return None
-
-# Core checks
-if "MeetingCompanionCore" not in targets:
-    sys.exit("MISSING_TARGET: MeetingCompanionCore target not found in package manifest")
-
-core = targets["MeetingCompanionCore"]
-violations = []
-for s in core.get("settings", []):
-    kind = s.get("kind", {})
-    lf = kind.get("linkedFramework", {})
-    fw = lf.get("_0") if isinstance(lf, dict) else (lf[0] if isinstance(lf, list) else None)
-    if fw in forbidden:
-        violations.append(fw)
-
-if violations:
-    sys.exit(f"FORBIDDEN_CORE_FRAMEWORKS: {violations}")
-
-# Application checks
-if "MeetingCompanionApplication" not in targets:
-    sys.exit("MISSING_TARGET: MeetingCompanionApplication target not found in package manifest")
-
-app_target = targets["MeetingCompanionApplication"]
-app_violations = []
-for s in app_target.get("settings", []):
-    kind = s.get("kind", {})
-    lf = kind.get("linkedFramework", {})
-    fw = lf.get("_0") if isinstance(lf, dict) else (lf[0] if isinstance(lf, list) else None)
-    if fw in forbidden:
-        app_violations.append(fw)
-
-if app_violations:
-    sys.exit(f"FORBIDDEN_APPLICATION_FRAMEWORKS: {app_violations}")
-
-# Verify MeetingCompanionApplication only depends on MeetingCompanionCore
-for dep in app_target.get("dependencies", []):
-    name = get_dep_name(dep)
-    if name != "MeetingCompanionCore":
-        sys.exit(f"FORBIDDEN_APPLICATION_DEPENDENCY: {name} (Application may only depend on Core)")
-
-# Platform checks
-if "MeetingCompanionPlatform" not in targets:
-    sys.exit("MISSING_TARGET: MeetingCompanionPlatform target not found in package manifest")
-
-platform = targets["MeetingCompanionPlatform"]
-platform_frameworks = set()
-for s in platform.get("settings", []):
-    kind = s.get("kind", {})
-    lf = kind.get("linkedFramework", {})
-    fw = lf.get("_0") if isinstance(lf, dict) else (lf[0] if isinstance(lf, list) else None)
-    if fw:
-        platform_frameworks.add(fw)
-expected_platform = {"AVFoundation", "CoreAudio", "CoreMedia", "ScreenCaptureKit"}
-if not expected_platform.issubset(platform_frameworks):
-    sys.exit(f"PLATFORM_FRAMEWORKS_MISSING: expected {expected_platform}, found {platform_frameworks}")
-
-# App and CLI target isolation checks: neither must depend on MLX or Pipeline
-for target_name in ["MeetingCompanionApp", "MeetingCompanionCLI"]:
-    if target_name not in targets:
-        continue
-    tgt = targets[target_name]
-    for dep in tgt.get("dependencies", []):
-        dep_name = get_dep_name(dep)
-        if dep_name in ["MLX", "MeetingTranscriptionPipeline", "GigaAMKit", "Nemotron", "PipelineSilero"]:
-            sys.exit(f"FORBIDDEN_TARGET_DEPENDENCY: {target_name} directly depends on {dep_name}")
-
-print("PACKAGE_GRAPH_VALID")
-PYEOF
-)
-
-if ! echo "$DUMP_JSON" | python3 -c "$PYTHON_VALIDATOR"; then
+if ! printf '%s\n' "$DUMP_JSON" | DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" swift "$ROOT_DIR/scripts/check-package-graph.swift"; then
     echo "FAIL: Package manifest structured boundary verification failed" >&2
     FAILURES=$((FAILURES + 1))
 fi

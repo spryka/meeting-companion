@@ -494,7 +494,7 @@ final class RecorderViewModel: ObservableObject {
             }.value
             let alert = NSAlert()
             alert.messageText = "Сбросить кэш транскрибации?"
-            alert.informativeText = "Будут удалены модели и Python-окружение Meeting Companion (" +
+            alert.informativeText = "Будет удалён локальный кэш моделей и подготовки Meeting Companion (" +
                 ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) +
                 "). Для транскрибации потребуется скачать их заново. Записи, тексты, настройки и разрешения сохранятся."
             alert.alertStyle = .warning
@@ -502,7 +502,7 @@ final class RecorderViewModel: ObservableObject {
             alert.addButton(withTitle: "Сбросить кэш")
             guard alert.runModal() == .alertSecondButtonReturn else { return }
             transcriptionReady = false
-            diagnosticReport = "Удаление моделей и Python-окружения…"
+            diagnosticReport = "Удаление локального кэша моделей и подготовки…"
             try await Task.detached {
                 try RecorderDiagnostics.resetCache(in: directory, recordings: recordings)
             }.value

@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCompanionCore
 
 final class ProgressProbe: @unchecked Sendable {
     var events: [TranscriptionProgress] = []
@@ -6,7 +7,34 @@ final class ProgressProbe: @unchecked Sendable {
 }
 
 @main struct Check {
+    static func emitFixture() throws {
+        let output = FileHandle.standardOutput
+        func write(_ text: String) { output.write(Data(text.utf8)) }
+        func event(_ changes: [String: Any] = [:]) throws -> String {
+            var payload: [String: Any] = ["stage": "gigaam", "channel": "host", "completed": 1, "total": 2]
+            payload.merge(changes) { _, new in new }
+            return "MEETING_PROGRESS " + String(decoding: try JSONSerialization.data(withJSONObject: payload, options: .sortedKeys), as: UTF8.self)
+        }
+        write("Обычный лог\n")
+        let first = try event()
+        write(String(first.prefix(23)))
+        Thread.sleep(forTimeInterval: 0.1)
+        write(String(first.dropFirst(23)) + "\n")
+        for change: [String: Any] in [["stage": "unknown"], ["channel": "unknown"], ["completed": -1], ["completed": 3], ["total": 1.5]] {
+            write(try event(change) + "\n")
+        }
+        // An overlong line must not become valid when its prefix is discarded.
+        write(String(repeating: "x", count: 70000))
+        Thread.sleep(forTimeInterval: 0.1)
+        write(try event() + "\n")
+        write(try event(["completed": 2]) + "\n")
+        write(try event(["stage": "diarization", "completed": 0, "total": 1]) + "\n")
+        Thread.sleep(forTimeInterval: 0.1)
+        write(try event(["stage": "merge", "channel": NSNull(), "completed": 1, "total": 1]))
+    }
+
     static func main() throws {
+        if CommandLine.arguments.dropFirst().first == "--emit-fixture" { try emitFixture(); return }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -15,31 +43,8 @@ final class ProgressProbe: @unchecked Sendable {
         let handle = try FileHandle(forWritingTo: log)
         defer { try? handle.close() }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-u", "-c", """
-import json, sys, time
-prefix = 'MEETING_PROGRESS '
-def event(**changes):
-    payload = dict(stage='gigaam', channel='host', completed=1, total=2)
-    payload.update(changes)
-    return prefix + json.dumps(payload)
-print('Обычный лог', flush=True)
-first = event()
-sys.stdout.write(first[:23]); sys.stdout.flush()
-time.sleep(0.1)
-sys.stdout.write(first[23:] + '\\n'); sys.stdout.flush()
-for change in [dict(stage='unknown'), dict(channel='unknown'), dict(completed=-1),
-               dict(completed=3), dict(total=1.5)]:
-    print(event(**change), flush=True)
-# An overlong line must not become a valid event when its prefix is discarded.
-sys.stdout.write('x' * 70000); sys.stdout.flush()
-time.sleep(0.1)
-print(event(), flush=True)
-print(event(completed=2), flush=True)
-print(event(stage='diarization', completed=0, total=1), flush=True)
-time.sleep(0.1)
-sys.stdout.write(event(stage='merge', channel=None, completed=1, total=1)); sys.stdout.flush()
-"""]
+        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        process.arguments = ["--emit-fixture"]
         let pipe = Pipe()
         process.standardOutput = pipe
         let probe = ProgressProbe()
@@ -56,7 +61,7 @@ sys.stdout.write(event(stage='merge', channel=None, completed=1, total=1)); sys.
         precondition(probe.events[2].text.contains("микрофон"))
         let contents = try String(contentsOf: log, encoding: .utf8)
         precondition(contents.contains("Обычный лог") && contents.contains(String(repeating: "x", count: 70000)))
-        precondition(contents.hasSuffix("\"total\": 1}"))
+        precondition(contents.hasSuffix("\"total\":1}"))
         precondition(Transcription.failureDetail(log: log) == nil)
         let failureLog = directory.appendingPathComponent("failure.log")
         try (String(repeating: "ignored\n", count: 2000) + "RuntimeError: model unavailable\nMEETING_PROGRESS {}\n").write(to: failureLog, atomically: true, encoding: .utf8)

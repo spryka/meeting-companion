@@ -281,7 +281,7 @@ import Testing
     @Test func testDocumentInitialization() throws {
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("transcription/fixtures/transcript-document/valid_parakeet_off.json")
+            .appendingPathComponent("Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         let document = try TranscriptDocument.load(from: fixtureURL, recordingDirectory: fixtureURL.deletingLastPathComponent())
         let index = TranscriptIntervalIndex(document: document)
 

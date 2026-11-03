@@ -60,7 +60,11 @@ import Testing
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
-        process.arguments = ["package", "--package-path", tempDir.path, "dump-package"]
+        process.arguments = ["package", "--package-path", tempDir.path,
+                             "--cache-path", tempDir.appendingPathComponent("cache").path,
+                             "--config-path", tempDir.appendingPathComponent("config").path,
+                             "--security-path", tempDir.appendingPathComponent("security").path,
+                             "dump-package"]
         var env = ProcessInfo.processInfo.environment
         env["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
         process.environment = env
@@ -400,5 +404,49 @@ import Testing
             #expect(run.output.contains("FORBIDDEN_CORE_FRAMEWORKS:"), "Must reject the evaluated framework: \(run.output)")
             #expect(run.output.contains("CoreAudio"), "Must identify CoreAudio: \(run.output)")
         }
+    }
+
+    @Test(arguments: ["application", "app", "cli", "platform", "missing", "invalid"])
+    func testSwiftGraphCheckRejectsForbiddenOrMalformedGraph(fault: String) throws {
+        var targets: [[String: Any]] = [
+            ["name": "MeetingCompanionCore"],
+            ["name": "MeetingCompanionApplication", "dependencies": [["byName": ["MeetingCompanionCore", NSNull()]]]],
+            ["name": "MeetingCompanionPlatform", "settings": ["AVFoundation", "CoreAudio", "CoreMedia", "ScreenCaptureKit"].map {
+                ["kind": ["linkedFramework": ["_0": $0]]]
+            }],
+            ["name": "MeetingCompanionApp"], ["name": "MeetingCompanionCLI"]
+        ]
+        let expected: String
+        switch fault {
+        case "application":
+            targets[1]["dependencies"] = [["byName": ["MLX", NSNull()]]]
+            expected = "FORBIDDEN_APPLICATION_DEPENDENCY"
+        case "app", "cli":
+            targets[fault == "app" ? 3 : 4]["dependencies"] = [["product": ["MLX", "mlx-swift", NSNull(), NSNull()]]]
+            expected = "FORBIDDEN_TARGET_DEPENDENCY"
+        case "platform":
+            targets[2]["settings"] = []
+            expected = "PLATFORM_FRAMEWORKS_MISSING"
+        case "missing":
+            targets.remove(at: 1)
+            expected = "MISSING_TARGET"
+        default:
+            expected = "JSON_DECODE_ERROR"
+        }
+        let data = fault == "invalid" ? Data("invalid JSON".utf8) : try JSONSerialization.data(withJSONObject: ["targets": targets])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+        process.arguments = [root.appendingPathComponent("scripts/check-package-graph.swift").path]
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        try input.fileHandleForWriting.write(contentsOf: data)
+        try input.fileHandleForWriting.close()
+        let result = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        #expect(process.terminationStatus != 0)
+        #expect(result.contains(expected), "Must reject \(fault): \(result)")
     }
 }

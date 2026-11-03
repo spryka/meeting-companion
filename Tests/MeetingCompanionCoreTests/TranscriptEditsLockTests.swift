@@ -20,7 +20,7 @@ import Darwin
 
     private let fixtures = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("transcription/fixtures/transcript-document")
+        .appendingPathComponent("Tests/Fixtures/transcript-document")
 
     private func fixture(_ name: String) -> URL {
         fixtures.appendingPathComponent(name + ".json")

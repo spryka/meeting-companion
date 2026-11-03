@@ -33,7 +33,7 @@ import Testing
         roots.append(root)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("raw/transcripts/v1"), withIntermediateDirectories: true)
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("transcription/fixtures/transcript-document/valid_parakeet_off.json")
+            .appendingPathComponent("Tests/Fixtures/transcript-document/valid_parakeet_off.json")
         var json = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
         json["resultID"] = "v1"
         json["playback"] = ["status": status, "mixPath": status == "ready" ? path as Any : NSNull()]

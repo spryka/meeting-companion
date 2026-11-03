@@ -48,7 +48,7 @@ ditto "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm6
 cp "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
 
 # Build and bundle native AEC
-python3 scripts/build-aec.py "$APP/Contents/Resources/aec"
+bash scripts/build-aec.sh "$APP/Contents/Resources/aec"
 
 # Code signing inside out
 codesign --force --sign "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
