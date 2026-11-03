@@ -4,7 +4,43 @@ import CryptoKit
 @testable import MeetingTranscriptionPipeline
 import MeetingCompanionPlatform
 
+private final class AssetProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+    func append(_ message: String) { lock.withLock { values.append(message) } }
+    var messages: [String] { lock.withLock { values } }
+}
+
 final class ModelAssetsTests: XCTestCase {
+    func testCheckReportsFileBeforeReadingAndStillRejectsCorruptChecksum() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = root.appendingPathComponent("gigaam")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = directory.appendingPathComponent("manifest.json")
+        let log = AssetProgressLog()
+        let result = ModelAssets.checkAvailability(modelRoot: root, parakeet: false, onProgress: { message in
+            log.append(message)
+            if message.hasPrefix("Проверка файла 1/") { try? Data("corrupt synthetic content".utf8).write(to: file) }
+        })
+        XCTAssertEqual(log.messages.count, 10)
+        XCTAssertTrue(log.messages.first?.contains("gigaam/manifest.json (SHA-256)") == true)
+        XCTAssertTrue(log.messages.last?.hasPrefix("Проверка файла 10/10:") == true)
+        XCTAssertFalse(result.ready)
+        XCTAssertTrue(result.missingFiles.contains("gigaam/manifest.json (corrupt checksum)"))
+    }
+
+    func testPreparationReportsInitialIntegrityCheckBeforePreparingFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = AssetProgressLog()
+        XCTAssertThrowsError(try ModelAssets.prepare(modelRoot: root, parakeet: false,
+            allowDownload: false, onProgress: { log.append($0) }))
+        XCTAssertTrue(log.messages.first?.hasPrefix("Проверка файла 1/10:") == true,
+            "Initial checksum scan must be visible before preparation: \(log.messages)")
+    }
+
     func testModelSpecsPinnedIntegrity() {
         let specs = [
             ModelAssets.gigaamSpec,

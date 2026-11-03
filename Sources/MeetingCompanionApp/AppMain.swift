@@ -198,6 +198,12 @@ final class RecorderViewModel: ObservableObject {
     @Published private var localDiagnosticRunning = false
     @Published private var preparationState: ProcessingService.PreparationState = .idle
     var diagnosticRunning: Bool { localDiagnosticRunning || preparationState != .idle }
+    var diagnosticStatusText: String {
+        if isResettingCache { return "Сброс кэша…" }
+        if diagnosticRunning { return preparationState == .preparing ? "Скачивание и проверка моделей…" : "Проверка моделей…" }
+        return transcriptionReady ? "Готово" : "Требуется проверка или подготовка"
+    }
+    var diagnosticSummary: String? { diagnosticReport.split(separator: "\n").last.map(String.init) }
     @Published private var sessionAttached = false
     @Published private var processingAttached = false
     @Published private var sessionStopping = false
@@ -332,12 +338,13 @@ final class RecorderViewModel: ObservableObject {
     }
 
     private func applyProcessingSnapshot(_ snapshot: ProcessingService.Snapshot) {
+        let isInitialAttachment = !processingAttached
         processingAttached = true
         defer { checkDependenciesAfterAttachment() }
         preparationState = snapshot.preparation
         transcriptionJobs = snapshot.jobCount
         history.progress = snapshot.progress
-        if snapshot.preparation != .idle {
+        if isInitialAttachment, snapshot.preparation != .idle {
             diagnosticReport = snapshot.preparation == .preparing ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
         }
         if !isRecording, !sessionStopping, let job = snapshot.active ?? snapshot.queued.first {
@@ -520,10 +527,12 @@ final class RecorderViewModel: ObservableObject {
         diagnosticStartedAt = Date()
         defer { localDiagnosticRunning = false; diagnosticStartedAt = nil; preparationProgress = nil }
         diagnosticAccess = RecorderDiagnostics.access(coreAudioTap: captureBackend == .coreAudioTap, captureCheck: captureCheck)
-        diagnosticReport = prepare ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
+        diagnosticReport = "Проверка папки записей…"
         do {
             let directory = outputDirectory
             try await Task.detached { try RecorderDiagnostics.checkFolder(directory) }.value
+            diagnosticReport = "Папка записей: OK\n" +
+                (prepare ? "Проверка локальных моделей перед скачиванием…" : "Проверка файлов моделей по SHA-256…")
             let result = try await processingService.checkOrPrepareDependencies(
                 prepare: prepare,
                 parakeet: improveTerms

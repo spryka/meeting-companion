@@ -17,6 +17,19 @@ private struct Runner: TranscriptionRunnerProtocol {
         try await Task.sleep(for: .seconds(30)); return recording
     }
 }
+private actor DiagnosticRunner: TranscriptionRunnerProtocol {
+    private var continuation: CheckedContinuation<Void, Never>?
+    var waiting: Bool { continuation != nil }
+    func finish() { continuation?.resume(); continuation = nil }
+    func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
+        onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) {
+        onOutput?("Проверка файла 2/10: gigaam/weights.fp16.safetensors (SHA-256)…")
+        await withCheckedContinuation { continuation = $0 }
+        return ("Все файлы проверены.", true)
+    }
+    func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL { recording }
+}
 private struct Capture: AudioCaptureControllerProtocol {
     let output: URL
     func startCapture() async throws {}
@@ -25,6 +38,38 @@ private struct Capture: AudioCaptureControllerProtocol {
     func currentMicrophoneState() -> MicrophoneRecordingState { .receiving }
 }
 @Suite @MainActor struct ProductionCompositionTests {
+    @Test func diagnosticProgressSurvivesBusySnapshotsAndShowsCompletion() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        let runner = DiagnosticRunner()
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: Exporter())
+        let model = RecorderViewModel(processingService: service, defaults: defaults, startBackgroundServices: false)
+        for _ in 0..<200 { if model.canResetCache { break }; try await Task.sleep(for: .milliseconds(5)) }
+        let checking = Task { await model.checkTranscription(prepare: false) }
+        for _ in 0..<200 { if await runner.waiting { break }; try await Task.sleep(for: .milliseconds(5)) }
+        for _ in 0..<100 { await Task.yield() }
+        #expect(model.diagnosticReport.contains("weights.fp16.safetensors"))
+        #expect(model.diagnosticStatusText == "Проверка моделей…")
+        #expect(model.diagnosticSummary?.contains("weights.fp16.safetensors") == true)
+        let job = await service.enqueue(recordingURL: root.appendingPathComponent("meeting.m4a"),
+            settings: .init(parakeet: false, echoCancellation: false))
+        for _ in 0..<100 { await Task.yield() }
+        #expect(model.diagnosticReport.contains("weights.fp16.safetensors"), "Busy snapshots must not overwrite worker output")
+        await service.cancel(jobID: job.id)
+        await runner.finish()
+        await checking.value
+        for _ in 0..<100 { await Task.yield() }
+        #expect(model.transcriptionReady)
+        #expect(model.diagnosticReport.contains("Все файлы проверены."))
+        #expect(model.diagnosticReport.contains("Транскрибация готова."))
+        #expect(!model.diagnosticRunning)
+        #expect(model.diagnosticStatusText == "Готово")
+        #expect(model.diagnosticSummary == "Транскрибация готова.")
+    }
 
     @Test func flatNeighboursCannotUseSharedStructuredResultOrMutateMetadata() async throws {
         let root = try fixtureRoot()

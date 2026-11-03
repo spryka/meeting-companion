@@ -118,7 +118,8 @@ public enum ModelAssets {
     public static func checkAvailability(
         modelRoot: URL,
         parakeet: Bool,
-        verifyChecksums: Bool = true
+        verifyChecksums: Bool = true,
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) -> (ready: Bool, missingFiles: [String]) {
         let fm = FileManager.default
         var missing: [String] = []
@@ -128,9 +129,14 @@ public enum ModelAssets {
             specs.append(parakeetSpec)
         }
 
+        let totalFiles = specs.reduce(0) { $0 + $1.files.count }
+        var currentFile = 0
         for spec in specs {
             let dir = modelRoot.appendingPathComponent(spec.name)
             for file in spec.files {
+                currentFile += 1
+                onProgress?("Проверка файла \(currentFile)/\(totalFiles): \(spec.name)/\(file.filename)" +
+                    (verifyChecksums ? " (SHA-256)…" : "…"))
                 let fileURL = dir.appendingPathComponent(file.filename)
                 guard fm.fileExists(atPath: fileURL.path) else {
                     missing.append("\(spec.name)/\(file.filename)")
@@ -185,7 +191,7 @@ public enum ModelAssets {
         }
 
         let standardizedRoot = modelRoot.standardizedFileURL
-        let (initialReady, _) = checkAvailability(modelRoot: standardizedRoot, parakeet: parakeet, verifyChecksums: true)
+        let (initialReady, _) = checkAvailability(modelRoot: standardizedRoot, parakeet: parakeet, verifyChecksums: true, onProgress: onProgress)
         if initialReady {
             onProgress?("Все модели уже проверены и готовы.")
             return
@@ -355,7 +361,7 @@ public enum ModelAssets {
             }
         }
 
-        let (finalReady, missing) = checkAvailability(modelRoot: standardizedRoot, parakeet: parakeet, verifyChecksums: true)
+        let (finalReady, missing) = checkAvailability(modelRoot: standardizedRoot, parakeet: parakeet, verifyChecksums: true, onProgress: onProgress)
         guard finalReady else {
             throw NSError(
                 domain: "ModelAssets",

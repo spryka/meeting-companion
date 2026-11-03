@@ -143,8 +143,10 @@ struct RecorderSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section {
-                LabeledContent("Состояние", value: model.diagnosticRunning ? "Идёт подготовка…" :
-                    model.transcriptionReady ? "Готово" : "Требуется проверка или подготовка")
+                LabeledContent("Состояние", value: model.diagnosticStatusText)
+                if let summary = model.diagnosticSummary {
+                    Text(summary).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
                 HStack {
                     Button("Проверить") { check(prepare: false) }
                     Button("Скачать модели") { check(prepare: true) }

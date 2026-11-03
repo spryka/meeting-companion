@@ -138,7 +138,10 @@ do {
     }
 
     if checkOnly {
-        let (ready, missing) = ModelAssets.checkAvailability(modelRoot: modelRoot, parakeet: parakeet)
+        let (ready, missing) = ModelAssets.checkAvailability(modelRoot: modelRoot, parakeet: parakeet, onProgress: { message in
+            fputs("\(message)\n", stdout)
+            fflush(stdout)
+        })
         if ready {
             print("All required models are present in \(modelRoot.path)")
             exit(0)
