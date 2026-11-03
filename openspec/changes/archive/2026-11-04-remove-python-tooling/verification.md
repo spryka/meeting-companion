@@ -57,7 +57,7 @@ with caches isolated. No sandbox workaround was added to the project.
 
 After the initial cleanup commit the owner requested merging and installation,
 and reported the Check-button diagnostics defect. The bounded follow-up is
-verified separately in `../model-check-progress/verification.md`. Its final
+verified separately in `../2026-11-04-model-check-progress/verification.md`. Its final
 beta9/build45 package includes this cleanup and was installed with the original
 ID/signing authority. The initial 236-test evidence above remains historical;
 the follow-up records its exact 249-test selected scope and UI/install checks.
