@@ -1,16 +1,30 @@
 # Tasks
 
-Текущая стадия: release finalization документации/metadata, UI заморожен. Исторические
-галочки сохранены; составные задачи с непроведённым UAT остаются открытыми.
-Реализация и scoped source reviews не означают полный runtime PASS. Beta23 divider
-принят владельцем только для сообщённого использования; change не архивируется.
+Текущая стадия: реализация/source release и доставка beta24/build60 завершены;
+GitHub и локальный master содержат PR #4. UI заморожен. W/R/M/P реализованы:
+открытые составные задачи ниже означают неполную обязательную проверку, а не
+неразработанные экраны. Точное сопоставление с release, историческими фазами и
+каждым scenario ID — в [verification-release.md](verification-release.md).
+
+Составные задачи с непроведённым UAT остаются открытыми. Scoped source reviews,
+202 selected tests и successful install не означают full runtime PASS. Beta23
+divider принят только для сообщённого использования; change не архивируется.
+
+| Выполненная часть | Подтверждение / оставшаяся граница |
+|---|---|
+| W01–W08 workspace/library/current transcript/player/export | Реализация и ограниченные source/regression reviews; native interaction/long/audio residual остаётся в тех же сценариях |
+| R01–R08 independent capsule/shared lifecycle | Реализация и scoped state/session/geometry checks; physical capture/drag/Spaces/busy quit UAT открыт |
+| M01–M04 единое status menu | Actual `StatusMenu.build`/selectors/admission; полный click/keyboard/concurrency runtime matrix открыт |
+| P01–P08 Settings | Одна overlay по ADR0007, live bindings/reset/monitor guards; real devices/calendar/reset/permission/focus UAT открыт |
+| Release beta24 | Fresh release build,202 selected GREEN, guards/strict/original signed App+worker; independent review, normal merge, guarded exact install завершены |
+| Design guide | [DESIGN.md](../../../DESIGN.md) описывает actual shared roles и screen exceptions; это документация, не новая UI-приёмка |
 
 ## RESET-COMMIT1 — current reset admission
 
 - [x] RC1.1 Проверить narrow reset contract/ADR review/strict до behavior; сохранить прежние guards.
 - [x] RC1.2 Подтвердить behavioral RED: pending/running/foreign/cancellation отклоняют reset, idle с own flags разрешает; сохранить readiness/state/progress/feedback.
 - [x] RC1.3 Учесть accepted handoffs до Task, fresh service reads и sync commit без await; пройти scoped regression. Реальный reset не проверен.
-- [ ] RC1.4 Actual version recheck, true original App+worker signed package/exact candidate/stableID/leaf, source/cumulative/incremental/preservation/historical artifacts, one freeze/independent review/future exact handoff. Native/full/UAT gaps и failures раскрыть; нового repair round не начинать.
+- [x] RC1.4 Actual version recheck, true original App+worker signed package/exact candidate/stableID/leaf, source/cumulative/incremental/preservation/historical artifacts, one freeze/independent review/future exact handoff. Native/full/UAT gaps и failures раскрыть; нового repair round не начинать. Историческое выполнение beta20: [release evidence](verification-release.md).
 
 ## SETTINGS-MENU1-CLOSURE1 — VF-026-01–04
 
@@ -19,7 +33,7 @@
 - [x] SC1.3 Behavioral RED→GREEN для form→Settings→close без autostart old monitor; поздние уровни отклонены.
 - [x] SC1.4 Behavioral RED→GREEN для сохранённых form callbacks; independent session-bound stop/mute/cancel сохранены.
 - [x] SC1.5 Behavioral RED→GREEN для ручного title при calendar publications/expiry; mounted render/input/focus не проверены.
-- [ ] SC1.6 Fresh scoped Settings/Open/capsule/capture guards и strict; actual version check, true App+worker package/stable signing/exact candidate, patches/preservation/historical artifacts, one freeze/independent review/future exact handoff. Full/native/audio gaps и raw failures раскрыть, нового repair round не начинать.
+- [x] SC1.6 Fresh scoped Settings/Open/capsule/capture guards и strict; actual version check, true App+worker package/stable signing/exact candidate, patches/preservation/historical artifacts, one freeze/independent review/future exact handoff. Full/native/audio gaps и raw failures раскрыть, нового repair round не начинать. Историческое выполнение beta19: [release evidence](verification-release.md).
 
 ## SETTINGS-MENU1 — Settings modal, More4 и VF-025-01
 
@@ -31,20 +45,20 @@
 - [ ] SM1.4 Оставить в существующем More ровно четыре компактные строки в заданном порядке, labels/icons, rename visible-disabled при unsupported layout, existing retry/copy guards и keyboard/focus/a11y. Удалить только технический пункт из More; context/files/logs/diagnostics/data сохранить. Контракт состава не заменяет pointer/render proof.
 - [x] SM1.5 Behavioral RED→GREEN: действительно preloaded result, held late modal rejection не скрывает capsule; следующий accepted Open скрывает свою. Callers используют actual load outcome.
 - [ ] SM1.6 Пройти только безопасные relevant Settings/composition/recording-presentation regressions. Реальные overlay bounds/background input/focus/More render в wide/narrow light/dark требуют наблюдения; при прежнем native STOP оставить UNVERIFIED без нового getApp/recovery/grant/driver. Pure visual changes — manual exception, не фиктивный RED; audio/full/UAT gaps сохранить.
-- [ ] SM1.7 Проверить фактическую следующую version/build, собрать реальный подписанный preview прежним build flow, exact source/candidate/signature/metadata и сохранность старых seals; один freeze, coordinator audit и independent review/dispositions. Только отдельный exact install handoff разрешает runtime delivery с backup/absence/launch guards; без rebuild/resign после freeze.
+- [x] SM1.7 Проверить фактическую следующую version/build, собрать реальный подписанный preview прежним build flow, exact source/candidate/signature/metadata и сохранность старых seals; один freeze, coordinator audit и independent review/dispositions. Только отдельный exact install handoff разрешает runtime delivery с backup/absence/launch guards; без rebuild/resign после freeze. Историческое выполнение beta18: [release evidence](verification-release.md).
 
 ## CAPSULE-FEEDBACK1 — owner beta16 feedback
 
 - [x] CF1.1 Compiled Open/admission/ownership RED→GREEN с saved target, modal/invalid/concurrent guards; retained lifecycle сохранён.
 - [ ] CF1.2 Implement compact fixed recording/processing/done/error/overtime with ellipsis/full hover/a11y, native passive background/text drag and separate working controls. Native proof requires actual frame delta; unavailable check stays OPEN.
 - [ ] CF1.C5 Correct the newly reopened current-fixture light-on-light halo consistently across shared surfaces; preserve pre-C5 package/candidate. Source removal is not final white/dark render proof; native timeout boundary stays in force.
-- [ ] CF1.3 Build one real signed next preview, exact candidate/source seal, same independent review and guarded exact install handoff. Full/audio/UAT boundaries retained.
+- [x] CF1.3 Build one real signed next preview, exact candidate/source seal, same independent review and guarded exact install handoff. Full/audio/UAT boundaries retained. Историческое выполнение beta17: [release evidence](verification-release.md).
 
 Незакрытые задачи остаются открытыми; исторические результаты не переносятся на текущую ревизию. Подготовка документов не означает выполнение реализации. Для новой проверяемой логики сначала подтвердить поведенческий RED, затем реализовать и пройти регрессию. Для чистой визуальной перестановки записать ручную проверку вместо фиктивных тестов.
 
 ## 1. Интеграция SDD
 
-- [ ] 1.1 Сверить актуальный checkout, AGENTS.md, CONTRIBUTING.md, основные specs и активные changes. Записать ревизию baseline и известные исходные сбои. Не исправлять их молча вместе с редизайном.
+- [x] 1.1 Сверить актуальный checkout, AGENTS.md, CONTRIBUTING.md, основные specs и активные changes. Записать ревизию baseline и известные исходные сбои. Не исправлять их молча вместе с редизайном. Release preflight/source review и current revision/failure map: [verification-release.md](verification-release.md).
 - [ ] 1.2 Проверить итоговый импорт/ссылки и провести focused independent review proposal, specs, design и ADR0006. ADR0006 уже accepted 2026-11-04 по явному ответу владельца; это не выполнение implementation/UAT tasks.
 - [ ] 1.3 Получить independent review подготовленной DOC-INTEGRATION initial1: три назначенных active specs согласованы с W01/W04 по design.md; snapshot/mode/hash preflight и strict results — external audit текущего run. Проверить сохранение main/ADR0004/0005 guarantees и отсутствие изменений historical acceptance. При будущем изменении main guarantees нужен полный MODIFIED delta в отдельно назначенном path; текущие amendments этого не требуют.
 - [ ] 1.4 Сверить HTML с context.md. Проверить предложенный optional displayTitle в прежней metadata/history repository, atomic reload/error/job exclusion/legacy, без path rename и migration. Не вводить иной store/неоговорённый формат и не копировать демологику в продукт.
@@ -100,7 +114,7 @@
 - [ ] 6.7 Owner beta11: исправить hit shape нарисованных settings tiles/library cards/common buttons/menu fields. Representative wide/narrow blank-padding/edge pointer clicks и disabled case через supported CUA; AXPress/исходники не заменяют pointer acceptance. Недоступный native path оставить OPEN.
 - [ ] 6.8 Owner beta11: открыть existing retry на первом уровне обычного меню для eligible standard old/text-only/unsupported entry. Сохранить modal/queue/flat/layout/containment guards; focused nonaudio regression и code-based disposition без user recording/inference/migration.
 
-- [ ] 6.1 Выполнить `openspec validate refresh-macos-interface --type change --strict` в целевом репозитории с его intent-driven schema. Исправить документы без ослабления согласованного поведения. Это не проверка реализации.
+- [x] 6.1 Выполнить `openspec validate refresh-macos-interface --type change --strict` в целевом репозитории с его intent-driven schema. Исправить документы без ослабления согласованного поведения. Это не проверка реализации. Release strict048 PASS; docs-only closeout strict сохраняется отдельно.
 - [ ] 6.2 Выполнить актуальные release build, Swift tests и релевантные self-check из AGENTS.md/README. Отделить исходные падения от регрессий. Приложить команды, exit codes и причины skips. Старые результаты не переносить на новый код.
 - [ ] 6.3 Пройти физический UAT в рамках HARD audio <=30 секунд: оба источника, mute, короткая отмена; overtime/длинные границы синтетически, возврат библиотеки, меню, Spaces/fullscreen, мониторы, защита выхода и обновления. Записать macOS, железо, устройства и результаты. Проверить macOS 15 fallback отдельно от материалов macOS 26.
 - [ ] 6.4 Пройти обе темы, клавиатуру, VoiceOver, reduced motion/transparency, узкое/широкое окно и синтетический long offline scenario W08.2/streaming transport. Восьмичасовой physical UAT вне текущего разрешения: WAITING_UAT, не запускать и не заявлять PASS. Пропущенные сценарии оставить открытыми.
@@ -108,11 +122,13 @@
 
 ## Текущий порядок проверки
 
-Документация/Info → утверждённые safe selected tests/release build/guards/strict →
-original signed App+worker/exact prepared index → independent review → exact source/
-artifact/commit binding → normal primary master integration → guarded exact install.
-Ручной long/audio/accessibility UAT отдельно. Исторические raw logs остаются вне
-репозитория; пропущенные или failed проверки не превращаются в PASS.
+Release sequence выполнена: документация/Info → safe selected tests/release build/
+guards/strict → original signed App+worker → independent review → exact source/
+artifact/commit binding → normal primary master merge → local fast-forward →
+guarded exact install и delivery review. Docs-only reconciliation проходит свой
+strict/review до отдельного docs commit, без rebuild/version bump.
+Ручной long/audio/accessibility UAT остаётся открытым в этом change. Historical
+raw logs вне репозитория; skipped/failed проверки не превращаются в PASS.
 
 # CAPSULE1 focused exception (one pass)
 
@@ -128,18 +144,18 @@ artifact/commit binding → normal primary master integration → guarded exact 
 - [x] Удалить dead technical sheet/private helpers, unbound toggleLogin, legacy morph/exclusive state, obsolete harness/README command/restore assertions; сохранить live routes/data/panel/header/position.  автозапуск Settings callback/initial registration KEEP.
 - [x] Сверить existing coverage; перенести только отсутствующие clamp/activation cases, выполнить relevant safe checks/strict.  strict003. Activation/native host assertions перенесены, но не запускались и не заявлены PASS. Explicit no-fake-RED exception для удаления.
 - [x] Выполнить разрешённую identity-gated native диагностику либо сохранить точный STOP.  launch/getApp0, seam OPEN/UNVERIFIED, source header unchanged.
-- [ ] Подготовить actual signed App+worker candidate, preservation/patches/audit и single freeze; independent review и install только после exact handoff.
+- [x] Подготовить actual signed App+worker candidate, preservation/patches/audit и single freeze; independent review и install только после exact handoff. Историческое выполнение beta21: [release evidence](verification-release.md).
 
 ## SEAM-CLOSURE1 existing repair1/1
 
 - [x] Лично посмотреть owner full PNG, сверить source body/header ownership с painted receipt и прежние bounds; narrow contract/design/ADR review до behavior. Before9/reservation captured prospectively.
 - [x] Продолжить existing semantic divider через public shared header paint owner без root/width/color/control/narrow topology changes. Pure drawing no-fake-RED exception; testsource untouched. line; body HistoryView byte-identical.
 - [x] Safe retained checks/strict + final-source host one build/conditional launch с exact reused isolation/probes, свежими source/binary/sameID guards и AFTER bounds; failures STOP/no retries; actual final images либо exact UNVERIFIED gap.  native build006/007 + launch008 PID78971, AFTER wide/compact light/dark root deltas0pt/0px. AFTER raster UNVERIFIED: getApp1/1 exhausted; no alternate capture. Native bounds не являются painted PASS.
-- [ ] True original App+worker signed next preview, manifests/patches/preservation/onefreeze; independent review FINAL и future exact install handoff. Native/full/UAT/module gaps retain.
+- [x] True original App+worker signed next preview, manifests/patches/preservation/onefreeze; independent review FINAL и future exact install handoff. Native/full/UAT/module gaps retain. Историческое выполнение beta22: [release evidence](verification-release.md); painted failure не закрыт этой package-галочкой.
 
 ## SEAM-RENDER-CLOSURE1 (отдельный closure1/1)
 
 - [x] Read-only source/layer analysis, новый owner-observed beta22 failure, before9/copies и coordinator disposition; effective assignment/reservation1/1 до behavior, narrow contract/design/ADR review подготовлены. Historical035 source/geometry не raster PASS.
 - [x] Перенести existing1pt separator в existing actions accessory, сохранить inner width/position/guards, reuse/reset roots и narrow transitions; удалить duplicatewide content paint, narrowdetail fullrow KEEP.  Pure drawing exception, HistoryView/tests unchanged. Сохранение positions — source relationships, новых measurements нет.
 - [x] Выполнить meaningful existing selected safe checks/fresh production compile/strict; native/fixture/getApp0, newgeometry/render/input/drag/a11y UNVERIFIED, не использовать oldbounds как newafter. Исторически7safe checks (4service/3pure); прежние34 model-dependent не повторены из-за eagerEKEventStore. Это не current full PASS.
-- [ ] True original App+realworker signed nextpreview/exactcandidate, preservation/patches/audit/onefreeze; independent review/dispositions/future exact install handoff. Владелец принял beta23 divider для сообщённого использования; compound task остаётся открыт из-за broader UAT, это не source-as-painted PASS.
+- [ ] True original App+realworker signed nextpreview/exactcandidate, preservation/patches/audit/onefreeze; independent review/dispositions/future exact install handoff. Владелец принял beta23 divider для сообщённого использования; compound task остаётся открыт из-за broader UAT, это не source-as-painted PASS. Package/review/install часть выполнена исторически: [release evidence](verification-release.md); обязательный residual W01.4/W01.5/W02/W08 сохранён здесь.

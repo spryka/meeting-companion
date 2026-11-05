@@ -2,6 +2,12 @@
 
 W/R/M/P реализованы и прошли ограниченные source reviews; это не полная runtime-приёмка. Requirements/scenario ID сохранены. Проверки workspace, menu/capsule, settings и visual boundaries разделены в verification-документах; непроведённый physical UAT остаётся WAITING_UAT.
 
+Итог beta24/build60, merge/install, exact selected checks и полный register каждого
+обязательного scenario ID — [verification-release.md](verification-release.md).
+Реализация/source release завершены; partial/not-run не означают отсутствие
+продукта и не снимают обязательность оставшихся проверок. Practical design guide —
+[DESIGN.md](../../../DESIGN.md).
+
 | Требование | Спецификация | Все сценарии | Задача | Проверка |
 |---|---|---|---|---|
 | W01 Integrated recording workspace | [desktop-workspace](specs/desktop-workspace/spec.md) | W01.1, W01.2, W01.3, W01.4, W01.5 | 3.1 | UI harness и UAT |
@@ -95,7 +101,7 @@ W/R/M/P реализованы и прошли ограниченные source r
 | W07 | Existing history repository/displayTitle/capabilities; exact raw pair/current teardown | Физический Finder/retry/error flow |
 | W08 | Semantic controls, native workspace; synthetic long document/transport | Контраст, macOS15 fallback, reduced motion/transparency, keyboard/VoiceOver, physical long run |
 | R01–R08 | RecordingSessionService/ProcessingService → shared model → independent RecordingCapsuleController; session-bound commands/terminal ownership | Capture/mute/source-loss/short cancel/overtime; monitors/Spaces/fullscreen/drag; busy quit/update |
-| M01–M04 | StatusMenu.createMenu → UUID/intents selectors → shared service admission; command state matrix, explicit library/settings/quit/update | Реальные оба клика, shortcut/focus/a11y и concurrency |
+| M01–M04 | StatusMenu.build → UUID/intents selectors → shared service admission; command state matrix, explicit library/settings/quit/update | Реальные оба клика, shortcut/focus/a11y и concurrency |
 | P01–P08 | model-owned Settings modal; actual form callbacks/visibility, pending handoff/reset commit, updater policy and bindings | Реальные overlays/background blocking/focus, devices/EventKit/SMAppService/model reset/update |
 
 Релевантные existing tests находятся в Core/Application suites и App production
