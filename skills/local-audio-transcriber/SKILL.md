@@ -18,10 +18,10 @@ Recordings use `YYYY-MM/DD/NAME/` folders and the Mac's local time; older versio
 For the latest recording, resolve this skill directory as `SKILL_DIR` and run:
 
 ```bash
-python3 SKILL_DIR/scripts/find-recording.py
+swift SKILL_DIR/scripts/find-recording.swift
 ```
 
-The helper reads the optional plist key without `defaults read`, falls back to
+The Foundation-only helper requires Swift command-line tools and reads the optional plist key without `defaults read`, falls back to
 `~/Downloads/Meetings`, and returns paths as JSON. It selects the filename timestamp,
 ignores modification times and experiments, and supports legacy flat recordings.
 Use `--root PATH` for an explicitly supplied recordings folder. Read the returned

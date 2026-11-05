@@ -1,0 +1,27 @@
+--- /dev/null	2026-11-02 20:24:16.821794000 +0300
++++ Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/Parakeet/ParakeetTiming.swift	2026-11-02 20:24:09.909996032 +0300
+@@ -0,0 +1,24 @@
++import Foundation
++import MLX
++
++public extension ParakeetModel {
++    /// Public adapter for extracting token alignment without requiring @testable imports in release builds.
++    /// Preserves the required FP16 cast prior to the frontend feature extraction.
++    func decodeAlignedAudio(_ audio: [Float]) -> [ParakeetAlignedResult] {
++        let array = MLXArray(audio).asType(.float16)
++        let (features, lengths) = makeBatchFeatures([array])
++        return decode(mel: features, lengths: lengths)
++    }
++
++    /// Public adapter taking an MLXArray chunk directly, applying FP16 cast prior to feature extraction.
++    func decodeAlignedChunk(_ chunk: MLXArray) -> [ParakeetAlignedResult] {
++        let array = chunk.asType(.float16)
++        let (features, lengths) = makeBatchFeatures([array])
++        return decode(mel: features, lengths: lengths)
++    }
++
++    /// Convenience helper returning all aligned tokens across sentences.
++    func decodeAlignedTokens(_ audio: [Float]) -> [ParakeetAlignedToken] {
++        decodeAlignedAudio(audio).flatMap { $0.sentences.flatMap(\.tokens) }
++    }
++}

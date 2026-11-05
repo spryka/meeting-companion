@@ -1,0 +1,196 @@
+{
+  "dependencies": [
+    {
+      "name": "mlx-swift",
+      "version": "0.32.3",
+      "revision": "19601207e9a0de51e03ee6ec0c3c5f3784275075",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "Apple Inc.",
+      "license_path": "Vendor/LICENSES/mlx-swift/LICENSE"
+    },
+    {
+      "name": "swift-numerics",
+      "version": "1.1.1",
+      "revision": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+      "license": "Apache-2.0 w/ Runtime Exception",
+      "spdx": "Apache-2.0",
+      "copyright": "Apple Inc.",
+      "license_path": "Vendor/LICENSES/swift-numerics/LICENSE.txt"
+    },
+    {
+      "name": "mlx-audio-swift",
+      "revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "Blaizzy",
+      "license_path": "Vendor/LICENSES/mlx-audio-swift/LICENSE"
+    },
+    {
+      "name": "gigaam-v3-mlx",
+      "revision": "95bd42a4b9a65450a24e1898c7d84b85e0e88509",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "kruatech",
+      "license_path": "Vendor/LICENSES/GigaAM-MIT-LICENSE.txt"
+    },
+    {
+      "name": "speech-swift",
+      "revision": "f8ca61de3902b22e3e3a1434c680c1b21d8d48af",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "soniqo",
+      "license_path": "Vendor/LICENSES/SpeechSwift-Apache-LICENSE.txt"
+    },
+    {
+      "name": "mlx-audio (Python)",
+      "version": "0.5.8",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "Prince Canuma",
+      "provenance": "Frozen baseline in openspec/changes/swift-mlx-pipeline/baseline.md",
+      "license_path": "Vendor/LICENSES/MLXAudioPython-MIT-LICENSE.txt"
+    },
+    {
+      "name": "swift-transformers",
+      "version": "1.3.4",
+      "revision": "c21fdcde390313a6d98d8e33a346f2c3486c3ab0",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Hugging Face Inc.",
+      "license_path": "Vendor/LICENSES/swift-transformers/LICENSE"
+    },
+    {
+      "name": "swift-huggingface",
+      "version": "0.12.0",
+      "revision": "0ece9a1ef443309d26a69af9897ee8ad82f43a9a",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Hugging Face Inc.",
+      "license_path": "Vendor/LICENSES/swift-huggingface/LICENSE"
+    },
+    {
+      "name": "swift-jinja",
+      "version": "2.5.1",
+      "revision": "4588064a20f3fc093c95f2f7d3359999bf30cae5",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Hugging Face Inc.",
+      "license_path": "Vendor/LICENSES/swift-jinja/LICENSE"
+    },
+    {
+      "name": "swift-collections",
+      "version": "1.7.1",
+      "revision": "98ef3c98609a1e31b7e157b5b619579001a789d6",
+      "license": "Apache-2.0 w/ Runtime Exception",
+      "spdx": "Apache-2.0",
+      "copyright": "Apple Inc.",
+      "license_path": "Vendor/LICENSES/swift-collections/LICENSE.txt"
+    },
+    {
+      "name": "swift-crypto",
+      "version": "4.5.2",
+      "revision": "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
+      "license": "Apache-2.0 w/ Runtime Exception",
+      "spdx": "Apache-2.0",
+      "copyright": "Apple Inc.",
+      "notice_path": "Vendor/LICENSES/swift-crypto/NOTICE.txt",
+      "license_path": "Vendor/LICENSES/swift-crypto/LICENSE.txt"
+    },
+    {
+      "name": "swift-asn1",
+      "version": "1.7.3",
+      "revision": "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2",
+      "license": "Apache-2.0 w/ Runtime Exception",
+      "spdx": "Apache-2.0",
+      "copyright": "Apple Inc.",
+      "notice_path": "Vendor/LICENSES/swift-asn1/NOTICE.txt",
+      "license_path": "Vendor/LICENSES/swift-asn1/LICENSE.txt"
+    },
+    {
+      "name": "eventsource",
+      "version": "1.5.1",
+      "revision": "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Mattt",
+      "license_path": "Vendor/LICENSES/EventSource/LICENSE.md"
+    },
+    {
+      "name": "yyjson",
+      "version": "0.12.0",
+      "revision": "8b4a38dc994a110abaec8a400615567bd996105f",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "YaoYuan (ibireme@gmail.com)",
+      "license_path": "Vendor/LICENSES/yyjson/LICENSE"
+    },
+    {
+      "name": "zstd",
+      "version": "1.5.7",
+      "revision": "f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+      "license": "BSD-3-Clause (dual GPLv2)",
+      "spdx": "BSD-3-Clause",
+      "copyright": "Meta Platforms, Inc. and affiliates",
+      "notice_path": "Vendor/LICENSES/zstd/COPYING",
+      "license_path": "Vendor/LICENSES/zstd/LICENSE"
+    }
+  ],
+  "embedded_licenses": [
+    {
+      "component": "metal-cpp",
+      "parent_package": "mlx-swift",
+      "relative_origin_path": "Source/Cmlx/metal-cpp/LICENSE.txt",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Apple Inc.",
+      "license_path": "Vendor/LICENSES/mlx-swift/metal-cpp-LICENSE.txt"
+    },
+    {
+      "component": "nlohmann-json",
+      "parent_package": "mlx-swift",
+      "relative_origin_path": "Source/Cmlx/json/LICENSE.MIT",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "2013-2022 Niels Lohmann",
+      "license_path": "Vendor/LICENSES/mlx-swift/json-LICENSE.MIT"
+    },
+    {
+      "component": "fmt",
+      "parent_package": "mlx-swift",
+      "relative_origin_path": "Source/Cmlx/fmt/LICENSE",
+      "license": "MIT with exception",
+      "spdx": "MIT",
+      "copyright": "2012-present Victor Zverovich",
+      "license_path": "Vendor/LICENSES/mlx-swift/fmt-LICENSE"
+    },
+    {
+      "component": "mlx-c",
+      "parent_package": "mlx-swift",
+      "relative_origin_path": "Source/Cmlx/mlx-c/LICENSE",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "Apple Inc.",
+      "license_path": "Vendor/LICENSES/mlx-swift/mlx-c-LICENSE"
+    },
+    {
+      "component": "mlx-core",
+      "parent_package": "mlx-swift",
+      "relative_origin_path": "Source/Cmlx/mlx/LICENSE",
+      "license": "MIT",
+      "spdx": "MIT",
+      "copyright": "Apple Inc.",
+      "license_path": "Vendor/LICENSES/mlx-swift/mlx-LICENSE"
+    },
+    {
+      "component": "Phonon2",
+      "parent_package": "MLXAudioSTT",
+      "relative_origin_path": "Sources/MLXAudioSTT/Models/Phonon2",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "2026 Fermion Research",
+      "license_path": "Vendor/LICENSES/MLXAudio-Phonon2-Apache-LICENSE.txt",
+      "notice_path": "Vendor/LICENSES/MLXAudio-Phonon2-NOTICE.txt"
+    }
+  ]
+}

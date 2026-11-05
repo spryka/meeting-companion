@@ -15,7 +15,7 @@ Apple Voice Processing удалён после неудачного живого
 есть wheel для CPython 3.12. Это сторонняя обёртка, а не библиотека Google
 для распространения приложения. Приложение использует собственный C++ helper
 с той же закреплённой нативной библиотекой и соответствующими заголовками из sdist.
-`scripts/build-aec.py` проверяет SHA-256 архива, собирает helper и копирует лицензии
+`scripts/build-aec.sh` проверяет SHA-256 архива, собирает helper и копирует лицензии
 в поставку. Python-обёртка нужна только старому отдельному стенду.
 
 - AEC включён, NS, AGC и VAD выключены; состояние проверяется перед запуском.
@@ -25,30 +25,20 @@ Apple Voice Processing удалён после неудачного живого
 - Исходники, общий M4A и транскрипты не перезаписываются. Длина и тишина сохраняются.
 - Несовпадающие таймлайны и другой формат отклоняются; задержка задаётся явно.
 
-## Запуск
-
-Из корня репозитория, сначала синтетическая проверка:
+## Текущая сборка и исторический стенд
 
 ```sh
-uv run --quiet --python 3.12 --with aec-audio-processing==1.0.0.dev9 --with numpy \
-  python scripts/probe-webrtc-aec.py check
+bash scripts/build-aec.sh .build/aec
 ```
 
-Потом исходники **обычной** записи без Apple-обработки, PCM16/mono/16 kHz:
+Сборка проверяет тот же закреплённый архив и создаёт native helper, dylib и
+лицензии без Python. Архив PyPI используется только как источник готовой
+ARM64-библиотеки и соответствующих заголовков; Python-код из него не запускается.
+Swift `EchoCanceller` подготавливает исходные PCM и вызывает helper.
 
-```sh
-uv run --quiet --python 3.12 --with aec-audio-processing==1.0.0.dev9 \
-  python scripts/probe-webrtc-aec.py process \
-  /path/raw/meeting.host_record.wav /path/raw/meeting.remote_record.wav \
-  /path/experiment/host-aec.wav --delay-ms 0
-```
-
-Первый запуск скачивает библиотеку из PyPI. Аудио обрабатывается локально.
-Python-обёртка не нужна приложению. Нативные helper, dylib и third-party notices
-поставляются внутри bundle; при сборке архив зависимости скачивается и кэшируется.
-Задержка — время от опорного системного звука до захваченного микрофона;
-нулевая величина — исходная гипотеза для сохранённых синхронных дорожек.
-При слабом результате сравниваем несколько обоснованных задержек на одном фрагменте.
+Python-стенд и прежние команды эксперимента сохранены в ветке
+`research/swift-mlx-pipeline` (`56cf8a3`). Приведённые ниже наблюдения исторические;
+удаление стенда не означает повторную проверку качества или изменение DSP.
 
 ## Что ещё проверять в UAT
 
@@ -162,4 +152,4 @@ suppressor.nearend_tuning.mask_hf.enr_suppress = 0.5
 - [Standalone AudioProcessing](https://freedesktop.org/software/pulseaudio/webrtc-audio-processing/)
 - [Обёртка и wheel](https://pypi.org/project/aec-audio-processing/1.0.0.dev9/)
 - Лицензии эксперимента: BSD-3-Clause / WebRTC BSD; нативная поставка включает LICENSE, PATENTS и third-party notices
-  из закреплённого архива в `transcription/aec/THIRD_PARTY_NOTICES.txt`.
+  из закреплённого архива в `Contents/Resources/aec/THIRD_PARTY_NOTICES.txt`.

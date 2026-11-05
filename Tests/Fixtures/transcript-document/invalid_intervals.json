@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_invalid_intervals",
+  "createdAt": "2026-10-29T15:15:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "raw/meeting.host_record.wav",
+      "recognitionAudioPath": "raw/meeting.host_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    }
+  ],
+  "words": [
+    {
+      "id": "w_1",
+      "speakerID": "spk_h1",
+      "start": 2.0,
+      "end": 1.0,
+      "text": "Инверсия"
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn_1",
+      "speakerID": "spk_h1",
+      "start": 2.0,
+      "end": 1.0,
+      "wordIDs": ["w_1"]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "bw_1",
+      "speakerID": "spk_h1",
+      "start": 2.0,
+      "end": 1.0,
+      "text": "Инверсия"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "ready",
+    "mixPath": "raw/transcripts/res_invalid_intervals/mix.m4a"
+  },
+  "warnings": [],
+  "context": null
+}

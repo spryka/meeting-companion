@@ -10,6 +10,7 @@ struct RecorderDiagnostics {
 
     struct PreparationProgress: Sendable, Equatable {
         var bytes: Int64 = 0
+        var fileCount: Int = 0
         var lastModified: Date?
     }
 
@@ -22,6 +23,7 @@ struct RecorderDiagnostics {
             guard let values = try? file.resourceValues(forKeys: properties),
                   values.isRegularFile == true, values.isSymbolicLink != true else { continue }
             result.bytes += Int64(values.fileSize ?? 0)
+            result.fileCount += 1
             if let date = values.contentModificationDate, date > (result.lastModified ?? .distantPast) {
                 result.lastModified = date
             }
@@ -63,9 +65,15 @@ struct RecorderDiagnostics {
             throw NSError(domain: "CacheReset", code: 2, userInfo: [NSLocalizedDescriptionKey:
                 "Сброс отменён: папка данных приложения заменена ссылкой."])
         }
-        let targets = ["models", "runtime"].map { directory.appendingPathComponent($0) }
+        let targets = ["native-models", "runtime"].map { directory.appendingPathComponent($0) }
         let recordingPath = recordings.resolvingSymlinksInPath().standardizedFileURL.path
+        let directoryPath = directory.standardizedFileURL.path
         for target in targets {
+            let standardTargetPath = target.standardizedFileURL.path
+            guard standardTargetPath.hasPrefix(directoryPath + "/") else {
+                throw NSError(domain: "CacheReset", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                    "Сброс отменён: путь кэша выходит за пределы папки приложения."])
+            }
             let path = target.resolvingSymlinksInPath().standardizedFileURL.path
             guard recordingPath != path, !recordingPath.hasPrefix(path + "/"),
                   !path.hasPrefix(recordingPath + "/") else {

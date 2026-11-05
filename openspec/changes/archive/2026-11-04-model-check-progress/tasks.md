@@ -1,0 +1,5 @@
+- [x] Trace actual Settings → Application → Platform → Worker → ModelAssets callers.
+- [x] Confirm semantic regression for silent initial preparation check.
+- [x] Forward per-file progress through actual worker and App callers; update Settings.
+- [x] Test tiny local fixtures, controlled production App flow and subprocess output.
+- [x] Rebuild/sign final beta9, safely install and verify visible version.

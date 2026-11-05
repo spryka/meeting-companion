@@ -5,25 +5,28 @@ plutil -lint "$APP/Contents/Info.plist"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]]
-grep -Eq "^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" "$ROOT_DIR/CHANGELOG.md"
+grep -Eq "(^## \[${VERSION//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$|^## \[Unreleased\] \(предстоящая версия ${VERSION//./\\.}\))" "$ROOT_DIR/CHANGELOG.md"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Contents/Info.plist")" == 'Meeting Companion' ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" == local.meeting-companion ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist")" == AppIcon ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
 [[ -s "$APP/Contents/Resources/LICENSE" ]]
 [[ -s "$APP/Contents/Resources/THIRD_PARTY.md" ]]
+[[ -s "$APP/Contents/Resources/VendorLicenses/mlx-swift/LICENSE" ]]
+[[ -s "$APP/Contents/Resources/vendor-dependency-licenses.json" ]]
 [[ -x "$APP/Contents/MacOS/MeetingCompanion" ]]
+[[ -x "$APP/Contents/MacOS/MeetingTranscriptionWorker" ]]
+[[ -d "$APP/Contents/Resources/mlx-swift_Cmlx.bundle" ]]
 [[ -x "$APP/Contents/Frameworks/Sparkle.framework/Sparkle" ]]
 [[ -s "$APP/Contents/Resources/Sparkle-LICENSE" ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")" == 'oD6scmX5XipE+YSBIw8CfnrhPIlxQPHSrcsrEYNGKHE=' ]]
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUVerifyUpdateBeforeExtraction' "$APP/Contents/Info.plist")" == true ]]
-for name in transcribe.py transcribe-recording.py check-local.py model_assets.py audio_enhancement.py term_correction.py echo_cancellation.py run.sh uv uv-LICENSE-MIT; do
-  [[ -s "$APP/Contents/Resources/transcription/$name" ]]
-done
-[[ -x "$APP/Contents/Resources/transcription/aec/meeting-aec" ]]
-[[ -s "$APP/Contents/Resources/transcription/aec/libwebrtc-audio-processing-2.1.dylib" ]]
-[[ -s "$APP/Contents/Resources/transcription/aec/THIRD_PARTY_NOTICES.txt" ]]
-[[ -x "$APP/Contents/Resources/transcription/run.sh" ]]
-"$APP/Contents/Resources/transcription/uv" --version
+[[ -x "$APP/Contents/Resources/aec/meeting-aec" ]]
+[[ -s "$APP/Contents/Resources/aec/libwebrtc-audio-processing-2.1.dylib" ]]
+[[ -s "$APP/Contents/Resources/aec/THIRD_PARTY_NOTICES.txt" ]]
+if [[ -d "$APP/Contents/Resources/transcription" ]]; then
+  echo "Error: Python transcription directory present in native bundle" >&2
+  exit 1
+fi
 codesign --verify --deep --strict "$APP"
 echo "Bundle check passed"

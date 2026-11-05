@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_valid_empty_voices",
+  "createdAt": "2026-10-29T14:00:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "raw/meeting.host_record.wav",
+      "recognitionAudioPath": "raw/meeting.host_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 0,
+      "correctionStatus": "disabled"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    }
+  ],
+  "words": [
+    {
+      "id": "w_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.0,
+      "text": "Монолог"
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.0,
+      "wordIDs": ["w_1"]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "bw_1",
+      "speakerID": "spk_h1",
+      "start": 0.5,
+      "end": 1.0,
+      "text": "Монолог"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "ready",
+    "mixPath": "raw/transcripts/res_valid_empty_voices/mix.m4a"
+  },
+  "warnings": [],
+  "context": null
+}

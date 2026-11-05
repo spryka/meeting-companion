@@ -1,0 +1,113 @@
+import MLX
+
+/// Runs synchronous inference without blocking the thread creating the stream.
+/// The producer owns its captured model/audio for the duration of generation;
+/// callers must not mutate them or run another generation on the same model.
+func makeSTTStream(
+    _ produce: @escaping (AsyncThrowingStream<STTGeneration, Error>.Continuation) throws -> Void
+) -> AsyncThrowingStream<STTGeneration, Error> {
+    // MLX models and arrays are not Sendable. Transfer the producer to one worker,
+    // as the other asynchronous STT implementations do with their model/audio.
+    let producer = UncheckedSendableBox(produce)
+    return AsyncThrowingStream { continuation in
+        let task = Task.detached {
+            do {
+                try Task.checkCancellation()
+                try producer.value(continuation)
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { @Sendable _ in task.cancel() }
+    }
+}
+
+public struct STTGenerateParameters: Sendable {
+    public let maxTokens: Int
+    public let temperature: Float
+    public let topP: Float
+    public let topK: Int
+    public let verbose: Bool
+    public let language: String?
+    public let chunkDuration: Float
+    public let minChunkDuration: Float
+    public let repetitionPenalty: Float
+    public let repetitionContextSize: Int
+    /// KV-cache quantization bits; `nil` keeps model precision.
+    public let kvBits: Int?
+    /// Group size for KV-cache quantization.
+    public let kvGroupSize: Int
+    /// Cache offset that must be exceeded before the KV cache is quantized.
+    public let quantizedKVStart: Int
+    /// "transcribe" or "translate". Whisper translates into English; Nemotron
+    /// Transcribe uses `language` as the target language for translation.
+    public let task: String
+
+    public init(
+        maxTokens: Int = 8192,
+        temperature: Float = 0.0,
+        topP: Float = 0.95,
+        topK: Int = 0,
+        verbose: Bool = false,
+        language: String? = nil,
+        chunkDuration: Float = 1200.0,
+        minChunkDuration: Float = 1.0,
+        repetitionPenalty: Float = 1.0,
+        repetitionContextSize: Int = 32,
+        kvBits: Int? = nil,
+        kvGroupSize: Int = 64,
+        quantizedKVStart: Int = 0,
+        task: String = "transcribe"
+    ) {
+        self.maxTokens = maxTokens
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+        self.verbose = verbose
+        self.language = language
+        self.chunkDuration = chunkDuration
+        self.minChunkDuration = minChunkDuration
+        self.repetitionPenalty = repetitionPenalty
+        self.repetitionContextSize = repetitionContextSize
+        self.kvBits = kvBits
+        self.kvGroupSize = kvGroupSize
+        self.quantizedKVStart = quantizedKVStart
+        self.task = task
+    }
+}
+
+public protocol STTGenerationModel: AnyObject {
+    /// Input waveform sample rate expected by the model.
+    var sampleRate: Int { get }
+
+    var defaultGenerationParameters: STTGenerateParameters { get }
+
+    func generate(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) -> STTOutput
+
+    func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters
+    ) -> AsyncThrowingStream<STTGeneration, Error>
+}
+
+public extension STTGenerationModel {
+    var sampleRate: Int { 16000 }
+
+    func generate(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters? = nil
+    ) -> STTOutput {
+        generate(audio: audio, generationParameters: generationParameters ?? defaultGenerationParameters)
+    }
+
+    func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters? = nil
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(audio: audio, generationParameters: generationParameters ?? defaultGenerationParameters)
+    }
+}

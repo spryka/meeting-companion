@@ -1,0 +1,10 @@
+diff --git a/Package.swift b/Package.swift
+--- a/Package.swift
++++ b/Package.swift
+@@ -162,5 +162,6 @@ let package = Package(
+                 .product(name: "MLXNN", package: "mlx-swift"),
+                 .product(name: "MLXRandom", package: "mlx-swift"),
++                .product(name: "MLXFFT", package: "mlx-swift"),
+                 .product(name: "HuggingFace", package: "swift-huggingface"),
+                 .product(name: "Transformers", package: "swift-transformers"),
+             ],

@@ -3,215 +3,418 @@ import MeetingCompanionCore
 
 struct CompactRecordingView: View {
     @ObservedObject var viewModel: RecorderViewModel
+    @State private var showingError = false
 
     var body: some View {
-        Group {
-            if viewModel.recordingCancelled {
-                Label("Запись отменена", systemImage: "checkmark")
-                    .font(.headline)
-            } else {
-                VStack(spacing: 3) {
-                    HStack(spacing: 10) {
-                        Text(viewModel.elapsedText)
-                            .font(.system(size: 24, weight: .medium, design: .monospaced))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .frame(width: 130, alignment: .leading)
-                        Spacer(minLength: 0)
-                        if !viewModel.isBusy && viewModel.recordingSaveError == nil {
-                            CompactLevelMetersView(levels: viewModel.levels).frame(width: 56)
-                            Button(action: viewModel.toggleMicrophoneMute) {
-                                Image(systemName: viewModel.microphoneMuted ? "mic.slash.fill" : "mic.fill")
-                                    .foregroundStyle(viewModel.microphoneMuted || viewModel.microphoneState == .missing ? Color.red : Color.primary)
-                                    .frame(width: 18, height: 18)
-                            }
-                            .tint(viewModel.microphoneMuted ? .red : .primary)
-                            .help(viewModel.microphoneMuted ? "Включить запись микрофона" : "Не записывать мой микрофон")
-                            .accessibilityLabel(viewModel.microphoneMuted ? "Включить запись микрофона" : "Отключить запись микрофона")
-                        }
-                        Group {
-                            if viewModel.isBusy {
-                                ProgressView().controlSize(.small).accessibilityLabel("Сохранение записи")
-                            } else if viewModel.recordingSaveError != nil {
-                                Button { viewModel.recordingSaveError = nil } label: { Image(systemName: "xmark") }
-                                    .help("Закрыть. Исходные файлы и повторная обработка доступны в основном окне.")
-                                    .accessibilityLabel("Закрыть сообщение об ошибке")
-                            } else {
-                                Button(action: viewModel.toggleRecording) {
-                                    Image(systemName: viewModel.showsCancelRecording ? "xmark" : "stop.fill").foregroundStyle(.red)
-                                }
-                                    .tint(.red)
-                                    .help(viewModel.showsCancelRecording ? "Отменить короткую запись" : "Остановить запись")
-                                    .accessibilityLabel(viewModel.showsCancelRecording ? "Отменить короткую запись" : "Остановить запись")
-                            }
-                        }
-                        .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.bordered).buttonBorderShape(.circle)
-                    Text(viewModel.recordingSaveError != nil ? "Ошибка сохранения" :
-                        viewModel.isBusy ? "Сохранение…" :
-                        !viewModel.microphoneCaptureHint.isEmpty ? viewModel.microphoneCaptureHint :
-                        viewModel.mutedMicrophoneActivity ? "Микрофон не записывается" :
-                        viewModel.microphoneMuted ? "Микрофон выключен · системный звук записывается" : " ")
-                        .font(.caption2)
-                        .foregroundStyle(viewModel.microphoneState == .missing ? Color.red :
-                            viewModel.microphoneMuted || viewModel.microphoneState != .receiving ? Color.orange : Color.secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                        .help(viewModel.recordingSaveError ?? (viewModel.microphoneState == .missing
-                            ? "Данные микрофона не поступают. Системный звук продолжает записываться; проверьте подключение и выбранный микрофон."
-                            : viewModel.microphoneCaptureHint))
-                    if viewModel.showsOvertimeReminder {
-                        Text(viewModel.overtimeMessage)
-                            .font(.caption).foregroundStyle(.primary)
-                        Button("Продолжить запись · ещё 15 минут", action: viewModel.postponeOvertimeReminder)
-                            .font(.caption).buttonStyle(.plain)
-                            .padding(.vertical, 4)
-                            .help("Убрать напоминание на 15 минут. Запись продолжится.")
-                    }
+        let sessionID = viewModel.activeSessionID
+        let cancelShort = viewModel.showsCancelRecording
+
+        if viewModel.recordingSaveError != nil || viewModel.recordingCancelled {
+            HStack(spacing: 12) {
+                Image(systemName: viewModel.recordingSaveError != nil ? "exclamationmark.triangle.fill" : "xmark.circle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(viewModel.recordingSaveError != nil ? ODColors.red : ODColors.muted)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.recordingSaveError != nil ? "Ошибка сохранения" : "Запись отменена")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ODColors.ink)
+                    Text(viewModel.recordingSaveError ?? "Короткая запись не сохранена")
+                        .help(viewModel.recordingSaveError ?? "Короткая запись не сохранена")
+                        .font(.system(size: 11))
+                        .foregroundStyle(viewModel.recordingSaveError != nil ? ODColors.red : ODColors.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+
+                if viewModel.recordingSaveError != nil {
+                    Button("Подробности") { showingError = true }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showingError) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Ошибка сохранения").font(.headline)
+                                Text(viewModel.recordingSaveError ?? "").textSelection(.enabled)
+                                Text("Доступное исходное аудио и журнал не удаляются. Открой папку записи для восстановления.")
+                                    .foregroundStyle(.secondary)
+                                if viewModel.lastFileURL != nil {
+                                    Button("Показать файлы", action: viewModel.revealLastFile)
+                                }
+                            }.padding(20).frame(width: 380)
+                        }
+                }
+
+                Button("Закрыть") {
+                    viewModel.dismissCapsule()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(ODColors.hover, in: RoundedRectangle(cornerRadius: 6))
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(ODColors.surface)
+                    .gesture(WindowDragGesture())
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24)
+                            .strokeBorder(ODColors.line, lineWidth: 1)
+                    )
+            )
+        } else {
+            HStack(spacing: 8) {
+            // Recording dot
+            Circle()
+                .fill(ODColors.red)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+
+            // Timer (24px, tabular nums, tracking -0.7px)
+            Text(viewModel.elapsedText)
+                .font(.system(size: 20, weight: .medium))
+                .monospacedDigit()
+                .tracking(-0.7)
+                .lineLimit(1)
+                        .truncationMode(.tail)
+                .foregroundStyle(ODColors.ink)
+                .accessibilityLabel("Длительность записи: \(viewModel.elapsedText)")
+                .fixedSize(horizontal: true, vertical: false)
+                .gesture(WindowDragGesture())
+
+            // Title & subtitle
+            VStack(alignment: .leading, spacing: 2) {
+                Text(viewModel.lastRecordingTitle.isEmpty ? "Новая запись" : viewModel.lastRecordingTitle)
+                    .help(viewModel.lastRecordingTitle.isEmpty ? "Новая запись" : viewModel.lastRecordingTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ODColors.ink)
+                    .lineLimit(1)
+                        .truncationMode(.tail)
+
+                Text(subtitleText)
+                    .help(subtitleText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(subtitleColor)
+                    .lineLimit(1)
+                        .truncationMode(.tail)
+            }
+            .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+
+            if viewModel.showsOvertimeReminder {
+                Button(action: viewModel.postponeOvertimeReminder) {
+                    Text("+15 мин")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(ODColors.ink)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(ODColors.hover, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Убрать напоминание на 15 минут. Запись продолжится.")
+            }
+
+            // Mic Button (36x36 rounded rect, radius 8px)
+            Button {
+                viewModel.toggleMicrophoneMute(sessionID: sessionID)
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(viewModel.microphoneMuted ? ODColors.warningBg : ODColors.surface)
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(viewModel.microphoneMuted ? Color.clear : ODColors.line, lineWidth: 1)
+                    ODIconView(
+                        viewModel.microphoneMuted ? .mute : .mic,
+                        color: viewModel.microphoneMuted ? ODColors.warning : ODColors.ink,
+                        size: 16
+                    )
+                }
+                .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(viewModel.microphoneMuted ? "Включить запись микрофона" : "Отключить запись микрофона")
+            .help(viewModel.microphoneMuted ? "Включить запись микрофона" : "Не записывать мой микрофон")
+
+            // Stop Button (36x36 rounded rect, radius 8px, red-bg)
+            Button {
+                if cancelShort {
+                    Task { await viewModel.cancelRecordingIntent(sessionID: sessionID) }
+                } else {
+                    Task { await viewModel.stopRecordingIntent(sessionID: sessionID) }
+                }
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(ODColors.redBg)
+                    ODIconView(
+                        cancelShort ? .close : .stop,
+                        color: ODColors.red,
+                        size: 16
+                    )
+                }
+                .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(cancelShort ? "Отменить короткую запись" : "Остановить запись")
+            .help(cancelShort ? "Отменить короткую запись" : "Остановить запись")
         }
-        .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(MeetingOverlaySurface(capsule: true))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(ODColors.surface)
+                .gesture(WindowDragGesture())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .strokeBorder(ODColors.line, lineWidth: 1)
+                )
+        )
         .overlay {
-            if viewModel.showsOvertimeReminder { OvertimeCapsuleOutline() }
-        }
-        .padding(4)
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
-    }
-}
-
-private struct OvertimeCapsuleOutline: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Group {
-            if reduceMotion {
-                outline.opacity(0.8)
-            } else {
-                outline.phaseAnimator([false, true]) { content, bright in
-                    content.opacity(bright ? 0.85 : 0.15)
-                } animation: { _ in .easeInOut(duration: 1.8) }
+            if viewModel.showsOvertimeReminder {
+                RoundedRectangle(cornerRadius: 24)
+                    .strokeBorder(ODColors.warning, lineWidth: 1.5)
+                    .allowsHitTesting(false)
             }
         }
-        .allowsHitTesting(false).accessibilityHidden(true)
-        // Keep animation local to the outline; the recording controls remain discrete.
-        .transaction { $0.disablesAnimations = false }
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+        }
     }
 
-    private var outline: some View {
-        RoundedRectangle(cornerRadius: 36).strokeBorder(.primary, lineWidth: 2)
+    private var subtitleText: String {
+        if viewModel.recordingSaveError != nil {
+            return "Ошибка сохранения"
+        } else if viewModel.isBusy || viewModel.sessionStopping {
+            return "Сохранение…"
+        } else if viewModel.showsOvertimeReminder {
+            return viewModel.overtimeMessage
+        } else if viewModel.microphoneState == .missing {
+            return "Микрофон отключён · системный звук записывается"
+        } else if viewModel.microphoneMuted {
+            return "Микрофон выключен · системный звук записывается"
+        } else if viewModel.mutedMicrophoneActivity {
+            return "Микрофон не записывается"
+        } else if !viewModel.microphoneCaptureHint.isEmpty {
+            return viewModel.microphoneCaptureHint
+        } else {
+            return "Микрофон и звук системы"
+        }
+    }
+
+    private var subtitleColor: Color {
+        if viewModel.recordingSaveError != nil || viewModel.microphoneState == .missing {
+            return ODColors.red
+        } else if viewModel.microphoneMuted || viewModel.showsOvertimeReminder {
+            return ODColors.warning
+        } else {
+            return ODColors.muted
+        }
     }
 }
 
 struct ProcessingCapsuleView: View {
     @ObservedObject var viewModel: RecorderViewModel
 
+    static func fraction(for progress: TranscriptionProgress) -> Double? {
+        progress.stage == .warning ? nil : progress.stageFraction
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(viewModel.lastRecordingTitle).font(.headline).lineLimit(1)
-                Spacer()
-                if !viewModel.transcriptionWarnings.isEmpty {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .help(viewModel.transcriptionWarnings.joined(separator: "\n"))
-                        .accessibilityLabel("Есть предупреждения о записи или обработке")
-                }
-                Button(action: viewModel.dismissCapsule) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).accessibilityLabel("Скрыть обработку")
-            }
+        HStack(spacing: 12) {
             switch viewModel.transcriptionState {
             case .running(let progress):
-                if let progress {
-                    TranscriptionProgressView(progress: progress)
-                } else {
-                    Text(viewModel.transcriptionStatus).font(.caption).lineLimit(2)
-                }
-            case .completed:
-                Label(viewModel.transcriptionWarnings.isEmpty ? "Транскрипт готов" : "Текст готов с предупреждениями",
-                      systemImage: viewModel.transcriptionWarnings.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(viewModel.transcriptionWarnings.isEmpty ? Color.secondary : Color.orange)
-                Button("Открыть результаты", action: viewModel.openResults)
-                    .help(viewModel.transcriptionWarnings.joined(separator: "\n"))
-                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-            case .failed(let message):
-                Text(message).font(.caption).lineLimit(2).foregroundStyle(.red)
-                HStack {
-                    Button("Повторить", action: viewModel.transcribeLastRecording)
-                        .disabled(viewModel.transcriptionJobs > 0)
-                    Button("Открыть папку", action: viewModel.revealLastFile)
-                }
-                .buttonStyle(.bordered)
-            case .idle:
-                Text("Запись сохранена").font(.caption)
-            }
-        }
-        .padding(.horizontal, 22).padding(.vertical, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .modifier(MeetingOverlaySurface())
-        .padding(4)
-        .transaction { transaction in
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-        }
-    }
-}
-
-struct TranscriptionProgressView: View {
-    let progress: TranscriptionProgress
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let step = progress.step, let steps = progress.steps, let completed = progress.completedSteps {
-                HStack {
-                    Text("Обработка записи")
-                    Spacer(minLength: 4)
-                    Text("Этап \(step) из \(steps)").monospacedDigit().foregroundStyle(.secondary)
-                }.font(.caption)
-                VStack(spacing: 4) {
-                    bar(Double(completed) / Double(steps), color: Color(nsColor: .systemBlue), height: 6)
-                        .accessibilityLabel("Завершено этапов")
-                        .accessibilityValue("\(completed) из \(steps)")
-                    if let fraction = progress.stageFraction {
-                        bar(fraction, color: Color(nsColor: .systemPink), height: 2)
-                            .accessibilityLabel("Текущий этап")
-                            .accessibilityValue("\(progress.completed) из \(progress.total)")
+                ODIconView(.wave, color: ODColors.accent, size: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(viewModel.lastRecordingTitle.isEmpty ? "Обработка записи" : viewModel.lastRecordingTitle)
+                        .help(viewModel.lastRecordingTitle.isEmpty ? "Обработка записи" : viewModel.lastRecordingTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ODColors.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let progress {
+                        let stepText = progress.step.flatMap { step in progress.steps.map { "Этап \(step) из \($0) · " } } ?? ""
+                        Text("\(stepText)\(progress.text)")
+                            .help("\(stepText)\(progress.text)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ODColors.muted)
+                            .lineLimit(1)
+                        .truncationMode(.tail)
+                        if let fraction = Self.fraction(for: progress) {
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(ODColors.track).frame(height: 4)
+                                    Capsule().fill(ODColors.accent).frame(width: geo.size.width * fraction, height: 4)
+                                }
+                            }
+                            .frame(height: 4)
+                        }
+                    } else {
+                        Text(viewModel.transcriptionStatus)
+                            .help(viewModel.transcriptionStatus)
+                            .font(.system(size: 11))
+                            .foregroundStyle(ODColors.muted)
+                            .lineLimit(1)
+                        .truncationMode(.tail)
                     }
                 }
-            }
-            Text(progress.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-        }
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
-    }
+                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
 
-    private func bar(_ fraction: Double, color: Color, height: CGFloat) -> some View {
-        GeometryReader { geometry in
-            Capsule().fill(Color(nsColor: .controlColor))
-                .overlay(alignment: .leading) {
-                    Capsule().fill(color).frame(width: geometry.size.width * fraction)
+                Button(action: viewModel.dismissCapsule) {
+                    ZStack {
+                        Circle().fill(ODColors.surface)
+                        Circle().strokeBorder(ODColors.line, lineWidth: 1)
+                        ODIconView(.close, color: ODColors.muted, size: 14)
+                    }
+                    .frame(width: 32, height: 32)
                 }
-        }.frame(height: height)
+                .buttonStyle(.plain)
+                .help("Скрыть")
+
+            case .completed:
+                ODIconView(.check, color: ODColors.green, size: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.lastRecordingTitle.isEmpty ? "Запись завершена" : viewModel.lastRecordingTitle)
+                        .help(viewModel.lastRecordingTitle.isEmpty ? "Запись завершена" : viewModel.lastRecordingTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ODColors.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(viewModel.transcriptionWarnings.isEmpty ? "Транскрипт готов" : "Текст готов с замечаниями")
+                        .font(.system(size: 11))
+                        .foregroundStyle(viewModel.transcriptionWarnings.isEmpty ? ODColors.green : ODColors.warning)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+
+                Button(action: viewModel.openResults) {
+                    Text("Открыть")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ODColors.primaryButtonForeground)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(ODColors.accent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: viewModel.dismissCapsule) {
+                    ZStack {
+                        Circle().fill(ODColors.surface)
+                        Circle().strokeBorder(ODColors.line, lineWidth: 1)
+                        ODIconView(.close, color: ODColors.muted, size: 14)
+                    }
+                    .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .help("Закрыть")
+
+            case .failed(let message):
+                ODIconView(.warning, color: ODColors.red, size: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(viewModel.lastRecordingTitle.isEmpty ? "Ошибка обработки" : viewModel.lastRecordingTitle)
+                        .help(viewModel.lastRecordingTitle.isEmpty ? "Ошибка обработки" : viewModel.lastRecordingTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ODColors.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(message)
+                        .help(message)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ODColors.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+
+                Button(action: viewModel.transcribeLastRecording) {
+                    Text("Повторить")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ODColors.ink)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(ODColors.hover, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.transcriptionJobs > 0)
+
+                Button(action: viewModel.dismissCapsule) {
+                    ZStack {
+                        Circle().fill(ODColors.surface)
+                        Circle().strokeBorder(ODColors.line, lineWidth: 1)
+                        ODIconView(.close, color: ODColors.muted, size: 14)
+                    }
+                    .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+
+            case .idle:
+                Text("Запись сохранена")
+                    .font(.system(size: 12))
+                    .foregroundStyle(ODColors.muted)
+                Spacer()
+                Button(action: viewModel.dismissCapsule) {
+                    ODIconView(.close, color: ODColors.muted, size: 14)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(ODColors.surface)
+                .gesture(WindowDragGesture())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .strokeBorder(ODColors.line, lineWidth: 1)
+                )
+        )
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 }
 
-struct MeetingOverlaySurface: ViewModifier {
-    var capsule = false
+struct RecordingCapsuleHostView: View {
+    @ObservedObject var viewModel: RecorderViewModel
 
-    @ViewBuilder func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: capsule ? 36 : 24)
+    var captureTransitionText: String? {
+        if viewModel.sessionStarting { return "Запуск записи…" }
+        if viewModel.sessionStopping { return "Сохранение записи…" }
+        return nil
+    }
+
+    var body: some View {
         Group {
-            if #available(macOS 26.0, *) {
-                content.glassEffect(.regular, in: shape)
+            if let text = captureTransitionText {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(text)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(ODColors.ink)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(ODColors.surface)
+                        .gesture(WindowDragGesture())
+                        .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(ODColors.line, lineWidth: 1))
+                )
+            } else if viewModel.showsProcessingCapsule {
+                ProcessingCapsuleView(viewModel: viewModel)
             } else {
-                content.background(.regularMaterial, in: shape)
+                CompactRecordingView(viewModel: viewModel)
             }
         }
-        .overlay(shape.strokeBorder(.primary.opacity(0.18), lineWidth: 1)
-            .allowsHitTesting(false).accessibilityHidden(true))
+        .padding(2)
     }
 }

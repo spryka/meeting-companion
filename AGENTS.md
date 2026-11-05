@@ -3,15 +3,35 @@
 Standalone macOS 15+ / Apple Silicon meeting recorder. No agent or skill is
 required to record or transcribe. Keep changes small; use existing platform APIs.
 
+## Development workflow
+
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) for SDD, TDD, review and exceptions.
+Before behavior, data-format or contract changes, read relevant OpenSpec specs
+and active changes, then prepare and review proposal, scenarios, design and tasks.
+Use the project-local intent-driven schema. Read in-force root adr/ decisions and
+complete each change ADR review before tasks. New ADR acceptance requires maintainer
+agreement; accepted architecture does not mean shipped behavior. Never rewrite an
+accepted ADR; supersede it with a new record.
+Active changes describe proposed behavior, not evidence of shipped features.
+Use test-first development for testable logic and regression fixes. Confirm the
+expected failure before implementation. Record justified exceptions and manual UAT.
+Validate with `openspec validate <name> --strict`; mark tasks done only after
+verification. Do not archive unimplemented or unverified changes.
+Keep requirements in specs and rationale in design/context. Trivial documentation
+and behavior-preserving changes do not need a new specification.
+
 ## Layout
 
-- `Sources/MeetingCompanionCore`: ScreenCaptureKit / Core Audio Tap audio capture, synchronized source
-  WAV files, subprocess transcription.
+- `Sources/MeetingCompanionCore`: Foundation contracts, progress, recording paths,
+  transcript storage and existing editor components.
+- `Sources/MeetingCompanionPlatform`: ScreenCaptureKit / Core Audio Tap audio capture,
+  synchronized source WAV files, subprocess transcription and AVPlayer transport.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
-- `transcription/`: GigaAM ONNX speech recognition, Nemotron MLX diarization,
-  Silero VAD, optional Parakeet term correction, timestamp merge, runtime/model preparation and Python tests.
+- `Sources/MeetingTranscriptionPipeline` and `Sources/MeetingTranscriptionWorker`: native Swift/MLX recognition, diarization, VAD, term correction and model preparation.
+- `Sources/WebRTCAEC`: native C++ echo canceller; shell build preserves pinned WebRTC.
+- `Tests/Fixtures`: synthetic transcript JSON shared by Swift tests and editor checks.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
 
 Before changing transcription or term correction, read
@@ -31,7 +51,9 @@ artifact layout, failure behavior and evaluation method.
 - Transcription must work offline after preparation. Never upload audio.
 - Merge channels by word timestamps before grouping turns; preserve overlaps.
 - New recordings use `YYYY-MM/DD/NAME/`; final transcript, context and mixed audio stay
-  there, intermediate files and source audio go in `raw/`. Keep reading legacy flat recordings.
+  there, intermediate files and source audio go in `raw/`. Full functionality requires
+  canonical folder basename == recording stem (standard since 1.4.0). Legacy flat
+  placement is list + contained saved TXT read-only; never process or write it.
 - VAD gates whole existing ASR windows; keep absolute timestamps and original audio.
   Only a detection copy is amplified. Preserve baseline GigaAM text with Parakeet enabled.
 - Keep processing UI event-driven and discrete; no continuous animation for transcription.
@@ -46,11 +68,16 @@ artifact layout, failure behavior and evaluation method.
 
 ## Validation
 
-Run `swift build -c release`, then Python tests:
+Run `swift build -c release`, `swift test`, then:
 
 ```sh
-uv run --quiet --python 3.12 --with numpy --with soundfile python -B -m unittest discover -s transcription -p 'test_*.py' -q
+bash scripts/check-python-free.sh
+bash scripts/check-module-boundaries.sh
+swift skills/local-audio-transcriber/scripts/find-recording.swift --self-test
 ```
+
+Python and uv are not required. The old pipeline remains in Git at
+`research/swift-mlx-pipeline` (`56cf8a3`), not in the current source tree.
 
 For packaging run `./scripts/build-app.sh`; it validates bundle metadata,
 resources and signatures. Relevant Swift self-check commands are in README.
