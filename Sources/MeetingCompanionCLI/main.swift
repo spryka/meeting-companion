@@ -38,7 +38,7 @@ struct MeetingCompanionCLI {
             print("Capturing: system audio + microphone")
             print(options.duration == nil ? "Press Enter to stop." : "Will stop after \(formatDuration(options.duration!)).")
 
-            _ = try await sessionService.start(controller: controller, outputURL: outputURL)
+            let startedSession = try await sessionService.start(controller: controller, outputURL: outputURL)
 
             if let duration = options.duration {
                 try await Task.sleep(for: .seconds(duration))
@@ -46,7 +46,7 @@ struct MeetingCompanionCLI {
                 _ = readLine()
             }
 
-            let stopResult = try await sessionService.stop()
+            let stopResult = try await sessionService.stop(expectedSessionID: startedSession.sessionID, cancelShort: true)
             if stopResult.wasCancelledShort {
                 print("Recording was under short threshold; cancelled.")
                 return

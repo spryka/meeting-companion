@@ -90,9 +90,24 @@ public actor ProcessingService {
     public struct Snapshot: Sendable {
         public let active: ProcessingJob?
         public let queued: [ProcessingJob]
+        public let admitting: [ProcessingJob]
         public let preparation: PreparationState
         public let progress: [URL: TranscriptionProgress]
-        public var jobCount: Int { queued.count + (active == nil ? 0 : 1) }
+        public var jobCount: Int { queued.count + admitting.count + (active == nil ? 0 : 1) }
+
+        public init(
+            active: ProcessingJob?,
+            queued: [ProcessingJob],
+            admitting: [ProcessingJob] = [],
+            preparation: PreparationState,
+            progress: [URL: TranscriptionProgress]
+        ) {
+            self.active = active
+            self.queued = queued
+            self.admitting = admitting
+            self.preparation = preparation
+            self.progress = progress
+        }
     }
 
     public enum Update: Sendable {
@@ -115,7 +130,13 @@ public actor ProcessingService {
     private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
 
     private var presentationSnapshot: Snapshot {
-        Snapshot(active: activeJob, queued: queue + Array(admitting.values), preparation: preparationState, progress: progress)
+        Snapshot(
+            active: activeJob,
+            queued: queue,
+            admitting: Array(admitting.values),
+            preparation: preparationState,
+            progress: progress
+        )
     }
 
     private func publishSnapshot() {
@@ -188,6 +209,9 @@ public actor ProcessingService {
             return existing
         }
         let job = ProcessingJob(recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
+        historyRepository?.reserveWork(canonical, id: job.id)
+        var enqueued = false
+        defer { if !enqueued { historyRepository?.releaseWork(canonical, id: job.id) } }
         if stoppedCapture == nil, let retryAdmission {
             admitting[canonical] = job
             publishSnapshot()
@@ -216,6 +240,7 @@ public actor ProcessingService {
             if cached == nil { historyRepository.put(existingEntry, persist: false) }
         }
         queue.append(job)
+        enqueued = true
         if let historyRepository {
             let result = historyRepository.updateStatus(recordingURL) { $0.phase = .queued }
             if let warning = result.persistenceWarning { emit(.persistenceWarning(job, warning)) }
@@ -246,6 +271,7 @@ public actor ProcessingService {
                 }
                 warning = result.persistenceWarning
             }
+            historyRepository?.releaseWork(removed.recordingURL, id: removed.id)
             cancelledJobIDs.remove(removed.id)
             emit(.cancelled(removed, persistenceWarning: warning))
             return
@@ -464,6 +490,7 @@ public actor ProcessingService {
     }
 
     private func finishJob(_ job: ProcessingJob, result: JobInternalResult) {
+        historyRepository?.releaseWork(job.recordingURL, id: job.id)
         activeJob = nil
         activeTask = nil
         cancelledJobIDs.remove(job.id)

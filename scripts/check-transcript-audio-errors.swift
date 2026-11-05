@@ -1,11 +1,12 @@
 import AppKit
 import AVFoundation
 import Foundation
+import MeetingCompanionCore
+import MeetingCompanionPlatform
 
 @main struct AudioErrorsCheck {
     enum Failure: Error { case assertion(String), timeout }
     @MainActor static func main() async throws {
-        _ = NSApplication.shared
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         let validClip = URL(fileURLWithPath: CommandLine.arguments[2])
         let fixture = URL(fileURLWithPath: "Tests/Fixtures/transcript-document/valid_parakeet_off.json")
@@ -24,7 +25,7 @@ import Foundation
             return (c,t,p)
         }
         for scenario in ["missing", "corrupt", "unavailable", "runtime"] {
-            let dir = root.appendingPathComponent(scenario)
+            let dir = root.appendingPathComponent(scenario).appendingPathComponent("meeting")
             let version = dir.appendingPathComponent("raw/transcripts/v1")
             try FileManager.default.createDirectory(at: version, withIntermediateDirectories: true)
             var json = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
@@ -40,6 +41,9 @@ import Foundation
                 try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try FileManager.default.copyItem(at: validClip, to: url)
             }
+            // Current authority is directory creation order, never selectedResultID.
+            try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 1_600_000_000)], ofItemAtPath: dir.appendingPathComponent("raw/transcripts/other").path)
+            try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: version.path)
             try Data("{\"selectedResultID\":\"v1\"}".utf8).write(to: dir.appendingPathComponent("raw/meeting.processing.json"))
             let edits = "{\"schemaVersion\":1,\"resultID\":\"v1\",\"revision\":1,\"overrides\":{\"turn_1\":{\"text\":\"Saved text\",\"displayName\":\"Saved name\"}}}"
             try edits.write(to: version.appendingPathComponent("edits.json"), atomically: true, encoding: .utf8)
@@ -47,7 +51,7 @@ import Foundation
             let bytes = try Dictionary(uniqueKeysWithValues: files.map { ($0, try Data(contentsOf: $0)) })
             let manager = TranscriptReviewWindowManager()
             let recording = dir.appendingPathComponent("meeting.m4a")
-            let window = try manager.open(recordingURL: recording, title: "Audio error") { _ in throw Failure.assertion("must not persist") }
+            _ = try await manager.open(recordingURL: recording, title: "Audio error")
             let model = manager.model(for: recording)!
             var verifiedRuntimeURL: URL?
             if scenario == "runtime" {
@@ -66,7 +70,7 @@ import Foundation
             } else {
                 try await wait { model.playbackState == .failed || model.playbackState == .unavailable }
             }
-            try check(model.rows.first?.text == "Saved text" && model.rows.first?.name == "Saved name" && model.selectedResultID == "v1" && !model.playbackEnabled,
+            try check(model.rows.first?.text == "Saved text" && model.rows.first?.name == "Saved name" && model.currentResultID == "v1" && !model.playbackEnabled,
                       "\(scenario): text overrides selection retained; controls disabled")
             let (_,transport,player) = resources(model)
             let itemURL = (player.currentItem?.asset as? AVURLAsset)?.url
@@ -76,7 +80,7 @@ import Foundation
             try check(model.playbackMessage != nil && !model.playbackMessage!.contains(dir.path), "\(scenario): localized path-free audio message")
             if scenario == "unavailable" { try check(model.playbackMessage!.contains("не подготовлено"), "explicit unavailable distinguished from damaged media") }
             let oldMessage = model.playbackMessage
-            window.close()
+            manager.closeCurrent()
             transport.onEvent?(.position(100))
             try check(model.playbackState == .closed && model.playbackMessage == oldMessage, "\(scenario): close ignores late error callbacks")
             for (url,data) in bytes where !(scenario == "runtime" && url == version.appendingPathComponent("mix.wav")) {

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import EventKit
 import MeetingCompanionCore
 import MeetingCompanionPlatform
 import MeetingCompanionApplication
@@ -45,16 +46,32 @@ struct WindowAccessor: NSViewRepresentable {
     }
 }
 
+protocol AudioLevelMonitoring: AnyObject, Sendable {
+    func start() async throws
+    func stop() async throws
+}
+
+@available(macOS 15.0, *)
+extension AudioLevelMonitor: AudioLevelMonitoring {}
+
 @MainActor
 final class RecorderViewModel: ObservableObject {
+    typealias AudioLevelMonitorFactory = @Sendable (
+        _ micID: String?,
+        _ backend: AudioCaptureBackend,
+        _ onLevels: @escaping @Sendable (Double, Double) -> Void
+    ) async throws -> any AudioLevelMonitoring
+
+    typealias AudioCheckTimeoutSleeper = @Sendable (_ duration: Duration) async throws -> Void
     static let defaultMicrophoneID = "__default__"
     private static let selectedMicrophoneIDKey = "selectedMicrophoneID"
 
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
+    let appDataDirectory: URL
     @Published var appearance: AppAppearance {
         didSet {
             defaults.set(appearance.rawValue, forKey: "appAppearance")
-            NSApp.appearance = appearance.value
+            NSApplication.shared.appearance = appearance.value
         }
     }
 
@@ -69,19 +86,119 @@ final class RecorderViewModel: ObservableObject {
     let recordingSessionService: RecordingSessionService
     let processingService: ProcessingService
     let history: RecordingHistory
+    let workspace: TranscriptReviewWindowManager
+    @Published private(set) var settingsPresented = false
+    @Published var settingsPage: RecorderSettingsView.Page = .general {
+        didSet { onSettingsVisibilityChange?() }
+    }
+    var onSettingsVisibilityChange: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
+
+    @discardableResult
+    func presentSettings() -> Bool {
+        if settingsPresented { return true }
+        guard workspace.admitNavigation() else { return false }
+        if mainPage == .recording { formAudioCheckNeedsExplicitStart = true }
+        settingsPresented = true
+        onSettingsVisibilityChange?()
+        return true
+    }
+
+    func dismissSettings() {
+        settingsPresented = false
+        onSettingsVisibilityChange?()
+    }
     var onOpenTranscript: ((RecordingEntry) -> Void)?
     enum MainPage: String, CaseIterable, Identifiable {
         case recording, history
         var id: Self { self }
         var title: String { self == .recording ? "Запись" : "История" }
     }
-    @Published var mainPage = MainPage.recording
-    @Published var selectedHistoryURL: URL?
+    @Published private var pageSelection = MainPage.history
+    var mainPage: MainPage {
+        get { pageSelection }
+        set {
+            guard newValue != pageSelection, workspace.admitNavigation() else { return }
+            pageSelection = newValue
+            if newValue != .recording { formAudioCheckNeedsExplicitStart = false }
+        }
+    }
+    @Published private var historySelection: URL?
+    var selectedHistoryURL: URL? {
+        get { historySelection }
+        set { guard newValue != historySelection, workspace.admitNavigation() else { return }; historySelection = newValue }
+    }
+    @Published private(set) var workspaceRequested = false
+    @Published private var workspaceOpenGeneration = 0
+    struct WorkspaceLoadRequest: Equatable {
+        let requested: Bool
+        let generation: Int
+        let url: URL?
+        let phase: RecordingEntry.Phase?
+        let jobs: Int
+    }
+    var workspaceLoadRequest: WorkspaceLoadRequest {
+        WorkspaceLoadRequest(requested: workspaceRequested, generation: workspaceOpenGeneration,
+            url: selectedHistoryURL, phase: selectedHistoryURL.flatMap { history.entry($0)?.phase }, jobs: transcriptionJobs)
+    }
+
+    @discardableResult
+    func requestWorkspaceOpen() -> WorkspaceLoadRequest? {
+        guard workspace.admitNavigation() else { return nil }
+        mainWindowRequested = true
+        workspaceRequested = true
+        workspaceOpenGeneration += 1
+        return workspaceLoadRequest
+    }
+
+    @discardableResult
+    func loadWorkspace(_ request: WorkspaceLoadRequest) async -> Bool {
+        guard !Task.isCancelled, request.requested, request == workspaceLoadRequest,
+              let url = request.url, let entry = history.entry(url) else { return false }
+        do {
+            let target = try await workspace.open(recordingURL: url, title: entry.effectiveTitle)
+            return !Task.isCancelled && request == workspaceLoadRequest && !workspace.hasInput
+                && workspace.current === target && target.state.id == url && !target.state.isClosed
+        } catch { return false }
+    }
+
+    @Published private var workspaceListVisible = true
+    var workspaceShowsList: Bool {
+        get { workspaceListVisible }
+        set { guard workspace.admitNavigation() else { return }; workspaceListVisible = newValue }
+    }
+
+    func admitWindowClose(isWorkspace: Bool) -> Bool {
+        guard isWorkspace else { return true }
+        guard workspace.admitNavigation() else { return false }
+        workspaceRequested = false
+        workspaceOpenGeneration += 1
+        mainWindowRequested = false
+        workspace.closeCurrent()
+        return true
+    }
+
+    @discardableResult
+    func showTranscript(_ recording: URL) -> WorkspaceLoadRequest? {
+        guard workspace.admitNavigation() else { return nil }
+        selectedHistoryURL = RecordingEntry.canonicalURL(recording)
+        mainPage = .history
+        workspaceShowsList = false
+        return requestWorkspaceOpen()
+    }
+
     @Published var audioPreviewURL: URL?
     @Published var reminderMeeting: MeetingContext?
     @Published var mainWindowRequested = false
     private var historySubscription: AnyCancellable?
     private var capsuleTimer: Timer?
+    typealias CapsuleTimerScheduler = @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Timer
+    private let scheduleCapsuleTimer: CapsuleTimerScheduler
+    private var capsuleDeadlineID: UUID?
+    private var capsuleJobID: UUID?
+    private var pendingCapsuleEnqueue: UUID?
+    @Published private var pendingProcessingEnqueues = 0
+    private var latestProcessingSnapshot: ProcessingService.Snapshot?
     private var activeRecordingURL: URL?
     private(set) var recordingMeetingID: String?
 
@@ -91,6 +208,7 @@ final class RecorderViewModel: ObservableObject {
     var selectedMeeting: MeetingContext? {
         get { meetingSelection.meeting }
         set {
+            guard !settingsPresented else { return }
             meetingSelection.select(newValue)
             refreshMeetingSelection()
         }
@@ -111,17 +229,27 @@ final class RecorderViewModel: ObservableObject {
     @Published private(set) var mutedMicrophoneActivity = false
     private var muteActivity = MutedMicrophoneActivity()
 
-    func toggleMicrophoneMute() {
+    func toggleMicrophoneMute(sessionID: UUID? = nil) {
         guard isRecording, !isBusy else { return }
+        guard let sessionID, sessionID == activeSessionID else {
+            errorMessage = RecordingSessionService.ServiceError.staleCommand.localizedDescription
+            return
+        }
         let muted = !microphoneMuted
         Task {
-            await recordingSessionService.setMicrophoneMuted(muted)
-            microphoneState = await recordingSessionService.currentMicrophoneState()
+            let accepted = await recordingSessionService.setMicrophoneMuted(muted, expectedSessionID: sessionID)
+            let state = await recordingSessionService.currentMicrophoneState()
+            guard activeSessionID == sessionID, isRecording else { return }
+            guard accepted else {
+                errorMessage = RecordingSessionService.ServiceError.staleCommand.localizedDescription
+                return
+            }
+            microphoneMuted = muted
+            microphoneState = state
+            muteActivity = MutedMicrophoneActivity()
+            mutedMicrophoneActivity = false
+            levels.reset()
         }
-        microphoneMuted = muted
-        muteActivity = MutedMicrophoneActivity()
-        mutedMicrophoneActivity = false
-        levels.reset()
     }
 
     @Published var capsuleDismissed = false
@@ -142,15 +270,28 @@ final class RecorderViewModel: ObservableObject {
     @Published var echoCancellation: Bool {
         didSet { defaults.set(echoCancellation, forKey: "echoCancellation") }
     }
+    @Published var activeSessionID: UUID?
+    @Published private(set) var sessionStarting = false
+    private var preparingCapture = false
+    @Published private(set) var isAdmittingProcessing = false
+    var onPresentWorkspace: (() -> Void)?
+
     var showsRecordingCapsule: Bool {
-        !mainWindowRequested && (isRecording || recordingCancelled || recordingSaveError != nil || (!capsuleDismissed && transcriptionState != .idle))
+        isRecording || sessionStarting || sessionStopping || (!capsuleDismissed && (recordingCancelled || recordingSaveError != nil || transcriptionState != .idle))
     }
-    var showsProcessingCapsule: Bool { !isRecording && !recordingCancelled && recordingSaveError == nil && showsRecordingCapsule }
+    var showsProcessingCapsule: Bool { !isRecording && !sessionStarting && !sessionStopping && !recordingCancelled && recordingSaveError == nil && showsRecordingCapsule }
     @Published private(set) var recordingCancelled = false
     var showsCancelRecording: Bool { isRecording && elapsed < 10 }
 
     func dismissCapsule() {
+        guard !sessionStarting, !sessionStopping else { return }
         capsuleDismissed = true
+    }
+
+    func prepareForAutomaticReminder() {
+        guard !isRecording, pendingCapsuleEnqueue == nil, transcriptionJobs == 0 else { return }
+        if case .running = transcriptionState { return }
+        dismissCapsule()
     }
 
     @Published private var recordingOvertime: RecordingOvertime?
@@ -166,11 +307,25 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func openResults() {
-        guard let lastFileURL else { return }
-        selectedHistoryURL = RecordingEntry.canonicalURL(lastFileURL)
-        mainPage = .history
-        mainWindowRequested = true
-        NSApp.activate(ignoringOtherApps: true)
+        guard case .completed = transcriptionState,
+              !isRecording, !sessionStarting, !sessionStopping,
+              let lastFileURL, let entry = history.entry(lastFileURL), entry.phase == .completed,
+              entry.capabilities.canReview || entry.capabilities.hasSavedText,
+              showTranscript(lastFileURL) != nil else { return }
+        let deadlineID = capsuleDeadlineID, jobID = capsuleJobID, terminalState = transcriptionState
+        onPresentWorkspace?()
+        let request = workspaceLoadRequest
+        Task {
+            let opened = await loadWorkspace(request)
+            guard opened, !workspace.hasInput, request == workspaceLoadRequest, request.url == entry.id,
+                  workspace.current?.state.id == entry.id, workspace.failure == nil,
+                  self.lastFileURL == lastFileURL, transcriptionState == terminalState,
+                  capsuleDeadlineID == deadlineID, capsuleJobID == jobID,
+                  pendingCapsuleEnqueue == nil, transcriptionJobs == 0, !isAdmittingProcessing,
+                  !isRecording, !sessionStarting, !sessionStopping,
+                  !recordingCancelled, recordingSaveError == nil else { return }
+            dismissCapsule()
+        }
     }
     @Published var elapsed: TimeInterval = 0
     @Published var status = "Готов к записи"
@@ -203,10 +358,37 @@ final class RecorderViewModel: ObservableObject {
         if diagnosticRunning { return preparationState == .preparing ? "Скачивание и проверка моделей…" : "Проверка моделей…" }
         return transcriptionReady ? "Готово" : "Требуется проверка или подготовка"
     }
-    var diagnosticSummary: String? { diagnosticReport.split(separator: "\n").last.map(String.init) }
+    @Published private(set) var lastTerminalSummary: String?
+    var diagnosticSummary: String? {
+        if diagnosticRunning {
+            return diagnosticReport.split(separator: "\n").last.map(String.init)
+        }
+        if let lastTerminalSummary, !lastTerminalSummary.isEmpty {
+            return lastTerminalSummary
+        }
+        return diagnosticReport.split(separator: "\n").last.map(String.init)
+    }
+    var isFollowAvailable: Bool { workspace.current != nil }
+    var isEditorFollowing: Bool { workspace.current?.follow.isFollowing ?? false }
+    func setEditorFollowing(_ follow: Bool) {
+        workspace.current?.setFollow(follow)
+    }
+    private func rebindCurrentEditor(_ current: TranscriptReviewWindowModel?) {
+        currentEditorSubscription?.cancel()
+        currentEditorSubscription = current?.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
+    }
+    private(set) var activeAudioCheckSection: RecorderSettingsView.Page?
+    private var recordingFormVisible = false
+    private var formAudioCheckNeedsExplicitStart = false
+    private var settingsAudioCheckVisible = false
+    private var settingsAudioCheckSection: RecorderSettingsView.Page?
+    private var audioCheckVisibilityTransition = false
+    var isAudioCheckVisibleForTesting: Bool { isAudioCheckVisible }
     @Published private var sessionAttached = false
     @Published private var processingAttached = false
-    @Published private var sessionStopping = false
+    @Published private(set) var sessionStopping = false
     private var sessionObservation: Task<Void, Never>?
     private var processingObservation: Task<Void, Never>?
     private var shouldCheckDependenciesAfterAttachment = false
@@ -223,8 +405,92 @@ final class RecorderViewModel: ObservableObject {
     }
     let levels = AudioLevels()
     var preventsTermination: Bool {
-        !sessionAttached || !processingAttached || sessionStopping || isRecording || isBusy || diagnosticRunning || transcriptionJobs > 0 || isResettingCache || isCheckingAudio
+        workspace.hasInput || hasBlockingWork
     }
+    var preventsSettingsOperation: Bool { workspace.hasForeignInput || hasBlockingWork }
+    private var hasBlockingWork: Bool {
+        resetCommitBlockedByWork || localDiagnosticRunning || isResettingCache
+    }
+    private var resetCommitBlockedByWork: Bool {
+        !sessionAttached || !processingAttached || preparingCapture || sessionStarting || sessionStopping || isRecording || isBusy || transcriptionJobs > 0 || isAdmittingProcessing || pendingProcessingEnqueues > 0 || preparationState != .idle || isCheckingAudio
+    }
+
+    var onRecordingStarted: (() -> Void)?
+    @Published var isCapsuleVisible = false { didSet { updateLevelVisibility() } }
+    var isAttached: Bool { sessionAttached && processingAttached }
+    var canStartRecording: Bool {
+        isAttached && !isRecording && !sessionStarting && !sessionStopping && !isBusy && !diagnosticRunning && workspace.admitNavigation()
+    }
+
+    func setAttachedForTesting(session: Bool, processing: Bool) {
+        sessionAttached = session
+        processingAttached = processing
+    }
+
+    func setMicrophoneMutedForTesting(_ muted: Bool) {
+        microphoneMuted = muted
+    }
+
+    func setLocalDiagnosticRunningForTesting(_ running: Bool) {
+        localDiagnosticRunning = running
+    }
+
+    func setSessionStoppingForTesting(_ stopping: Bool) {
+        sessionStopping = stopping
+    }
+
+    func setSessionStartingForTesting(_ starting: Bool) {
+        sessionStarting = starting
+    }
+
+    func setIsAdmittingProcessingForTesting(_ admitting: Bool) {
+        isAdmittingProcessing = admitting
+    }
+
+    @discardableResult
+    func startRecordingIntent(customTitle: String? = nil) async -> Bool {
+        guard canStartRecording else { return false }
+        let title = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let customTitle, let title, title.isEmpty || title.count > 120 || customTitle.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+            errorMessage = "Название: от 1 до 120 символов, без управляющих символов."
+            return false
+        }
+        isBusy = true
+        await startRecording(meeting: selectedMeeting, displayTitle: title)
+        return isRecording
+    }
+
+    @discardableResult
+    func stopRecordingIntent(sessionID: UUID? = nil) async -> Bool {
+        guard sessionAttached, processingAttached, isRecording, !sessionStopping, !isBusy else {
+            return false
+        }
+        guard let sessionID, sessionID == activeSessionID else {
+            errorMessage = RecordingSessionService.ServiceError.staleCommand.localizedDescription
+            return false
+        }
+        guard elapsed >= 10 else { errorMessage = "Для записи короче 10 секунд выберите явную отмену."; return false }
+        isBusy = true
+        return await stopRecording(expectedSessionID: sessionID, cancelShort: false)
+    }
+
+    @discardableResult
+    func cancelRecordingIntent(sessionID: UUID? = nil) async -> Bool {
+        guard sessionAttached, processingAttached, isRecording, !sessionStopping, !isBusy else {
+            return false
+        }
+        guard let sessionID, sessionID == activeSessionID else {
+            errorMessage = RecordingSessionService.ServiceError.staleCommand.localizedDescription
+            return false
+        }
+        guard showsCancelRecording else {
+            errorMessage = RecordingSessionService.ServiceError.shortCancellationExpired.localizedDescription
+            return false
+        }
+        isBusy = true
+        return await stopRecording(expectedSessionID: sessionID, cancelShort: true)
+    }
+
 
     private var isWindowVisible = false
     private var isAudioCheckVisible = false
@@ -232,7 +498,17 @@ final class RecorderViewModel: ObservableObject {
     @Published private(set) var isCheckingAudio = false { didSet { updateLevelVisibility() } }
     private var audioCheckTimeout: Task<Void, Never>?
     private var recorder: Recorder?
-    private var levelMonitor: AudioLevelMonitor?
+    private let captureControllerFactory: (@MainActor (URL, String?, AudioCaptureBackend) async throws -> any AudioCaptureControllerProtocol)?
+    private let shortRecordingTrash: (@Sendable (URL) throws -> Void)?
+    private var workspaceSubscription: AnyCancellable?
+    private var currentEditorSubscription: AnyCancellable?
+    private var currentLevelMonitorID: UUID?
+    private let audioLevelMonitorFactory: AudioLevelMonitorFactory?
+    private let audioCheckTimeoutSleeper: AudioCheckTimeoutSleeper?
+    private let audioCheckTimeoutDuration: Duration
+    private let microphoneProvider: (() -> [MicrophoneDevice])?
+    private let accessProvider: (() -> [RecorderDiagnostics.Access])?
+    private var levelMonitor: (any AudioLevelMonitoring)?
     private var levelMonitorTask: Task<Void, Never>?
     private var startedAt: Date?
     private var timer: Timer?
@@ -249,10 +525,34 @@ final class RecorderViewModel: ObservableObject {
         sessionService: RecordingSessionService? = nil,
         processingService: ProcessingService? = nil,
         historyRepository: RecordingHistoryRepository? = nil,
+        workspace: TranscriptReviewWindowManager? = nil,
         defaults: UserDefaults = .standard,
-        startBackgroundServices: Bool = true
+        appDataDirectory: URL = RecorderDiagnostics.dataDirectory,
+        startBackgroundServices: Bool = true,
+        captureControllerFactory: (@MainActor (URL, String?, AudioCaptureBackend) async throws -> any AudioCaptureControllerProtocol)? = nil,
+        shortRecordingTrash: (@Sendable (URL) throws -> Void)? = nil,
+        audioLevelMonitorFactory: AudioLevelMonitorFactory? = nil,
+        audioCheckTimeoutSleeper: AudioCheckTimeoutSleeper? = nil,
+        audioCheckTimeoutDuration: Duration = .seconds(30),
+        microphoneProvider: (() -> [MicrophoneDevice])? = nil,
+        accessProvider: (() -> [RecorderDiagnostics.Access])? = nil,
+        calendarCatalogProvider: (() -> [EKCalendar])? = nil,
+        capsuleTimerScheduler: CapsuleTimerScheduler? = nil
     ) {
+        self.scheduleCapsuleTimer = capsuleTimerScheduler ?? { interval, action in
+            Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { _ in
+                Task { @MainActor in action() }
+            }
+        }
+        self.captureControllerFactory = captureControllerFactory
+        self.shortRecordingTrash = shortRecordingTrash
+        self.audioLevelMonitorFactory = audioLevelMonitorFactory
+        self.audioCheckTimeoutSleeper = audioCheckTimeoutSleeper
+        self.audioCheckTimeoutDuration = audioCheckTimeoutDuration
+        self.microphoneProvider = microphoneProvider
+        self.accessProvider = accessProvider
         self.defaults = defaults
+        self.appDataDirectory = appDataDirectory
         self.appearance = AppAppearance(rawValue: defaults.string(forKey: "appAppearance") ?? "") ?? .system
         self.outputDirectory = defaults.string(forKey: "recordingsDirectory").map { URL(fileURLWithPath: $0) } ?? RecordingPaths.defaultOutputDirectory
         self.improveTerms = defaults.bool(forKey: "improveTechnicalTerms")
@@ -260,7 +560,7 @@ final class RecorderViewModel: ObservableObject {
         self.transcriptionReady = defaults.bool(forKey: "transcriptionPrepared")
         self.captureBackend = AudioCaptureBackend(rawValue: defaults.string(forKey: "captureBackend") ?? "") ?? .coreAudioTap
         self.selectedMicrophoneID = defaults.string(forKey: Self.selectedMicrophoneIDKey) ?? Self.defaultMicrophoneID
-        self.calendar = MeetingCalendar(defaults: defaults)
+        self.calendar = MeetingCalendar(defaults: defaults, calendarCatalogProvider: calendarCatalogProvider)
         let repo = historyRepository ?? RecordingHistoryRepository()
         self.historyRepository = repo
         self.recordingSessionService = sessionService ?? RecordingSessionService(historyRepo: repo)
@@ -269,8 +569,18 @@ final class RecorderViewModel: ObservableObject {
             audioExporter: PlatformAudioExporter(),
             historyRepository: repo
         )
+        self.workspace = workspace ?? TranscriptReviewWindowManager(isProcessing: { await proc.isProcessing(recordingURL: $0) })
         self.processingService = proc
         self.history = RecordingHistory(repository: repo)
+        self.workspace.settingsInput = { [weak self] in self?.settingsPresented ?? false }
+
+        self.workspaceSubscription = self.workspace.$current.sink { [weak self] current in
+            self?.rebindCurrentEditor(current)
+            self?.objectWillChange.send()
+        }
+        if let current = self.workspace.current {
+            rebindCurrentEditor(current)
+        }
 
         // Retire the old setting; unknown combined backends fall back to unprocessed Core Audio Tap.
         defaults.removeObject(forKey: "microphoneVoiceProcessing")
@@ -318,38 +628,60 @@ final class RecorderViewModel: ObservableObject {
         recordingMeetingID = snapshot.meetingID
         sessionStopping = false
         switch snapshot.phase {
+        case .starting:
+            cancelCapsuleDeadline()
+            pendingCapsuleEnqueue = nil
+            capsuleJobID = nil
+            sessionStarting = true
+            isRecording = false
+            sessionStopping = false
+            activeSessionID = snapshot.sessionID
         case .recording(let url, let date):
+            cancelCapsuleDeadline()
+            sessionStarting = false
             isRecording = true
+            sessionStopping = false
             activeRecordingURL = url
+            activeSessionID = snapshot.sessionID
             lastFileURL = url
             startedAt = date
             elapsed = max(0, Date().timeIntervalSince(date))
-            lastRecordingTitle = snapshot.meetingSummary ?? "Запись встречи"
+            lastRecordingTitle = history.entry(url)?.effectiveTitle ?? snapshot.meetingSummary ?? "Запись встречи"
             status = "Идёт запись"
         case .stopping(let url):
+            sessionStarting = false
             isRecording = false
             activeRecordingURL = url
             sessionStopping = true
             status = "Сохранение…"
         case .idle, .cancelledShort, .failed:
+            sessionStarting = preparingCapture
             isRecording = false
+            sessionStopping = false
+            activeSessionID = nil
             activeRecordingURL = nil
         }
     }
 
     private func applyProcessingSnapshot(_ snapshot: ProcessingService.Snapshot) {
+        latestProcessingSnapshot = snapshot
         let isInitialAttachment = !processingAttached
         processingAttached = true
         defer { checkDependenciesAfterAttachment() }
         preparationState = snapshot.preparation
         transcriptionJobs = snapshot.jobCount
+        isAdmittingProcessing = !snapshot.admitting.isEmpty
         history.progress = snapshot.progress
         if isInitialAttachment, snapshot.preparation != .idle {
             diagnosticReport = snapshot.preparation == .preparing ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
         }
-        if !isRecording, !sessionStopping, let job = snapshot.active ?? snapshot.queued.first {
+        if !recordingCancelled, !isRecording, !sessionStarting, !sessionStopping,
+           let job = snapshot.active ?? snapshot.queued.first ?? snapshot.admitting.first {
+            cancelCapsuleDeadline()
+            capsuleJobID = job.id
+            pendingCapsuleEnqueue = nil
             lastFileURL = job.recordingURL
-            lastRecordingTitle = history.entry(job.recordingURL)?.title ?? "Запись встречи"
+            lastRecordingTitle = history.entry(job.recordingURL)?.effectiveTitle ?? "Запись встречи"
             transcriptionState = .running(snapshot.progress[job.recordingURL])
         }
     }
@@ -364,33 +696,28 @@ final class RecorderViewModel: ObservableObject {
         await history.synchronize()
         switch event {
         case .enqueued(let job), .started(let job):
+            if lastFileURL == job.recordingURL, !isRecording, !sessionStarting, !sessionStopping {
+                cancelCapsuleDeadline()
+                capsuleJobID = job.id
+                pendingCapsuleEnqueue = nil
+            }
             syncProcessingPresentation(job.recordingURL)
         case .progress(let job, let progress):
+            guard capsuleJobID == job.id else { return }
             history.progress[job.recordingURL] = progress
             syncProcessingPresentation(job.recordingURL)
         case .completed(let job, _, let warning), .failed(let job, _, let warning), .cancelled(let job, let warning):
             history.progress.removeValue(forKey: job.recordingURL)
             if let warning { history.reportError(warning) }
-            syncProcessingPresentation(job.recordingURL)
+            if capsuleJobID == job.id, pendingCapsuleEnqueue == nil {
+                syncProcessingPresentation(job.recordingURL)
+            }
         case .persistenceWarning(_, let warning): history.reportError(warning)
         case .dependenciesChecked(let output, let succeeded):
             transcriptionReady = succeeded
-            diagnosticReport = output + (succeeded ? "\nТранскрибация готова." : "\nПроверка транскрибации не пройдена.")
-        }
-    }
-
-    func toggleRecording() {
-        guard sessionAttached, processingAttached, !sessionStopping, !isBusy, !diagnosticRunning else { return }
-        if !isRecording {
-            calendar.refresh()
-            meetingSelectionTimer?.invalidate()
-        }
-        isBusy = true
-        if isRecording {
-            Task { _ = await stopRecording() }
-        } else {
-            let meeting = selectedMeeting
-            Task { await startRecording(meeting: meeting) }
+            let summary = succeeded ? "Транскрибация готова." : "Проверка транскрибации не пройдена."
+            lastTerminalSummary = summary
+            diagnosticReport = output + "\n" + summary
         }
     }
 
@@ -415,55 +742,125 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
-    func setAudioCheckVisible(_ visible: Bool) {
-        guard isAudioCheckVisible != visible else { return }
-        isAudioCheckVisible = visible
+    func setAudioCheckVisible(_ visible: Bool, section: RecorderSettingsView.Page? = nil) {
+        guard settingsAudioCheckVisible != visible || settingsAudioCheckSection != section else { return }
+        settingsAudioCheckVisible = visible
+        settingsAudioCheckSection = section
+        refreshAudioCheckVisibility()
+    }
+
+    func setRecordingFormVisible(_ visible: Bool) {
+        guard recordingFormVisible != visible else { return }
+        recordingFormVisible = visible
+        refreshAudioCheckVisibility()
+    }
+
+    private func refreshAudioCheckVisibility() {
+        isAudioCheckVisible = recordingFormVisible || settingsAudioCheckVisible
+        let section = recordingFormVisible ? nil : settingsAudioCheckSection
         updateLevelVisibility()
-        if !visible {
-            Task { if !isAudioCheckVisible { await endAudioCheck() } }
+        if isCheckingAudio && (!isAudioCheckVisible || activeAudioCheckSection != section) {
+            guard !audioCheckVisibilityTransition else { return }
+            currentLevelMonitorID = nil
+            audioCheckVisibilityTransition = true
+            Task {
+                await endAudioCheck()
+                audioCheckVisibilityTransition = false
+                refreshAudioCheckVisibility()
+            }
+        } else if recordingFormVisible && !formAudioCheckNeedsExplicitStart && !isCheckingAudio && !audioCheckVisibilityTransition {
+            toggleAudioCheck(from: nil)
         }
     }
 
+    func handleLevels(mic: Double, system: Double) {
+        if system.isFinite { updateCaptureCheck(succeeded: true) }
+        if mic.isFinite {
+            let active = muteActivity.receive(mic, muted: microphoneMuted)
+            if active != mutedMicrophoneActivity { mutedMicrophoneActivity = active }
+        }
+        guard isWindowVisible || isCapsuleVisible else { return }
+        levels.receive(mic: microphoneMuted ? 0 : mic, system: system)
+    }
+
     private func updateLevelVisibility() {
-        let active = (isRecording && isWindowVisible) || (isCheckingAudio && isAudioCheckVisible)
+        let active = (isRecording && (isWindowVisible || isCapsuleVisible)) || (isCheckingAudio && isAudioCheckVisible)
         guard active != isLevelDisplayActive else { return }
         isLevelDisplayActive = active
         levels.setActive(active)
     }
 
-    func toggleAudioCheck() {
+    func toggleAudioCheck(from section: RecorderSettingsView.Page? = nil) {
         guard !isRecording, !isBusy, !diagnosticRunning, isAudioCheckVisible else { return }
         if isCheckingAudio {
             isCheckingAudio = false
+            activeAudioCheckSection = nil
             Task { await endAudioCheck() }
             return
         }
         isCheckingAudio = true
+        activeAudioCheckSection = section
+        updateLevelVisibility()
+        let duration = audioCheckTimeoutDuration
+        let sleeper = audioCheckTimeoutSleeper
         audioCheckTimeout = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(30)) }
+            do {
+                if let sleeper {
+                    try await sleeper(duration)
+                } else {
+                    try await Task.sleep(for: duration)
+                }
+            }
             catch { return }
             await self?.endAudioCheck()
         }
         Task { await startLevelMonitor(reportErrors: true) }
     }
 
-    private func endAudioCheck() async {
+    func audioCheckActionTitle(for _: RecorderSettingsView.Page) -> String {
+        isCheckingAudio ? "Завершить проверку звука" : "Проверить звук"
+    }
+
+    func toggleAudioCheck() {
+        toggleAudioCheck(from: nil)
+    }
+
+    func endAudioCheck() async {
         isCheckingAudio = false
+        activeAudioCheckSection = nil
+        currentLevelMonitorID = nil
         audioCheckTimeout?.cancel()
         audioCheckTimeout = nil
+        levels.reset()
+        updateLevelVisibility()
         await stopLevelMonitor()
     }
 
-    func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = outputDirectory
-
-        if panel.runModal() == .OK, let url = panel.url {
-            outputDirectory = url
+    func chooseFolder(withPicker picker: ((URL) async -> URL?)? = nil) async {
+        guard !isRecording, !isBusy, !diagnosticRunning else { return }
+        let chosen: URL?
+        if let picker {
+            chosen = await picker(outputDirectory)
+        } else {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.directoryURL = outputDirectory
+            chosen = panel.runModal() == .OK ? panel.url : nil
         }
+        guard let url = chosen else { return }
+        do {
+            try RecorderDiagnostics.checkFolder(url)
+            outputDirectory = url
+            errorMessage = nil
+        } catch {
+            errorMessage = "Выбранная папка недоступна: " + error.localizedDescription
+        }
+    }
+
+    func chooseFolder() {
+        Task { await chooseFolder(withPicker: nil) }
     }
 
     func openFolder() {
@@ -484,49 +881,77 @@ final class RecorderViewModel: ObservableObject {
     }
 
     var canResetCache: Bool {
-        !preventsTermination
+        !preventsSettingsOperation
     }
 
-    func resetCache() async {
-        guard canResetCache else { return }
+    func performCacheReset(in requestedDirectory: URL? = nil,
+                           resetOperation: (@Sendable (URL, URL) throws -> Void)? = nil,
+                           confirmation: (@MainActor (Int64) async -> Bool)? = nil) async {
+        let directory = requestedDirectory ?? appDataDirectory
+        guard !Task.isCancelled, canResetCache else { return }
         localDiagnosticRunning = true
         isResettingCache = true
         defer { localDiagnosticRunning = false; isResettingCache = false }
-        let directory = RecorderDiagnostics.dataDirectory
         let recordings = outputDirectory
         do {
             let bytes = try await Task.detached {
                 let targets = try RecorderDiagnostics.cacheDirectories(in: directory, recordings: recordings)
                 return targets.reduce(Int64(0)) { $0 + RecorderDiagnostics.preparationProgress(in: $1).bytes }
             }.value
-            let alert = NSAlert()
-            alert.messageText = "Сбросить кэш транскрибации?"
-            alert.informativeText = "Будет удалён локальный кэш моделей и подготовки Meeting Companion (" +
-                ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) +
-                "). Для транскрибации потребуется скачать их заново. Записи, тексты, настройки и разрешения сохранятся."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Отмена")
-            alert.addButton(withTitle: "Сбросить кэш")
-            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            let confirmed: Bool
+            if let confirmation {
+                confirmed = await confirmation(bytes)
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Сбросить кэш транскрибации?"
+                alert.informativeText = "Будет удалён локальный кэш моделей и подготовки Meeting Companion (" +
+                    ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) +
+                    "). Для транскрибации потребуется скачать их заново. Записи, тексты, настройки и разрешения сохранятся."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Отмена")
+                alert.addButton(withTitle: "Сбросить кэш")
+                confirmed = (alert.runModal() == .alertSecondButtonReturn)
+            }
+            guard confirmed, !Task.isCancelled else { return }
+            let work = await processingService.currentSnapshot()
+            let preparation = await processingService.currentPreparationState
+            guard work.active == nil, work.queued.isEmpty, preparation == .idle,
+                  !Task.isCancelled, !workspace.hasForeignInput, !resetCommitBlockedByWork,
+                  isResettingCache, localDiagnosticRunning, outputDirectory == recordings else { return }
+            // No async handoff between final admission and the destructive operation.
+            lastTerminalSummary = nil
             transcriptionReady = false
             diagnosticReport = "Удаление локального кэша моделей и подготовки…"
-            try await Task.detached {
-                try RecorderDiagnostics.resetCache(in: directory, recordings: recordings)
-            }.value
+            if let resetOperation { try resetOperation(directory, recordings) }
+            else { try RecorderDiagnostics.resetCache(in: directory, recordings: recordings) }
             preparationProgress = nil
             transcriptionState = .idle
-            diagnosticReport = "Кэш сброшен. Нажмите «Скачать модели» перед транскрибацией."
+            let summary = "Кэш сброшен. Нажмите «Скачать модели» перед транскрибацией."
+            lastTerminalSummary = summary
+            diagnosticReport = summary
         } catch {
-            diagnosticReport = "Ошибка сброса кэша: " + error.localizedDescription
+            guard !Task.isCancelled, !workspace.hasForeignInput, !resetCommitBlockedByWork else { return }
+            let errorText = "Ошибка сброса кэша: " + error.localizedDescription
+            diagnosticReport = errorText
+            lastTerminalSummary = errorText
         }
+    }
+
+    func resetCache() async {
+        await performCacheReset()
+    }
+
+    func resetCache() {
+        Task { await resetCache() }
     }
 
     func checkTranscription(prepare: Bool) async {
         guard sessionAttached, processingAttached, !sessionStopping, !diagnosticRunning, !isRecording, !isBusy, transcriptionJobs == 0 else { return }
+        lastTerminalSummary = nil
         localDiagnosticRunning = true
         diagnosticStartedAt = Date()
         defer { localDiagnosticRunning = false; diagnosticStartedAt = nil; preparationProgress = nil }
-        diagnosticAccess = RecorderDiagnostics.access(coreAudioTap: captureBackend == .coreAudioTap, captureCheck: captureCheck)
+        refreshAccess()
         diagnosticReport = "Проверка папки записей…"
         do {
             let directory = outputDirectory
@@ -543,10 +968,15 @@ final class RecorderViewModel: ObservableObject {
                 }
             }
             transcriptionReady = result.succeeded
-            diagnosticReport = "Папка записей: OK\n" + result.output +
-                (result.succeeded ? "\nТранскрибация готова." : "\nНе удалось подготовить транскрибацию. Подробности выше.")
+            let summary = result.succeeded ? "Транскрибация готова." : "Не удалось подготовить транскрибацию. Подробности выше."
+            lastTerminalSummary = summary
+            diagnosticReport = "Папка записей: OK\n" + result.output + "\n" + summary
             calendar.refresh()
-        } catch { diagnosticReport = "Ошибка: " + error.localizedDescription }
+        } catch {
+            let errorText = "Ошибка: " + error.localizedDescription
+            diagnosticReport = errorText
+            lastTerminalSummary = errorText
+        }
     }
 
     private func updateCaptureCheck(succeeded: Bool) {
@@ -559,7 +989,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func refreshAccess() {
-        let access = RecorderDiagnostics.access(coreAudioTap: captureBackend == .coreAudioTap, captureCheck: captureCheck)
+        let access = accessProvider?() ?? RecorderDiagnostics.access(coreAudioTap: captureBackend == .coreAudioTap, captureCheck: captureCheck)
         if access != diagnosticAccess { diagnosticAccess = access }
     }
 
@@ -569,7 +999,7 @@ final class RecorderViewModel: ObservableObject {
         Task {
             defer { progressProbeRunning = false }
             let progress = await Task.detached(priority: .utility) {
-                RecorderDiagnostics.preparationProgress(in: RecorderDiagnostics.dataDirectory)
+                RecorderDiagnostics.preparationProgress(in: self.appDataDirectory)
             }.value
             if diagnosticRunning && preparationProgress != progress { preparationProgress = progress }
         }
@@ -581,6 +1011,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func retryRecording(_ recording: URL) {
+        guard workspace.admitNavigation() else { return }
         guard sessionAttached, processingAttached, !sessionStopping, !isBusy, !diagnosticRunning, let entry = history.entry(recording), !entry.phase.isWorking else { return }
         if !entry.capabilities.canRetry {
             history.reportError(entry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.")
@@ -588,24 +1019,30 @@ final class RecorderViewModel: ObservableObject {
         }
         if !isRecording {
             lastFileURL = recording
-            lastRecordingTitle = entry.title
+            lastRecordingTitle = entry.effectiveTitle
             recordingSaveError = nil
         }
         enqueue(recording, stopped: nil)
     }
 
-    func startMeeting(_ meeting: MeetingContext?) {
-        guard sessionAttached, processingAttached, !sessionStopping, !isBusy, !diagnosticRunning else { return }
+    func startMeeting(_ meeting: MeetingContext?, expectedSessionID: UUID?) {
+        guard workspace.admitNavigation() else { return }
+        guard sessionAttached, processingAttached, !sessionStarting, !sessionStopping, !isBusy, !diagnosticRunning else { return }
+        guard expectedSessionID == activeSessionID, expectedSessionID != nil || !isRecording else {
+            errorMessage = RecordingSessionService.ServiceError.staleCommand.localizedDescription
+            return
+        }
         calendar.refresh()
         let latest = meeting.flatMap { selected in calendar.events.first { $0.id == selected.id } }
         if meeting != nil && latest == nil {
             errorMessage = "Встреча изменилась или удалена. Выберите её заново; текущая запись продолжается."
             return
         }
+        let cancelShort = showsCancelRecording
         isBusy = true
         Task {
-            if isRecording {
-                guard await stopRecording() else { return }
+            if let expectedSessionID {
+                guard await stopRecording(expectedSessionID: expectedSessionID, cancelShort: cancelShort) else { return }
                 isBusy = true
             }
             selectedMeeting = latest
@@ -623,22 +1060,41 @@ final class RecorderViewModel: ObservableObject {
             parakeet: improveTerms,
             echoCancellation: echoCancellation
         )
+        pendingProcessingEnqueues += 1
+        let presentationID = UUID()
         if lastFileURL == recording && !isRecording {
-            capsuleTimer?.invalidate()
+            cancelCapsuleDeadline()
+            recordingCancelled = false
+            pendingCapsuleEnqueue = presentationID
             capsuleDismissed = false
-            syncProcessingPresentation(recording)
+            transcriptionState = .running(nil)
         }
         Task {
-            _ = await processingService.enqueue(
+            defer { pendingProcessingEnqueues -= 1 }
+            let job = await processingService.enqueue(
                 recordingURL: recording,
                 settings: settings,
                 stoppedCapture: stopped
             )
+            if pendingCapsuleEnqueue == presentationID {
+                pendingCapsuleEnqueue = nil
+                capsuleJobID = job.id
+                await history.synchronize()
+                syncProcessingPresentation(recording)
+            }
         }
     }
 
-    private func syncProcessingPresentation(_ recording: URL) {
-        guard lastFileURL == recording, !isRecording, let entry = history.entry(recording) else { return }
+    private func cancelCapsuleDeadline() {
+        capsuleTimer?.invalidate()
+        capsuleTimer = nil
+        capsuleDeadlineID = nil
+    }
+
+    func syncProcessingPresentation(_ recording: URL) {
+        guard !recordingCancelled, lastFileURL == recording, !isRecording, !sessionStarting, !sessionStopping,
+              pendingCapsuleEnqueue == nil, let entry = history.entry(recording) else { return }
+        cancelCapsuleDeadline()
         transcriptionWarnings = entry.problems.map(\.message)
         switch entry.phase {
         case .completed: transcriptionState = .completed(entry.currentTranscriptURL ?? entry.currentResultURL ?? entry.transcript)
@@ -648,18 +1104,24 @@ final class RecorderViewModel: ObservableObject {
         case .recording: transcriptionState = .idle
         }
         if entry.phase == .completed || entry.phase == .failed {
-            capsuleTimer?.invalidate()
-            capsuleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, self.lastFileURL == recording, !self.isRecording else { return }
+            let deadlineID = UUID(), jobID = capsuleJobID
+            capsuleDeadlineID = deadlineID
+            capsuleTimer = scheduleCapsuleTimer(60) { [weak self] in
+                    guard let self, self.capsuleDeadlineID == deadlineID, self.capsuleJobID == jobID,
+                          self.pendingCapsuleEnqueue == nil, self.lastFileURL == recording,
+                          !self.isRecording, !self.sessionStarting, !self.sessionStopping,
+                          self.transcriptionJobs == 0, !self.isAdmittingProcessing else { return }
+                    switch self.transcriptionState {
+                    case .completed, .failed: break
+                    default: return
+                    }
                     self.dismissCapsule()
-                }
             }
         }
     }
 
     func refreshMicrophones() {
-        microphones = Microphones.available()
+        microphones = microphoneProvider?() ?? Microphones.available()
     }
 
     func restartLevelMonitor() {
@@ -668,8 +1130,17 @@ final class RecorderViewModel: ObservableObject {
     }
 
 
-    private func startRecording(meeting: MeetingContext?) async {
+    private func startRecording(meeting: MeetingContext?, displayTitle: String? = nil) async {
+        preparingCapture = true
+        sessionStarting = true
+        cancelCapsuleDeadline()
+        pendingCapsuleEnqueue = nil
+        capsuleJobID = nil
+        recordingCancelled = false
+        capsuleDismissed = false
         defer {
+            preparingCapture = false
+            sessionStarting = false
             isBusy = false
             refreshMeetingSelection()
             restartLevelMonitor()
@@ -688,25 +1159,31 @@ final class RecorderViewModel: ObservableObject {
                 RecordingEntry.canonicalURL(try RecordingPaths.makeOutputURL(outputDirectory: directory))
             }.value
             attemptedURL = outputURL
-            let recorder = try await Recorder(
-                outputURL: outputURL,
-                outputKind: .m4a,
-                microphoneDeviceID: selectedMicrophoneDeviceID,
-                backend: captureBackend,
-                onLevels: { [weak self] mic, system in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        if system.isFinite { self.updateCaptureCheck(succeeded: true) }
-                        if mic.isFinite {
-                            let active = self.muteActivity.receive(mic, muted: self.microphoneMuted)
-                            if active != self.mutedMicrophoneActivity { self.mutedMicrophoneActivity = active }
+            var preparedRecorder: Recorder?
+            let controller: any AudioCaptureControllerProtocol
+            if let captureControllerFactory {
+                controller = try await captureControllerFactory(outputURL, selectedMicrophoneDeviceID, captureBackend)
+            } else {
+                let recorder = try await Recorder(
+                    outputURL: outputURL,
+                    outputKind: .m4a,
+                    microphoneDeviceID: selectedMicrophoneDeviceID,
+                    backend: captureBackend,
+                    onLevels: { [weak self] mic, system in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            if system.isFinite { self.updateCaptureCheck(succeeded: true) }
+                            if mic.isFinite {
+                                let active = self.muteActivity.receive(mic, muted: self.microphoneMuted)
+                                if active != self.mutedMicrophoneActivity { self.mutedMicrophoneActivity = active }
+                            }
+                            self.handleLevels(mic: mic, system: system)
                         }
-                        guard self.isWindowVisible else { return }
-                        self.levels.receive(mic: self.microphoneMuted ? 0 : mic, system: system)
                     }
-                }
-            )
-            let controller = PlatformAudioCaptureController(recorder: recorder)
+                )
+                preparedRecorder = recorder
+                controller = PlatformAudioCaptureController(recorder: recorder)
+            }
             let sessionConfig = RecordingSessionService.Configuration(
                 outputURL: outputURL,
                 meetingID: meeting?.id,
@@ -717,23 +1194,27 @@ final class RecorderViewModel: ObservableObject {
                 controller: controller
             )
             _ = try await recordingSessionService.start(configuration: sessionConfig)
-            self.recorder = recorder
+            self.recorder = preparedRecorder
 
             recordingMeetingID = meeting?.id
             activeRecordingURL = outputURL
             lastFileURL = outputURL
-            capsuleTimer?.invalidate()
+            cancelCapsuleDeadline()
             mainWindowRequested = false
             recordingCancelled = false
             transcriptionState = .idle
             capsuleDismissed = false
-            lastRecordingTitle = meeting?.summary ?? "Запись встречи"
+            lastRecordingTitle = displayTitle ?? meeting?.summary ?? "Запись встречи"
             elapsed = 0
             levels.reset()
             startedAt = Date()
             recordingOvertime = RecordingOvertime(start: startedAt!, meetingEnd: meeting?.end)
             status = "Идёт запись"
             await history.synchronize()
+            if let displayTitle {
+                do { try await history.updateThrowing(outputURL) { $0.displayTitle = displayTitle } }
+                catch { errorMessage = "Запись идёт, но название не сохранено: " + error.localizedDescription }
+            }
             if let meeting {
                 calendar.acknowledge(meeting)
                 do { try await Task.detached { try meeting.save(beside: outputURL) }.value }
@@ -744,6 +1225,8 @@ final class RecorderViewModel: ObservableObject {
                 }
             }
             await history.updateStatus(outputURL) { $0.readArtifacts() }
+            lastRecordingTitle = displayTitle ?? meeting?.summary ?? "Запись встречи"
+            onRecordingStarted?()
         } catch {
             if let url = attemptedURL {
                 let message = error.localizedDescription
@@ -761,18 +1244,16 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
-    private func stopRecording() async -> Bool {
+    private func stopRecording(expectedSessionID: UUID, cancelShort: Bool) async -> Bool {
         defer {
             isBusy = false
             refreshMeetingSelection()
             restartLevelMonitor()
         }
         do {
-            status = "Сохранение…"
+            let stopResult = try await recordingSessionService.stop(elapsed: elapsed, expectedSessionID: expectedSessionID, cancelShort: cancelShort, trash: shortRecordingTrash)
             self.recorder = nil
             levels.reset()
-
-            let stopResult = try await recordingSessionService.stop(elapsed: elapsed)
             elapsed = stopResult.duration
             lastFileURL = stopResult.outputURL
             activeRecordingURL = nil
@@ -784,12 +1265,23 @@ final class RecorderViewModel: ObservableObject {
                 lastFileURL = nil
                 transcriptionState = .idle
                 transcriptionWarnings = []
-                capsuleDismissed = true
                 status = "Короткая запись отменена"
                 recordingCancelled = true
-                capsuleTimer?.invalidate()
-                capsuleTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
-                    Task { @MainActor in self?.recordingCancelled = false }
+                capsuleDismissed = false
+                cancelCapsuleDeadline()
+                let deadlineID = UUID()
+                capsuleDeadlineID = deadlineID
+                capsuleTimer = scheduleCapsuleTimer(2) { [weak self] in
+                        guard let self, self.capsuleDeadlineID == deadlineID,
+                              self.recordingCancelled, self.pendingCapsuleEnqueue == nil,
+                              !self.sessionStarting, !self.sessionStopping, !self.isRecording else { return }
+                        self.recordingCancelled = false
+                        if let snapshot = self.latestProcessingSnapshot,
+                           snapshot.active != nil || !snapshot.queued.isEmpty || !snapshot.admitting.isEmpty {
+                            self.applyProcessingSnapshot(snapshot)
+                        } else {
+                            self.capsuleDismissed = true
+                        }
                 }
                 return true
             }
@@ -799,6 +1291,9 @@ final class RecorderViewModel: ObservableObject {
             for warning in stopResult.warnings { history.reportError(warning) }
             enqueue(stopResult.outputURL, stopped: stopResult.stoppedCapture as? StoppedRecording)
             return true
+        } catch let error as RecordingSessionService.ServiceError where error == .staleCommand || error == .shortCancellationExpired || error == .notRecording {
+            errorMessage = error.localizedDescription
+            return false
         } catch {
             self.recorder = nil
             recordingSaveError = error.localizedDescription
@@ -823,22 +1318,40 @@ final class RecorderViewModel: ObservableObject {
             guard !Task.isCancelled, isCheckingAudio, !isRecording, !isBusy, recordingSaveError == nil, isAudioCheckVisible else { return }
 
             assert(levelMonitor == nil, "Previous audio preview must stop before another starts")
+            let monitorID = UUID()
+            self.currentLevelMonitorID = monitorID
+            let monitorSection = self.activeAudioCheckSection
             do {
-                let monitor = try await AudioLevelMonitor(
-                    microphoneDeviceID: selectedMicrophoneDeviceID,
-                    backend: captureBackend,
-                        onLevels: { [weak self] mic, system in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            if system.isFinite { self.updateCaptureCheck(succeeded: true) }
-                            guard self.isAudioCheckVisible else { return }
-                            self.levels.receive(mic: mic, system: system)
-                        }
+                let onLevels: @Sendable (Double, Double) -> Void = { [weak self] mic, system in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        guard self.currentLevelMonitorID == monitorID else { return }
+                        guard self.isCheckingAudio, self.isAudioCheckVisible else { return }
+                        guard self.activeAudioCheckSection == monitorSection else { return }
+                        if system.isFinite { self.updateCaptureCheck(succeeded: true) }
+                        self.levels.receive(mic: mic, system: system)
                     }
-                )
-                guard !Task.isCancelled else { return }
+                }
+                let monitor: any AudioLevelMonitoring
+                if let factory = self.audioLevelMonitorFactory {
+                    monitor = try await factory(
+                        self.selectedMicrophoneDeviceID,
+                        self.captureBackend,
+                        onLevels
+                    )
+                } else {
+                    monitor = try await AudioLevelMonitor(
+                        microphoneDeviceID: selectedMicrophoneDeviceID,
+                        backend: captureBackend,
+                        onLevels: onLevels
+                    )
+                }
+                guard !Task.isCancelled, self.currentLevelMonitorID == monitorID else {
+                    try? await monitor.stop()
+                    return
+                }
                 try await monitor.start()
-                if Task.isCancelled {
+                if Task.isCancelled || self.currentLevelMonitorID != monitorID {
                     try? await monitor.stop()
                     return
                 }
@@ -848,10 +1361,15 @@ final class RecorderViewModel: ObservableObject {
                     status = "Готов к записи"
                 }
             } catch {
-                if !Task.isCancelled {
+                if !Task.isCancelled, self.currentLevelMonitorID == monitorID {
                     updateCaptureCheck(succeeded: false)
                     isCheckingAudio = false
+                    activeAudioCheckSection = nil
+                    currentLevelMonitorID = nil
                     audioCheckTimeout?.cancel()
+                    audioCheckTimeout = nil
+                    levels.reset()
+                    updateLevelVisibility()
                     if reportErrors {
                         errorMessage = error.localizedDescription
                         status = "Не удалось проверить звук"
@@ -904,60 +1422,10 @@ final class RecorderViewModel: ObservableObject {
 struct ContentView: View {
     @ObservedObject var viewModel: RecorderViewModel
     let showSettings: () -> Void
-    @StateObject private var windowState = AppWindowState()
 
     var body: some View {
-        Group {
-            if viewModel.showsRecordingCapsule {
-                if viewModel.showsProcessingCapsule {
-                    ProcessingCapsuleView(viewModel: viewModel)
-                        .frame(width: 348, height: 140)
-                } else {
-                    CompactRecordingView(viewModel: viewModel)
-                        .frame(width: AppWindowState.recordingCapsuleSize.width,
-                               height: viewModel.showsOvertimeReminder ? AppWindowState.overtimeCapsuleHeight : AppWindowState.recordingCapsuleSize.height)
-                }
-            } else {
-                RecorderWorkspaceView(model: viewModel, showSettings: showSettings)
-                    .frame(minWidth: 820, minHeight: 500)
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 8) {
-                    pageButton("Запись", symbol: "record.circle", page: .recording)
-                    pageButton("История", symbol: "clock", page: .history)
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Настройки…", systemImage: "gearshape", action: showSettings)
-                    .labelStyle(.iconOnly)
-                    .help("Настройки")
-            }
-        }
-        .background(WindowAccessor { window in
-            windowState.attach(window)
-        })
-        .onChange(of: [viewModel.showsRecordingCapsule, viewModel.showsProcessingCapsule, viewModel.showsOvertimeReminder]) { _, modes in
-            let isRecording = modes[0]
-            if !isRecording { viewModel.setWindowVisible(false) }
-            if isRecording { viewModel.calendar.setMainWindowVisible(false) }
-            windowState.setCapsuleMode(isRecording, processing: modes[1], overtime: modes[2])
-            if !isRecording && viewModel.mainWindowRequested { windowState.window?.makeKeyAndOrderFront(nil) }
-        }
-    }
-    private func pageButton(_ title: String, symbol: String, page: RecorderViewModel.MainPage) -> some View {
-        Button { viewModel.mainPage = page } label: {
-            VStack(spacing: 3) {
-                Image(systemName: symbol)
-                Text(title).font(.caption)
-            }
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(viewModel.mainPage == page ? Color.primary.opacity(0.08) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.borderless)
-        .accessibilityAddTraits(viewModel.mainPage == page ? .isSelected : [])
+        RecorderWorkspaceView(model: viewModel, showSettings: showSettings)
+            .frame(minWidth: 480, minHeight: 480)
     }
 }
 

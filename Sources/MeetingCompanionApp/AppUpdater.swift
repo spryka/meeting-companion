@@ -20,6 +20,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     private var installHandler: (() -> Void)?
     private(set) var pendingVersion: String?
     var isBusy: () -> Bool = { false }
+    var isCheckBusy: (() -> Bool)?
     var canInstall: Bool { installHandler != nil && !isBusy() }
     var menuTitle: String {
         if let pendingVersion { return "Версия \(pendingVersion) установится после выхода" }
@@ -56,7 +57,11 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     }
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
-        if isBusy() || AppUpdatePolicy.isHomebrewManaged(Bundle.main.bundleURL) {
+        try validateCheckAdmission(homebrewManaged: AppUpdatePolicy.isHomebrewManaged(Bundle.main.bundleURL))
+    }
+
+    func validateCheckAdmission(homebrewManaged: Bool) throws {
+        if (isCheckBusy?() ?? isBusy()) || homebrewManaged {
             throw NSError(domain: "MeetingCompanion.Updates", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Проверка обновлений доступна после завершения записи и обработки."])
         }

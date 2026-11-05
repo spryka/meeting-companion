@@ -6,6 +6,7 @@ import Testing
     var onEvent: (@MainActor @Sendable (TranscriptPlaybackEvent) -> Void)?
     var urls: [URL] = []
     var seeks: [Double] = []
+    var rates: [Float] = []
     var plays = 0
     var pauses = 0
     var stops = 0
@@ -22,6 +23,7 @@ import Testing
     func pause() { pauses += 1 }
     func stop() { stops += 1 }
     func seek(to seconds: Double) async -> Bool { seeks.append(seconds); return seekSuccess }
+    func setRate(_ rate: Float) { rates.append(rate) }
 }
 
 @Suite @MainActor final class TranscriptPlaybackTests {
@@ -41,6 +43,20 @@ import Testing
         try JSONSerialization.data(withJSONObject: json).write(to: root.appendingPathComponent("raw/transcripts/v1/result.json"))
         if mix { try Data("synthetic".utf8).write(to: root.appendingPathComponent("raw/transcripts/v1/mix.m4a")) }
         return root
+    }
+
+    @Test func workspaceEightHourStreamingBoundaryUsesURLAndGlobalSeek() async throws {
+        let root = try recording()
+        let fake = PlaybackFake(); fake.duration = 28_800
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        await player.seek(to: 28_799)
+        #expect(fake.urls.count == 1 && fake.seeks == [28_799] && player.position == 28_799)
+        player.play(); fake.onEvent?(.position(28_799.5))
+        #expect(player.position == 28_799.5)
+        player.close()
+        #expect(fake.onEvent == nil)
+        #expect(try Data(contentsOf: root.appendingPathComponent("raw/transcripts/v1/mix.m4a")) == Data("synthetic".utf8))
     }
 
     @Test func selectedReadyMixOnly() async throws {
@@ -164,5 +180,21 @@ import Testing
         await p.select(resultID: "v1", recordingDirectory: root)
         await replacement?.value
         #expect(p.state == .closed && f.urls.isEmpty && f.onEvent == nil)
+    }
+
+    @Test func playbackRateForwardingAndClamping() async throws {
+        let root = try recording(); let fake = PlaybackFake(); let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        #expect(player.playbackRate == 1.0)
+        player.setPlaybackRate(1.5)
+        #expect(player.playbackRate == 1.5)
+        #expect(fake.rates.contains(1.5))
+        player.setPlaybackRate(-1.0)
+        #expect(player.playbackRate == 1.5)
+        player.setPlaybackRate(Float.nan)
+        #expect(player.playbackRate == 1.5)
+        player.setPlaybackRate(2.0)
+        #expect(player.playbackRate == 2.0)
+        #expect(fake.rates.last == 2.0)
     }
 }

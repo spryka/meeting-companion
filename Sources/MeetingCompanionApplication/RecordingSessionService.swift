@@ -33,6 +33,7 @@ public protocol AudioCaptureControllerProtocol: Sendable {
 public struct RecordingSessionSnapshot: Equatable, Sendable {
     public enum Phase: Equatable, Sendable {
         case idle
+        case starting(outputURL: URL)
         case recording(outputURL: URL, startedAt: Date)
         case stopping(outputURL: URL)
         case cancelledShort(outputURL: URL)
@@ -42,11 +43,13 @@ public struct RecordingSessionSnapshot: Equatable, Sendable {
     public let phase: Phase
     public let meetingID: String?
     public let meetingSummary: String?
+    public let sessionID: UUID?
 
-    public init(phase: Phase, meetingID: String? = nil, meetingSummary: String? = nil) {
+    public init(phase: Phase, meetingID: String? = nil, meetingSummary: String? = nil, sessionID: UUID? = nil) {
         self.phase = phase
         self.meetingID = meetingID
         self.meetingSummary = meetingSummary
+        self.sessionID = sessionID
     }
 }
 
@@ -81,6 +84,8 @@ public actor RecordingSessionService {
         case alreadyRecording
         case notRecording
         case captureFailed(String)
+        case staleCommand
+        case shortCancellationExpired
 
         public var errorDescription: String? {
             switch self {
@@ -90,6 +95,10 @@ public actor RecordingSessionService {
                 return "Запись не запущена."
             case .captureFailed(let msg):
                 return "Сбой захвата звука: \(msg)"
+            case .staleCommand:
+                return "Команда относится к другой или завершённой записи."
+            case .shortCancellationExpired:
+                return "Короткая отмена уже недоступна. Остановите запись с сохранением."
             }
         }
     }
@@ -141,6 +150,7 @@ public actor RecordingSessionService {
     private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
 
     private var state: State = .idle
+    private var workReservation: UUID?
     private var subscribers: [@Sendable (RecordingSessionSnapshot) -> Void] = []
     private let historyRepo: RecordingHistoryRepository
 
@@ -150,9 +160,9 @@ public actor RecordingSessionService {
 
     public var isRecording: Bool {
         switch state {
-        case .starting, .recording:
+        case .recording:
             return true
-        case .idle, .stopping:
+        case .idle, .starting, .stopping:
             return false
         }
     }
@@ -163,21 +173,24 @@ public actor RecordingSessionService {
             return RecordingSessionSnapshot(phase: .idle)
         case .starting(let url, _, let mID, let mSum):
             return RecordingSessionSnapshot(
-                phase: .recording(outputURL: url, startedAt: Date()),
+                phase: .starting(outputURL: url),
                 meetingID: mID,
-                meetingSummary: mSum
+                meetingSummary: mSum,
+                sessionID: workReservation
             )
         case .recording(let url, let started, _, let mID, let mSum):
             return RecordingSessionSnapshot(
                 phase: .recording(outputURL: url, startedAt: started),
                 meetingID: mID,
-                meetingSummary: mSum
+                meetingSummary: mSum,
+                sessionID: workReservation
             )
         case .stopping(let url, _, _, let mID, let mSum):
             return RecordingSessionSnapshot(
                 phase: .stopping(outputURL: url),
                 meetingID: mID,
-                meetingSummary: mSum
+                meetingSummary: mSum,
+                sessionID: workReservation
             )
         }
     }
@@ -212,6 +225,9 @@ public actor RecordingSessionService {
             throw ServiceError.alreadyRecording
         }
 
+        let reservation = UUID()
+        historyRepo.reserveWork(outputURL, id: reservation)
+        workReservation = reservation
         // Reserve starting ownership before awaiting startCapture
         state = .starting(outputURL: outputURL, controller: controller, meetingID: meetingID, meetingSummary: meetingSummary)
         notifySubscribers()
@@ -228,7 +244,7 @@ public actor RecordingSessionService {
             )
             notifySubscribers()
 
-            var entry = RecordingEntry(
+            let entry = RecordingEntry(
                 recording: outputURL,
                 date: startedAt,
                 title: meetingSummary ?? outputURL.deletingPathExtension().lastPathComponent,
@@ -238,6 +254,8 @@ public actor RecordingSessionService {
 
             return currentSnapshot
         } catch {
+            historyRepo.releaseWork(outputURL, id: reservation)
+            workReservation = nil
             state = .idle
             notifySubscribers()
             throw ServiceError.captureFailed(error.localizedDescription)
@@ -254,12 +272,15 @@ public actor RecordingSessionService {
     }
 
     /// Controls microphone mute on the active capture controller.
-    public func setMicrophoneMuted(_ muted: Bool) {
+    @discardableResult
+    public func setMicrophoneMuted(_ muted: Bool, expectedSessionID: UUID? = nil) -> Bool {
+        guard let expectedSessionID, expectedSessionID == workReservation else { return false }
         switch state {
-        case .starting(_, let controller, _, _), .recording(_, _, let controller, _, _):
+        case .recording(_, _, let controller, _, _):
             controller.setMicrophoneMuted(muted)
+            return true
         default:
-            break
+            return false
         }
     }
 
@@ -275,15 +296,19 @@ public actor RecordingSessionService {
 
     /// Stops the active recording session.
     /// Atomically reserves stopping state BEFORE any await to prevent reentrant double-stop.
-    /// If duration is under short recording threshold (10s), cancels and cleans up files.
+    /// Only explicit short cancellation can discard files; ordinary stop always saves.
     public func stop(
         elapsed: TimeInterval? = nil,
         shortRecordingThreshold: TimeInterval = 10.0,
+        expectedSessionID: UUID? = nil,
+        cancelShort: Bool = false,
         trash: (@Sendable (URL) throws -> Void)? = nil
     ) async throws -> RecordingSessionStopResult {
+        guard let expectedSessionID, expectedSessionID == workReservation else { throw ServiceError.staleCommand }
         guard case let .recording(outputURL, startedAt, controller, meetingID, meetingSummary) = state else {
             throw ServiceError.notRecording
         }
+        if cancelShort, let elapsed, elapsed >= shortRecordingThreshold { throw ServiceError.shortCancellationExpired }
 
         // Reserve stopping ownership before awaiting stopCapture
         state = .stopping(
@@ -296,6 +321,8 @@ public actor RecordingSessionService {
         notifySubscribers()
 
         defer {
+            if let reservation = workReservation { historyRepo.releaseWork(outputURL, id: reservation) }
+            workReservation = nil
             state = .idle
             notifySubscribers()
         }
@@ -314,7 +341,7 @@ public actor RecordingSessionService {
 
         // Check short recording cancellation if duration is under threshold
         let wasCancelled: Bool
-        if effectiveDuration < shortRecordingThreshold {
+        if cancelShort && effectiveDuration < shortRecordingThreshold {
             wasCancelled = try historyRepo.cancelShortRecording(
                 outputURL,
                 duration: effectiveDuration,
@@ -328,7 +355,7 @@ public actor RecordingSessionService {
         if !wasCancelled {
             let result = historyRepo.updateStatus(outputURL) { entry in
                 entry.duration = effectiveDuration
-                entry.phase = .interrupted
+                entry.phase = captureResult.stoppedCapture == nil ? .interrupted : .saving
                 entry.readArtifacts()
                 for warning in captureResult.warnings { entry.addProblem(.capture, warning) }
             }

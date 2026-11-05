@@ -74,12 +74,13 @@
 Поддерживаемая модель SHALL ограничиваться писателями приложения, соблюдающими блокировку. Одновременное внешнее изменение программой, игнорирующей блокировку, не входит в гарантию обнаружения конфликтов.
 
 ### Requirement: Recognition version isolation
-Повторное распознавание SHALL создавать отдельную версию результата и не перезаписывать предыдущие версии и правки. Автоматический перенос правок между версиями SHALL отсутствовать.
+Повторное распознавание SHALL создавать отдельную версию результата и не перезаписывать предыдущие версии и правки. Автоматический перенос правок между версиями SHALL отсутствовать. По current authority ADR0004 и [refresh W01/W04](../../../refresh-macos-interface/specs/desktop-workspace/spec.md) GUI SHALL показывать только current без selector/history; immutable версии на диске сохраняются.
 
 #### Scenario: Successful retry
 - **WHEN** повторное распознавание успешно завершилось
-- **THEN** новый immutable result становится единственным current; прежний редактор закрыт через save/discard/cancel до enqueue
+- **THEN** новый immutable result становится единственным current; modal input разрешён явным Save/Cancel по refresh W04.9, затем прежняя review session закрыта до enqueue
 - **AND** предыдущие файлы и правки сохранны без UI доступа и без переноса на новый resultID
+- **AND** запрос при modal input не enqueue; editable reopen запрещён до terminal teardown, CAS/result identity/stale callbacks сохраняются без отдельного cross-window prompt
 
 #### Scenario: Failed retry
 - **WHEN** повторная обработка завершилась ошибкой
@@ -108,7 +109,7 @@
 #### Scenario: Legacy transcript
 - **WHEN** для записи есть только старый TXT
 - **THEN** текст доступен, а редактирование и синхронные переходы из текста отключены
-- **AND** обычное открытие доступного аудио остаётся возможным
+- **AND** для canonical записи обычное открытие доступного аудио остаётся возможным; placement проверяется по ADR0005: flat entry допускает только list и собственный contained standalone saved TXT read-only, без audio/structured lookup, retry или mutation; canonical retry отдельно требует exact contained raw originals
 
 #### Scenario: Unsupported document version
 - **WHEN** версия формата новее поддерживаемой или структура некорректна

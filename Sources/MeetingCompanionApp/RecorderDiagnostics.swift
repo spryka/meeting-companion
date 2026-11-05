@@ -10,6 +10,7 @@ struct RecorderDiagnostics {
 
     struct PreparationProgress: Sendable, Equatable {
         var bytes: Int64 = 0
+        var fileCount: Int = 0
         var lastModified: Date?
     }
 
@@ -22,6 +23,7 @@ struct RecorderDiagnostics {
             guard let values = try? file.resourceValues(forKeys: properties),
                   values.isRegularFile == true, values.isSymbolicLink != true else { continue }
             result.bytes += Int64(values.fileSize ?? 0)
+            result.fileCount += 1
             if let date = values.contentModificationDate, date > (result.lastModified ?? .distantPast) {
                 result.lastModified = date
             }

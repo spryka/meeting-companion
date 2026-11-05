@@ -72,12 +72,17 @@ private final class MockAudioCaptureController: AudioCaptureControllerProtocol, 
     var isMuted = false
     var startDelayNanoseconds: UInt64 = 0
     var onStartCapture: (() throws -> Void)?
+    var suspendStart: (@Sendable () async -> Void)?
+    var suspendStop: (@Sendable () async -> Void)?
+    var stopError = false
+    var stoppedCapture: (any StoppedCaptureProtocol)?
 
     init(outputURL: URL) {
         self.outputURL = outputURL
     }
 
     func startCapture() async throws {
+        await suspendStart?()
         if startDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: startDelayNanoseconds)
         }
@@ -86,12 +91,14 @@ private final class MockAudioCaptureController: AudioCaptureControllerProtocol, 
     }
 
     func stopCapture() async throws -> AudioCaptureStopResult {
+        await suspendStop?()
+        if stopError { throw NSError(domain: "SyntheticStop", code: 1) }
         isStarted = false
         return AudioCaptureStopResult(
             duration: duration,
             outputURL: outputURL,
             warnings: warnings,
-            stoppedCapture: nil
+            stoppedCapture: stoppedCapture
         )
     }
 
@@ -118,6 +125,158 @@ private final class FlatStoppedCapture: StoppedCaptureProtocol, @unchecked Senda
 
 @Suite("Application Service Tests")
 struct ApplicationServiceTests {
+
+    @Test func handoffMissingIdentityCannotMutateSuccessor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func output(_ name: String) throws -> URL {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            return folder.appendingPathComponent(name + ".m4a")
+        }
+        let service = RecordingSessionService(historyRepo: RecordingHistoryRepository())
+        let a = MockAudioCaptureController(outputURL: try output("a"))
+        let first = try await service.start(controller: a, outputURL: a.outputURL)
+        _ = try await service.stop(elapsed: 15, expectedSessionID: first.sessionID)
+        let b = MockAudioCaptureController(outputURL: try output("b"))
+        let second = try await service.start(controller: b, outputURL: b.outputURL)
+        await service.setMicrophoneMuted(true)
+        #expect(!b.isMuted, "Missing mute identity must not select successor B")
+        var rejected = false
+        do { _ = try await service.stop(elapsed: 15) } catch { rejected = true }
+        #expect(rejected, "Missing stop identity must be rejected")
+        #expect(b.isStarted)
+        #expect(await service.currentSnapshot.sessionID == second.sessionID)
+        if await service.isRecording {
+            _ = try await service.stop(elapsed: 15, expectedSessionID: second.sessionID)
+        }
+    }
+
+    @Test func handoffOrdinaryStopNeverDeletesShortCapture() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("meeting_short")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder.deletingLastPathComponent()) }
+        let url = folder.appendingPathComponent("meeting_short.m4a")
+        try Data("synthetic original".utf8).write(to: url)
+        let capture = MockAudioCaptureController(outputURL: url)
+        capture.duration = 9
+        let service = RecordingSessionService(historyRepo: RecordingHistoryRepository())
+        let started = try await service.start(controller: capture, outputURL: url)
+        let stopped = try await service.stop(elapsed: 9, expectedSessionID: started.sessionID, trash: { _ in })
+        #expect(!stopped.wasCancelledShort, "Only explicit short cancellation may discard capture")
+        #expect(try Data(contentsOf: url) == Data("synthetic original".utf8))
+    }
+
+    @Test func workspaceRenameExcludesSuspendedCaptureAndAdmission() async throws {
+        actor Gate {
+            var continuation: CheckedContinuation<Void, Never>?
+            let entered: AsyncStream<Void>.Continuation
+            init(_ entered: AsyncStream<Void>.Continuation) { self.entered = entered }
+            func wait() async { await withCheckedContinuation { continuation = $0; entered.yield(()) } }
+            func open() { continuation?.resume(); continuation = nil }
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("meeting_test")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("meeting_test.m4a")
+        let repo = RecordingHistoryRepository()
+        _ = try repo.putThrowing(RecordingEntry(recording: url, date: Date(), title: "Original", phase: .completed))
+        let capture = MockAudioCaptureController(outputURL: url)
+        let (entered, continuation) = AsyncStream<Void>.makeStream()
+        let gate = Gate(continuation)
+        capture.suspendStart = { await gate.wait() }
+        let session = RecordingSessionService(historyRepo: repo)
+        let start = Task { try await session.start(controller: capture, outputURL: url) }
+        var iterator = entered.makeAsyncIterator(); _ = await iterator.next()
+        #expect(throws: Error.self) { try repo.rename(url, displayTitle: "During starting") }
+        await gate.open(); _ = try await start.value
+        #expect(throws: Error.self) { try repo.rename(url, displayTitle: "During capture") }
+        capture.suspendStop = { await gate.wait() }
+        let stop = Task { try await session.stop(elapsed: 15, expectedSessionID: (await session.currentSnapshot).sessionID) }
+        _ = await iterator.next()
+        #expect(throws: Error.self) { try repo.rename(url, displayTitle: "During saving") }
+        await gate.open(); _ = try await stop.value
+        _ = try repo.rename(url, displayTitle: "After stop")
+        let runner = MockTranscriptionRunner(); runner.delayNanoseconds = 0
+        let processing = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter(), historyRepository: repo,
+            retryAdmission: { _ in await gate.wait(); return false })
+        let pending = Task { await processing.enqueue(recordingURL: url, settings: ProcessingJobSettings(parakeet: false, echoCancellation: false)) }
+        _ = await iterator.next()
+        #expect(throws: Error.self) { try repo.rename(url, displayTitle: "During admission") }
+        await gate.open(); _ = await pending.value
+        _ = try repo.rename(url, displayTitle: "After admission")
+    }
+
+    @Test func workspaceRenameExcludesPendingCaptureFinalization() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("meeting_pending")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("meeting_pending.m4a")
+        let repo = RecordingHistoryRepository()
+        let capture = MockAudioCaptureController(outputURL: url)
+        capture.stoppedCapture = FlatStoppedCapture()
+        let session = RecordingSessionService(historyRepo: repo)
+        _ = try await session.start(controller: capture, outputURL: url)
+        let stopped = try await session.stop(elapsed: 15, expectedSessionID: (await session.currentSnapshot).sessionID)
+        #expect(stopped.stoppedCapture != nil)
+        #expect(repo.entry(url)?.phase == .saving)
+        #expect(throws: Error.self) { try repo.rename(url, displayTitle: "Before enqueue") }
+    }
+
+    @Test func workspaceRenameExcludesQueuedAndActiveUntilCancelTeardown() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = RecordingHistoryRepository()
+        var urls: [URL] = []
+        for name in ["active", "queued", "unrelated"] {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+            let url = folder.appendingPathComponent(name + ".m4a")
+            for source in ["host", "remote"] {
+                try Data([0, 0]).write(to: folder.appendingPathComponent("raw/" + name + "." + source + "_record.wav"))
+            }
+            _ = try repo.putThrowing(RecordingEntry.load(recording: url))
+            urls.append(url)
+        }
+        let runner = MockTranscriptionRunner()
+        let (started, continuation) = AsyncStream<Void>.makeStream()
+        runner.onRun = { continuation.yield(()); try await Task.sleep(for: .seconds(30)) }
+        let processing = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter(), historyRepository: repo)
+        let settings = ProcessingJobSettings(parakeet: false, echoCancellation: false)
+        let active = await processing.enqueue(recordingURL: urls[0], settings: settings)
+        for await _ in started { break }
+        let queued = await processing.enqueue(recordingURL: urls[1], settings: settings)
+        #expect(throws: Error.self) { try repo.rename(urls[0], displayTitle: "Active") }
+        #expect(throws: Error.self) { try repo.rename(urls[1], displayTitle: "Queued") }
+        _ = try repo.rename(urls[2], displayTitle: "Unrelated remains editable")
+        await processing.cancel(jobID: queued.id)
+        _ = try repo.rename(urls[1], displayTitle: "After queued cancellation")
+        await processing.cancel(jobID: active.id)
+        #expect(await processing.totalJobCount == 0)
+        _ = try repo.rename(urls[0], displayTitle: "After active teardown")
+    }
+
+    @Test func workspaceRenameReservationsReleaseOnCaptureFailures() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("meeting_test")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("meeting_test.m4a")
+        let repo = RecordingHistoryRepository()
+        _ = try repo.putThrowing(RecordingEntry(recording: url, date: Date(), title: "Original", phase: .completed))
+        let capture = MockAudioCaptureController(outputURL: url)
+        capture.onStartCapture = { throw NSError(domain: "SyntheticStart", code: 1) }
+        let session = RecordingSessionService(historyRepo: repo)
+        await #expect(throws: Error.self) { try await session.start(controller: capture, outputURL: url) }
+        _ = try repo.rename(url, displayTitle: "After failed start")
+        capture.onStartCapture = nil
+        _ = try await session.start(controller: capture, outputURL: url)
+        capture.stopError = true
+        await #expect(throws: Error.self) { try await session.stop(elapsed: 15, expectedSessionID: (await session.currentSnapshot).sessionID) }
+        _ = try repo.rename(url, displayTitle: "After failed stop")
+    }
 
     @Test(arguments: [false, true], [false, true])
     func flatEnqueueRejectsBeforeAllWork(withRepository: Bool, stopped: Bool) async throws {
@@ -175,7 +334,7 @@ struct ApplicationServiceTests {
         for channel in ["host", "remote"] {
             try Data([1, 2, 3]).write(to: root.appendingPathComponent("raw/meeting_before_raw." + channel + "_record.wav"))
         }
-        _ = try await session.stop()
+        _ = try await session.stop(expectedSessionID: (await session.currentSnapshot).sessionID)
         #expect(RecordingEntry.load(recording: url).phase == .interrupted)
         #expect(repo.entry(url)?.capabilities.canRetry == true)
         let runner = MockTranscriptionRunner(); runner.delayNanoseconds = 0
@@ -351,7 +510,7 @@ struct ApplicationServiceTests {
         #expect(failures.first == .alreadyRecording)
 
         // Stop session
-        let stopResult = try await session.stop(shortRecordingThreshold: 5.0)
+        let stopResult = try await session.stop(shortRecordingThreshold: 5.0, expectedSessionID: (await session.currentSnapshot).sessionID, cancelShort: true)
         #expect(stopResult.wasCancelledShort == false)
         #expect(await session.isRecording == false)
     }
@@ -454,7 +613,7 @@ struct ApplicationServiceTests {
         capture.duration = 4.0 // under 10.0s threshold
 
         _ = try await session.start(controller: capture, outputURL: recURL)
-        let stopResult = try await session.stop(shortRecordingThreshold: 10.0, trash: { url in
+        let stopResult = try await session.stop(shortRecordingThreshold: 10.0, expectedSessionID: (await session.currentSnapshot).sessionID, cancelShort: true, trash: { url in
             try FileManager.default.removeItem(at: url)
         })
 
@@ -713,7 +872,7 @@ struct ApplicationServiceTests {
         #expect(bytes.contains(unknown))
         let json = try #require(try JSONSerialization.jsonObject(with: Data(bytes.utf8)) as? [String: Any])
         #expect(json["recordingFormatVersion"] == nil)
-        _ = try await session.stop()
+        _ = try await session.stop(expectedSessionID: (await session.currentSnapshot).sessionID)
         #expect(RecordingEntry.load(recording: url).phase == .interrupted)
     }
 
@@ -730,4 +889,89 @@ struct ApplicationServiceTests {
         #expect(await service.currentSnapshot().active?.id != job.id)
     }
 
+    @Test func sessionIdentityRejectionOnStaleCommand() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder1 = root.appendingPathComponent("session1")
+        try FileManager.default.createDirectory(at: folder1.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let url1 = folder1.appendingPathComponent("session1.m4a")
+        let repo = RecordingHistoryRepository()
+        let session = RecordingSessionService(historyRepo: repo)
+
+        let mockController1 = MockAudioCaptureController(outputURL: url1)
+        _ = try await session.start(controller: mockController1, outputURL: url1)
+        let snap1 = await session.currentSnapshot
+        let sessionID1 = try #require(snap1.sessionID)
+
+        // Attempting to stop with a stale/mismatched session ID must be rejected
+        let staleID = UUID()
+        await #expect(throws: NSError.self) {
+            _ = try await session.stop(expectedSessionID: staleID)
+        }
+        let stillRecording = await session.isRecording
+        #expect(stillRecording, "Session must still be recording after stale stop rejection")
+
+        // Mute with stale session ID must be ignored
+        await session.setMicrophoneMuted(true, expectedSessionID: staleID)
+        #expect(mockController1.isMuted == false, "Stale mute command must be ignored")
+
+        // Mute with correct session ID succeeds
+        await session.setMicrophoneMuted(true, expectedSessionID: sessionID1)
+        #expect(mockController1.isMuted == true, "Matching mute command must succeed")
+
+        // Stopping with matching session ID succeeds
+        let stopRes = try await session.stop(expectedSessionID: sessionID1)
+        #expect(stopRes.outputURL == url1)
+        let isRecAfterStop = await session.isRecording
+        #expect(!isRecAfterStop)
+    }
+
+    @Test func startingPhaseDistinctionAndSnapshotIntegrity() async throws {
+        actor StartingGate {
+            var continuation: CheckedContinuation<Void, Never>?
+            let entered: AsyncStream<Void>.Continuation
+            init(_ entered: AsyncStream<Void>.Continuation) { self.entered = entered }
+            func wait() async { await withCheckedContinuation { continuation = $0; entered.yield(()) } }
+            func open() { continuation?.resume(); continuation = nil }
+        }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("starting_test")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let url = folder.appendingPathComponent("starting_test.m4a")
+        let repo = RecordingHistoryRepository()
+        let session = RecordingSessionService(historyRepo: repo)
+
+        let mockController = MockAudioCaptureController(outputURL: url)
+        let (entered, continuation) = AsyncStream<Void>.makeStream()
+        let gate = StartingGate(continuation)
+        mockController.suspendStart = { await gate.wait() }
+
+        let startTask = Task {
+            try await session.start(controller: mockController, outputURL: url)
+        }
+
+        var iterator = entered.makeAsyncIterator()
+        _ = await iterator.next()
+
+        // While starting, isRecording must be false, and phase must be .starting
+        let startingSnap = await session.currentSnapshot
+        if case .starting(let outputURL) = startingSnap.phase {
+            #expect(outputURL == url)
+        } else {
+            #expect(Bool(false), "Phase must be .starting while capture is preparing")
+        }
+        let isRecStarting = await session.isRecording
+        #expect(!isRecStarting, "isRecording must be false during starting phase")
+        #expect(startingSnap.sessionID != nil, "Starting phase must have valid sessionID")
+
+        await gate.open()
+        _ = try await startTask.value
+        let isRecStarted = await session.isRecording
+        #expect(isRecStarted, "isRecording must be true once capture starts")
+        _ = try await session.stop(expectedSessionID: (await session.currentSnapshot).sessionID)
+    }
 }

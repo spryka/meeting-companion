@@ -57,6 +57,56 @@ import Testing
         return (resultURL, versionDir)
     }
 
+    @Test(arguments: [false, true])
+    func repairVerbatimCanonicalEquivalentText(existingOverride: Bool) throws {
+        for (composed, decomposed) in [("\u{00e9}", "e\u{0301}"), ("\u{0439}", "\u{0438}\u{0306}")] {
+            let root = try temporaryDirectory()
+            let (result, version) = try createSyntheticRecording(in: root)
+            if !existingOverride {
+                var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: result)) as? [String: Any])
+                var words = try #require(json["words"] as? [[String: Any]])
+                words[0]["text"] = composed
+                json["words"] = words
+                var baseline = try #require(json["baselineWords"] as? [[String: Any]])
+                baseline[0]["text"] = composed
+                json["baselineWords"] = baseline
+                try JSONSerialization.data(withJSONObject: json).write(to: result)
+            }
+            let repo = TranscriptEditsRepository(recordingDirectory: root)
+            let id = "res_valid_parakeet_off"
+            if existingOverride { _ = try repo.saveTurnOverride(resultID: id, turnID: "turn_1", text: composed + " день", displayName: nil) }
+            let desired = decomposed + " день"
+            let saved = try repo.saveTurnOverride(resultID: id, turnID: "turn_1", text: desired, displayName: nil)
+            #expect(saved.revision == (existingOverride ? 2 : 1))
+            repo.releaseWriteLock()
+            let reopened = TranscriptEditsRepository(recordingDirectory: root)
+            let edits = try reopened.loadEdits(resultID: id)
+            #expect(Array(edits.overrides["turn_1"]?.text?.utf8 ?? "".utf8) == Array(desired.utf8))
+            let doc = try TranscriptDocument.load(from: result, recordingDirectory: root)
+            let exported = try TranscriptExportFormatter().format(document: doc, edits: edits, recordingDirectory: root)
+            #expect(Data(exported.utf8).range(of: Data(desired.utf8)) != nil)
+            let path = version.appendingPathComponent("edits.json")
+            let bytes = try Data(contentsOf: path)
+            let unchanged = try reopened.saveTurnOverride(resultID: id, turnID: "turn_1", text: desired, displayName: nil)
+            #expect(unchanged.revision == saved.revision)
+            #expect(try Data(contentsOf: path) == bytes)
+        }
+    }
+
+    @Test func workspaceUnchangedTextDoesNotCreateRevisionOrFile() throws {
+        let root = try temporaryDirectory()
+        let (result, version) = try createSyntheticRecording(in: root)
+        let doc = try TranscriptDocument.load(from: result, recordingDirectory: root)
+        let turn = try #require(doc.turns.first)
+        let words = Dictionary(uniqueKeysWithValues: doc.words.map { ($0.id, $0.text) })
+        let original = turn.wordIDs.compactMap { words[$0] }.joined(separator: " ")
+        let repo = TranscriptEditsRepository(recordingDirectory: root)
+        let edits = try repo.saveTurnOverride(resultID: doc.resultID, turnID: turn.id, text: original, displayName: nil)
+        #expect(edits.revision == 0)
+        #expect(!FileManager.default.fileExists(atPath: version.appendingPathComponent("edits.json").path))
+        #expect(throws: Error.self) { try repo.saveTurnOverride(resultID: doc.resultID, turnID: turn.id, text: "  \n", displayName: nil) }
+    }
+
     @Test func testSaveTurnOverrideWithUnknownTurnThrowsInvalidReference() throws {
         let root = try temporaryDirectory()
         let resultID = "res_valid_parakeet_off"

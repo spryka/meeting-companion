@@ -65,6 +65,12 @@ public final class RecordingHistory: ObservableObject {
         if let warning = result.persistenceWarning { error = warning }
     }
 
+    public func rename(_ url: URL, displayTitle: String) async throws {
+        let repository = repository
+        _ = try await Task.detached { try repository.rename(url, displayTitle: displayTitle) }.value
+        await synchronize()
+    }
+
     public func updateThrowing(_ url: URL, _ change: @escaping @Sendable (inout RecordingEntry) -> Void) async throws {
         let repository = repository
         try await Task.detached { _ = try repository.updateThrowing(url, change) }.value
@@ -85,4 +91,26 @@ public final class RecordingHistory: ObservableObject {
         if let warning = result.persistenceWarning { error = warning }
     }
 
+}
+
+extension Date {
+    public var dateGroupTitle: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(self) {
+            return "Сегодня"
+        } else if calendar.isDateInYesterday(self) {
+            return "Вчера"
+        } else {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "ru_RU")
+            formatter.dateFormat = "d MMMM"
+            return formatter.string(from: self)
+        }
+    }
+}
+
+extension RecordingEntry {
+    public var dateGroupTitle: String {
+        date.dateGroupTitle
+    }
 }

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "sdd-handoff/openspec/changes/refresh-macos-interface/reference/index.html",
+  "entry": "sdd-handoff/openspec/changes/refresh-macos-interface/reference/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-11-03T16:43:13.277Z",
+  "updatedAt": "2026-11-03T16:43:13.277Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

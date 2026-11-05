@@ -109,6 +109,7 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         case recording
         case date
         case title
+        case displayTitle
         case duration
         case phase
         case problems
@@ -123,6 +124,7 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         self.hasStandardLayout = RecordingPaths.isStandardLayout(recording)
         self.date = try container.decode(Date.self, forKey: .date)
         self.title = try container.decode(String.self, forKey: .title)
+        self.displayTitle = try container.decodeIfPresent(String.self, forKey: .displayTitle)
         self.duration = try container.decodeIfPresent(Double.self, forKey: .duration)
         self.phase = try container.decode(Phase.self, forKey: .phase)
         self.problems = try container.decodeIfPresent([RecordingProblem].self, forKey: .problems) ?? []
@@ -135,6 +137,7 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         try container.encode(recording, forKey: .recording)
         try container.encode(date, forKey: .date)
         try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(displayTitle, forKey: .displayTitle)
         try container.encodeIfPresent(duration, forKey: .duration)
         try container.encode(phase, forKey: .phase)
         try container.encode(problems, forKey: .problems)
@@ -151,6 +154,8 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
     public let recording: URL
     public var date: Date
     public var title: String
+    public var displayTitle: String?
+    public var effectiveTitle: String { displayTitle ?? title }
     public var duration: Double?
     public var phase: Phase
     public var problems: [RecordingProblem] = []

@@ -28,6 +28,8 @@ public struct TranscriptBulkAssignmentPreview: Equatable, Sendable {
     public let affectedTurnIDs: Set<String>
     public let replacedTurnIDs: Set<String>
     public let snapshotOverrides: [String: TranscriptTurnOverride]
+    public let anchorTurnID: String?
+    public let confirmedName: String?
 
     internal init(
         recordingDirectory: URL,
@@ -43,7 +45,8 @@ public struct TranscriptBulkAssignmentPreview: Equatable, Sendable {
         targetTurnIDs: Set<String> = [],
         affectedTurnIDs: Set<String> = [],
         replacedTurnIDs: Set<String> = [],
-        snapshotOverrides: [String: TranscriptTurnOverride] = [:]
+        snapshotOverrides: [String: TranscriptTurnOverride] = [:],
+        anchorTurnID: String? = nil, confirmedName: String? = nil
     ) {
         self.recordingDirectory = recordingDirectory
         self.resultID = resultID
@@ -59,6 +62,8 @@ public struct TranscriptBulkAssignmentPreview: Equatable, Sendable {
         self.affectedTurnIDs = affectedTurnIDs
         self.replacedTurnIDs = replacedTurnIDs
         self.snapshotOverrides = snapshotOverrides
+        self.anchorTurnID = anchorTurnID
+        self.confirmedName = confirmedName
     }
 }
 
@@ -114,6 +119,9 @@ public struct TranscriptSpeakerAssignmentService: Sendable {
 
         return try editsRepository.mutateOverrides(resultID: resultID) { currentOverrides in
             let prior = currentOverrides[turnID]
+            let turn = doc.turns.first { $0.id == turnID }!
+            let original = "Speaker \(doc.speakers.first { $0.id == turn.speakerID }?.displayNumber ?? 1)"
+            guard (prior?.displayName ?? original) != displayName else { return }
             currentOverrides[turnID] = TranscriptTurnOverride(text: prior?.text, displayName: displayName)
         }
     }
@@ -176,6 +184,17 @@ public struct TranscriptSpeakerAssignmentService: Sendable {
         let canonicalPreviewDir = preview.recordingDirectory.standardizedFileURL.resolvingSymlinksInPath()
         guard canonicalServiceDir == canonicalPreviewDir else {
             throw TranscriptEditsError.conflict("Preview belongs to recording at \(canonicalPreviewDir.path), but service is bound to \(canonicalServiceDir.path)")
+        }
+
+        if let anchor = preview.anchorTurnID {
+            guard preview.confirmedName == displayName else { throw TranscriptEditsError.conflict("Preview name changed") }
+            return try editsRepository.mutateOverrides(resultID: preview.resultID) { overrides in
+                let current = try previewRemainingAssignment(resultID: preview.resultID, anchorTurnID: anchor, displayName: displayName)
+                guard current == preview else { throw TranscriptEditsError.conflict("Preview is stale") }
+                for id in preview.affectedTurnIDs {
+                    overrides[id] = TranscriptTurnOverride(text: overrides[id]?.text, displayName: displayName)
+                }
+            }
         }
 
         let doc = try loadDocument(resultID: preview.resultID)
@@ -288,6 +307,27 @@ public struct TranscriptSpeakerAssignmentService: Sendable {
             throw TranscriptEditsError.invalidReference("Unknown voice: source=\(voice.sourceID), localID=\(voice.localID)")
         }
         return try unassignSpeakerName(resultID: resultID, speakerID: speaker.id)
+    }
+
+    public func previewRemainingAssignment(resultID: String, anchorTurnID: String, displayName: String) throws -> TranscriptBulkAssignmentPreview {
+        try validateDisplayName(displayName)
+        let doc = try loadDocument(resultID: resultID)
+        guard let anchor = doc.turns.firstIndex(where: { $0.id == anchorTurnID }),
+              let speaker = doc.speakers.first(where: { $0.id == doc.turns[anchor].speakerID }) else {
+            throw TranscriptEditsError.invalidReference(anchorTurnID)
+        }
+        let voices = Dictionary(uniqueKeysWithValues: doc.speakers.map { ($0.id, TranscriptVoiceKey(sourceID: $0.sourceID, localID: $0.localID)) })
+        let voice = TranscriptVoiceKey(sourceID: speaker.sourceID, localID: speaker.localID)
+        let turns = doc.turns[anchor...].filter { voices[$0.speakerID] == voice }
+        let edits = try editsRepository.loadedSnapshot(for: resultID)?.edits ?? editsRepository.loadEdits(resultID: resultID)
+        let speakers = Dictionary(uniqueKeysWithValues: doc.speakers.map { ($0.id, $0.displayNumber) })
+        let changed = Set(turns.filter { (edits.overrides[$0.id]?.displayName ?? "Speaker \(speakers[$0.speakerID] ?? 1)") != displayName }.map(\.id))
+        let replaced = Set(changed.filter { edits.overrides[$0]?.displayName != nil })
+        return TranscriptBulkAssignmentPreview(recordingDirectory: editsRepository.recordingDirectory, resultID: resultID,
+            sourceID: speaker.sourceID, localID: speaker.localID, speakerID: speaker.id, revision: edits.revision,
+            replaceManuallyAssigned: true, totalTurnsInGroup: turns.count, affectedTurnsCount: changed.count,
+            replacedManualAssignmentsCount: replaced.count, targetTurnIDs: Set(turns.map(\.id)), affectedTurnIDs: changed,
+            replacedTurnIDs: replaced, snapshotOverrides: edits.overrides, anchorTurnID: anchorTurnID, confirmedName: displayName)
     }
 
     /// Generates preview statistics for assigning a speaker name to a voice group.
@@ -467,6 +507,11 @@ extension TranscriptReviewSession {
             voice: voice,
             replaceManuallyAssigned: replaceManuallyAssigned
         )
+    }
+
+    public func previewRemainingAssignment(anchorTurnID: String, displayName: String) throws -> TranscriptBulkAssignmentPreview {
+        guard !isClosed else { throw TranscriptReviewSessionError.closed }
+        return try speakerAssignmentService.previewRemainingAssignment(resultID: activeResultID, anchorTurnID: anchorTurnID, displayName: displayName)
     }
 
     public func undo() throws -> TranscriptEdits {

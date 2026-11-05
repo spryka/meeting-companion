@@ -58,7 +58,11 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         case .merge: label = "Объединение дорожек"
         }
         let source = channel.map { $0 == "host" ? " · микрофон" : " · системный звук" } ?? ""
-        let unit = stage == .speakers ? "слов" : stage == .echo ? "с" : "окон"
+        if stage == .echo {
+            let count = stageFraction.map { " · \(Int($0 * 100))%" } ?? ""
+            return label + source + count + "…"
+        }
+        let unit = stage == .speakers ? "слов" : "окон"
         let count = total > 1 ? " · \(completed)/\(total) \(unit)" : ""
         return label + source + count + "…"
     }

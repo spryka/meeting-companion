@@ -1,5 +1,27 @@
 import AppKit
-import Combine
+import SwiftUI
+
+// AppKit owns the standard controls; unhandled header clicks keep native window dragging.
+private final class WorkspaceHeaderHostingView: NSHostingView<AnyView> {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
+private final class WorkspaceHeaderBackgroundView: NSView {
+    override var isOpaque: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(ODColors.toolbar).setFill()
+        bounds.fill()
+        NSColor(ODColors.line).setFill()
+        NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: 1).fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
 
 enum AppAppearance: String, CaseIterable {
     case system, light, dark
@@ -22,19 +44,16 @@ enum AppAppearance: String, CaseIterable {
 }
 
 @MainActor
-final class AppWindowState: ObservableObject {
+final class AppWindowState: NSObject, ObservableObject {
     weak var window: NSWindow?
-    private var normalFrame: NSRect?
-    private var normalToolbar: NSToolbar?
-    private let defaults: UserDefaults
-    private var observers: [AnyCancellable] = []
-    private var positioning = false
-    private static let capsuleFrameKey = "recordingCapsuleFrame"
-    static let recordingCapsuleSize = NSSize(width: 384, height: 88)
-    static let overtimeCapsuleHeight: CGFloat = 132
-    private let normalSize = NSSize(width: 900, height: 560)
-
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    private var brandAccessory: NSTitlebarAccessoryViewController?
+    private var actionsAccessory: NSTitlebarAccessoryViewController?
+    private var headerBackground: WorkspaceHeaderBackgroundView?
+    static let capsuleFrameKey = "recordingCapsuleFrame"
+    static let recordingCapsuleSize = NSSize(width: 440, height: 64)
+    static let overtimeCapsuleHeight: CGFloat = 64
+    static let processingCapsuleSize = NSSize(width: 440, height: 64)
+    static let workspaceMinimumSize = NSSize(width: 480, height: 500)
 
     static func visibleCapsuleFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {
         guard !screens.isEmpty else { return frame }
@@ -57,27 +76,9 @@ final class AppWindowState: ObservableObject {
                       width: frame.width, height: frame.height)
     }
 
-    private func saveCapsulePosition() {
-        guard normalFrame != nil, !positioning, let window else { return }
-        defaults.set(NSStringFromRect(window.frame), forKey: Self.capsuleFrameKey)
-    }
-
-    private func keepCapsuleVisible() {
-        guard normalFrame != nil, !positioning, let window else { return }
-        let frame = Self.visibleCapsuleFrame(window.frame, screens: NSScreen.screens.map(\.visibleFrame))
-        if frame != window.frame { window.setFrame(frame, display: true, animate: false) }
-        saveCapsulePosition()
-    }
-
     static func activationPolicy(for windows: [NSWindow]) -> NSApplication.ActivationPolicy {
         windows.contains { $0.styleMask.contains(.titled) && ($0.isVisible || $0.isMiniaturized) }
             ? .regular : .accessory
-    }
-
-    static func settingsPageVisible(window: NSWindow?, pageSelected: Bool, applicationHidden: Bool) -> Bool {
-        guard let window else { return false }
-        return pageSelected && !applicationHidden && window.isVisible && !window.isMiniaturized
-            && window.occlusionState.contains(.visible)
     }
 
     static func refreshActivationPolicy() {
@@ -85,93 +86,79 @@ final class AppWindowState: ObservableObject {
         if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
 
+    static func configureWorkspaceHeader(_ window: NSWindow) {
+        window.styleMask.insert(.fullSizeContentView)
+        window.title = "Meeting Companion"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
+    }
+
+    func updateHeader(brand: AnyView, actions: AnyView, width: CGFloat, sidebarWidth: CGFloat,
+                      narrow: Bool, showsList: Bool) {
+        guard let window else { return }
+        func update(_ existing: inout NSTitlebarAccessoryViewController?, edge: NSLayoutConstraint.Attribute,
+                    content: AnyView, size: NSSize) {
+            if existing == nil {
+                let accessory = NSTitlebarAccessoryViewController()
+                accessory.layoutAttribute = edge
+                let host = WorkspaceHeaderHostingView(rootView: content)
+                host.sizingOptions = []
+                accessory.view = host
+                window.addTitlebarAccessoryViewController(accessory)
+                existing = accessory
+            }
+            let host = existing!.view as! WorkspaceHeaderHostingView
+            host.rootView = size.width > 0 ? content : AnyView(EmptyView())
+            host.setFrameSize(size)
+        }
+        let controlsRight = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+            .map { $0.convert($0.bounds, to: window.contentView).maxX }.max() ?? 0
+        let brandWidth: CGFloat = narrow && !showsList ? 0 : max(0, (narrow ? width : sidebarWidth) - controlsRight - 16)
+        let actionWidth = narrow ? (showsList ? 0 : max(0, width - controlsRight - 12)) : max(0, width - sidebarWidth - 1)
+        if window.toolbar == nil {
+            let toolbar = NSToolbar(identifier: "workspace-header")
+            toolbar.displayMode = .iconOnly
+            toolbar.allowsUserCustomization = false
+            toolbar.autosavesConfiguration = false
+            toolbar.showsBaselineSeparator = false
+            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: 0)
+            window.toolbar = toolbar
+        }
+        if narrow, !showsList, headerBackground == nil,
+           let content = window.contentView, let layoutGuide = window.contentLayoutGuide {
+            let background = WorkspaceHeaderBackgroundView()
+            background.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(background, positioned: .above, relativeTo: nil)
+            // The public layout guide owns the full native row, including the controls' region.
+            NSLayoutConstraint.activate([
+                background.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                background.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                background.topAnchor.constraint(equalTo: content.topAnchor),
+                NSLayoutConstraint(item: background, attribute: .bottom, relatedBy: .equal,
+                                   toItem: layoutGuide, attribute: .top, multiplier: 1, constant: 0)
+            ])
+            headerBackground = background
+        }
+        headerBackground?.isHidden = !narrow || showsList
+        // Accessories share the native row's bounds, without a toolbar item's inset platter.
+        let headerHeight = (window.contentView?.bounds.height ?? window.frame.height) - window.contentLayoutRect.height
+        // The accessory owns the existing separator slot; its actions keep their original width.
+        let headerActions = narrow ? actions : AnyView(HStack(spacing: 0) {
+            Rectangle().fill(ODColors.line).frame(width: 1)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            actions.frame(width: actionWidth)
+        })
+        update(&brandAccessory, edge: .left, content: brand, size: NSSize(width: brandWidth, height: max(0, headerHeight)))
+        update(&actionsAccessory, edge: .right, content: headerActions, size: NSSize(width: actionWidth + (narrow ? 0 : 1), height: max(0, headerHeight)))
+    }
+
     func attach(_ window: NSWindow) {
         guard self.window !== window else { return }
         self.window = window
-        window.title = "Meeting Companion"
-        window.titleVisibility = .visible
-        window.titlebarAppearsTransparent = false
-        window.minSize = normalSize
-        observers = [
-            NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: window)
-                .sink { [weak self] _ in MainActor.assumeIsolated { self?.saveCapsulePosition() } },
-            NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-                .sink { [weak self] _ in MainActor.assumeIsolated { self?.keepCapsuleVisible() } }
-        ]
+        Self.configureWorkspaceHeader(window)
+        window.minSize = Self.workspaceMinimumSize
     }
 
-    func setCapsuleMode(_ isRecording: Bool, processing: Bool = false, overtime: Bool = false) {
-        let compactSize = processing ? NSSize(width: 348, height: 140) :
-            NSSize(width: Self.recordingCapsuleSize.width, height: overtime ? Self.overtimeCapsuleHeight : Self.recordingCapsuleSize.height)
-        guard let window else { return }
-        positioning = true
-        defer { positioning = false; Self.refreshActivationPolicy() }
-
-        if isRecording {
-            var previousCapsule = normalFrame == nil ? defaults.string(forKey: Self.capsuleFrameKey).map(NSRectFromString) : window.frame
-            if let frame = previousCapsule,
-               ![frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite)
-                || frame.width <= 0 || frame.height <= 0 { previousCapsule = nil }
-            if normalFrame == nil {
-                normalFrame = window.frame
-                normalToolbar = window.toolbar
-            }
-
-            window.styleMask = [.borderless]
-            window.isMovableByWindowBackground = true
-            window.toolbar?.isVisible = false
-            window.isOpaque = false
-            window.backgroundColor = .clear
-            window.hasShadow = false
-            window.minSize = compactSize
-            let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
-            let origin = NSPoint(
-                x: screenFrame.maxX - compactSize.width - 24,
-                y: screenFrame.maxY - compactSize.height - 24
-            )
-
-            window.level = .floating
-            window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            window.standardWindowButton(.zoomButton)?.isHidden = true
-            let requested = previousCapsule.map {
-                NSRect(x: $0.minX, y: $0.maxY - compactSize.height, width: compactSize.width, height: compactSize.height)
-            } ?? NSRect(origin: origin, size: compactSize)
-            let frame = Self.visibleCapsuleFrame(requested, screens: NSScreen.screens.map(\.visibleFrame))
-            window.setFrame(frame, display: true, animate: false)
-            defaults.set(NSStringFromRect(window.frame), forKey: Self.capsuleFrameKey)
-            window.orderFrontRegardless()
-        } else {
-            let toolbar = window.toolbar ?? normalToolbar
-            window.orderOut(nil)
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.isMovableByWindowBackground = false
-            window.isOpaque = true
-            window.backgroundColor = .windowBackgroundColor
-            window.hasShadow = true
-            window.level = .normal
-            window.collectionBehavior.remove([.canJoinAllSpaces, .fullScreenAuxiliary])
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = false
-            window.standardWindowButton(.zoomButton)?.isHidden = false
-            window.minSize = normalSize
-            // Changing the style mask detaches the toolbar; keep SwiftUI's current instance.
-            window.toolbar = toolbar
-            window.toolbar?.isVisible = true
-
-            if let normalFrame {
-                let restoredFrame = NSRect(
-                    x: normalFrame.minX,
-                    y: normalFrame.maxY - max(normalFrame.height, normalSize.height),
-                    width: max(normalFrame.width, normalSize.width),
-                    height: max(normalFrame.height, normalSize.height)
-                )
-                window.setFrame(restoredFrame, display: false, animate: false)
-            } else {
-                window.setContentSize(normalSize)
-                window.center()
-            }
-            self.normalFrame = nil
-        }
-    }
 }
-

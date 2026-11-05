@@ -16,7 +16,7 @@ SwiftUI, Combine, AVFoundation, ScreenCaptureKit и MLX. App/CLI SHALL испо�
 #### Scenario: Replace the presentation
 - **WHEN** UI заменяется другим представлением тех же команд и snapshots
 - **THEN** запись/остановка, очередь, подготовка, retry/cancel и review services доступны через Application без вызова view model
-- **AND** JSON v1, edits/CAS/undo, неизменяемые resultID/edits и пути обоих audio previews сохраняются
+- **AND** JSON v1, edits/CAS, неизменяемые resultID/edits и пути обоих audio previews сохраняются; GUI следует [refresh W01/W04](../../../refresh-macos-interface/specs/desktop-workspace/spec.md) без saved undo/history/special Cmd-Z, со стандартным field undo и Cancel
 
 ### Requirement: Application-owned processing lifecycle
 
@@ -57,8 +57,8 @@ SHALL основываться на application state для recording/preparati
 
 #### Scenario: Review after extraction
 - **WHEN** существующий редактор открывает версию после переноса компонентов
-- **THEN** selection, правки, undo, export и playback проходят прежние проверки
-- **AND** закрытие review window завершает его session/playback, сохраняя processing jobs
+- **THEN** current selection, правки/CAS, export и playback сохраняют контракты; workspace/modal editing следует refresh W01/W04 без saved undo
+- **AND** закрытие workspace после разрешения modal input завершает review session/playback, сохраняя processing jobs
 
 ### Requirement: Isolated native worker
 
@@ -320,8 +320,8 @@ merge слов до paragraph grouping и существующий контра�
 - **AND** incomplete staging не виден как успешный результат
 
 #### Scenario: Mix failure and legacy layout
-- **WHEN** готовый микс собрать не удалось или открыта legacy flat запись
-- **THEN** действуют прежние text-ready/playback-unavailable warnings и legacy reading
+- **WHEN** готовый микс canonical результата собрать не удалось или открыта legacy flat запись
+- **THEN** canonical результат сохраняет text-ready/playback-unavailable warning; flat допускает только list и собственный contained standalone saved TXT read-only по ADR0005, без structured/audio lookup или processing
 - **AND** worker не дополняет опубликованную версию задним числом
 
 #### Scenario: Current paragraph boundaries
@@ -340,7 +340,7 @@ merge слов до paragraph grouping и существующий контра�
 #### Scenario: Editing, reopening and export after native processing
 - **GIVEN** текущий редактор открыл native JSON v1
 - **WHEN** пользователь исправил текст/имя, сохранил, закрыл/открыл и экспортировал результат
-- **THEN** существующий `edits.json` и revision/CAS/undo/export продолжают работать без смены формата или миграции
+- **THEN** существующий `edits.json` и revision/CAS/export продолжают работать без смены формата или миграции; field undo/Cancel сохраняются, saved undo GUI исключён по refresh W04
 - **AND** native retry создаёт новый resultID, не переносит правки автоматически и не изменяет result/edits/audio предыдущей версии
 
 #### Scenario: Preserve history audio preview and version playback
@@ -428,10 +428,10 @@ atomic no-replace rename staging JSON/text/mandatory files; root TXT SHALL бы�
 - **AND** fresh reopen разрешает B, а не stale root TXT или A
 
 #### Scenario: Retry with an open editor
-- **WHEN** history/menu/window caller запрашивает retry при открытом редакторе
-- **THEN** общий Application admission сначала разрешает save/discard/cancel и закрывает session
-- **AND** cancel предотвращает enqueue; editable reopen запрещён до terminal teardown
-- **AND** terminal reopen разрешает current заново без переноса старых правок
+- **WHEN** workspace/menu/programmatic caller запрашивает retry при открытой review session
+- **THEN** modal input сначала разрешается явным Save/Cancel по refresh W04.9; запрос при input отклоняется без enqueue или deferred separate-window prompt, save failure сохраняет draft
+- **AND** общий Application admission после разрешения ввода закрывает прежнюю session до enqueue; editable reopen запрещён до terminal teardown
+- **AND** CAS/lock, result/draft/confirmation identity и stale-callback guards ADR0004 сохраняются; terminal reopen разрешает current заново без переноса старых правок
 
 #### Scenario: Transient terminal persistence failure
 - **WHEN** финальная metadata completion/cancellation не записывается

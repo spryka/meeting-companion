@@ -121,6 +121,36 @@ import CryptoKit
         return (resultURL, versionDir, [hostAudio, remoteAudio, mixAudio])
     }
 
+    @Test func workspaceSameEffectiveNameIsNoOp() throws {
+        let root = try temporaryDirectory()
+        let (_, version, _) = try createSyntheticRecordingWithMultiTurns(in: root)
+        let repo = TranscriptEditsRepository(recordingDirectory: root)
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
+        let edits = try service.assignSpeakerName(resultID: "res_test_turns", turnID: "turn_1", displayName: "Speaker 1")
+        #expect(edits.revision == 0)
+        #expect(!FileManager.default.fileExists(atPath: version.appendingPathComponent("edits.json").path))
+    }
+
+    @Test func workspaceRemainingPreviewSkipsEarlierAndSameName() throws {
+        let root = try temporaryDirectory()
+        _ = try createSyntheticRecordingWithMultiTurns(in: root)
+        let repo = TranscriptEditsRepository(recordingDirectory: root)
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
+        _ = try service.assignSpeakerName(resultID: "res_test_turns", turnID: "turn_3", displayName: "Ручное")
+        let preview = try service.previewRemainingAssignment(resultID: "res_test_turns", anchorTurnID: "turn_3", displayName: "Аня")
+        #expect(preview.targetTurnIDs == ["turn_3"])
+        #expect(preview.affectedTurnsCount == 1)
+        #expect(preview.replacedManualAssignmentsCount == 1)
+        let saved = try service.assignSpeakerName(preview: preview, displayName: "Аня")
+        #expect(saved.overrides["turn_1"] == nil)
+        #expect(saved.overrides["turn_2"] == nil)
+        #expect(saved.overrides["turn_3"]?.displayName == "Аня")
+        let noop = try service.previewRemainingAssignment(resultID: "res_test_turns", anchorTurnID: "turn_3", displayName: "Аня")
+        #expect(noop.affectedTurnsCount == 0)
+        #expect(noop.replacedManualAssignmentsCount == 0)
+        #expect(throws: Error.self) { try service.assignSpeakerName(preview: noop, displayName: "Другое") }
+    }
+
     // MARK: - 1. Single Turn Assignment Only
 
     @Test func testSingleTurnAssignmentOnly() throws {

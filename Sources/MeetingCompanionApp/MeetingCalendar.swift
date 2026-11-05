@@ -16,6 +16,18 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
     let host = NSFullUserName()
     let timezone = TimeZone.current.identifier
 
+    init(id: String, calendar: String, summary: String, start: Date, end: Date,
+         agenda: String = "", links: [String] = [], attendees: [String] = []) {
+        self.id = id
+        self.calendar = calendar
+        self.summary = summary
+        self.start = start
+        self.end = end
+        self.agenda = agenda
+        self.links = links
+        self.attendees = attendees
+    }
+
     init(event: EKEvent) {
         id = (event.calendar.calendarIdentifier + ":" + (event.eventIdentifier ?? "") + ":" + String(event.startDate.timeIntervalSince1970))
         calendar = event.calendar.title
@@ -111,6 +123,7 @@ final class MeetingCalendar: ObservableObject {
     @Published private(set) var isLoadingCalendars = false
     @Published private(set) var suggestsCalendarSetup = false
     @Published private(set) var selectedCalendarIDs: Set<String>?
+    var hasAccess: Bool { EKEventStore.authorizationStatus(for: .event) == .fullAccess }
     @Published var requireCallLink: Bool {
         didSet {
             defaults.set(requireCallLink, forKey: "meetingRequireCallLink")
@@ -118,6 +131,7 @@ final class MeetingCalendar: ObservableObject {
         }
     }
     private let defaults: UserDefaults
+    private let calendarCatalogProvider: (() -> [EKCalendar])?
     private let store = EKEventStore()
     private var refreshTimer: Timer?
     private var reminderTimer: Timer?
@@ -129,8 +143,9 @@ final class MeetingCalendar: ObservableObject {
     private var handled: [String: Double]
     var onMeeting: ((MeetingContext) -> Void)?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, calendarCatalogProvider: (() -> [EKCalendar])? = nil) {
         self.defaults = defaults
+        self.calendarCatalogProvider = calendarCatalogProvider
         selectedCalendarIDs = defaults.stringArray(forKey: "meetingCalendarIDs").map { Set($0) }
         requireCallLink = defaults.object(forKey: "meetingRequireCallLink") as? Bool ?? true
         handled = defaults.dictionary(forKey: "meetingReminders") as? [String: Double] ?? [:]
@@ -202,6 +217,10 @@ final class MeetingCalendar: ObservableObject {
             await Task.yield()
             guard !Task.isCancelled, let self else { return }
             defer { self.isLoadingCalendars = false }
+            if let provider = self.calendarCatalogProvider {
+                self.calendars = provider()
+                return
+            }
             guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
                 self.calendars = []
                 return

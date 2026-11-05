@@ -1,12 +1,54 @@
 import SwiftUI
 
+struct RecordingFormTitle {
+    private(set) var text: String
+    private var userEdited = false
+    init(text: String) { self.text = text }
+    mutating func edit(_ value: String) { text = value; userEdited = true }
+    mutating func meetingChanged(_ meeting: MeetingContext?) {
+        if !userEdited { text = meeting?.summary ?? "Новая встреча" }
+    }
+}
+
 struct FullRecorderView: View {
     @ObservedObject var viewModel: RecorderViewModel
     let showSettings: () -> Void
+    @State private var titleDraft: RecordingFormTitle
+
+    init(viewModel: RecorderViewModel, showSettings: @escaping () -> Void, title: String? = nil) {
+        self.viewModel = viewModel
+        self.showSettings = showSettings
+        _titleDraft = State(initialValue: RecordingFormTitle(text: title ?? viewModel.selectedMeeting?.summary ?? "Новая встреча"))
+    }
+
+    var recordingAction: (title: String, perform: () async -> Bool) {
+        let sessionID = viewModel.activeSessionID
+        if viewModel.isRecording {
+            if viewModel.showsCancelRecording {
+                return ("Отменить короткую запись", {
+                    guard !viewModel.settingsPresented else { return false }
+                    return await viewModel.cancelRecordingIntent(sessionID: sessionID)
+                })
+            }
+            return ("Остановить запись", {
+                guard !viewModel.settingsPresented else { return false }
+                return await viewModel.stopRecordingIntent(sessionID: sessionID)
+            })
+        }
+        let title = titleDraft.text
+        return ("Начать запись", {
+            guard !viewModel.settingsPresented else { return false }
+            let started = await viewModel.startRecordingIntent(customTitle: title.isEmpty ? nil : title)
+            if started { viewModel.mainPage = .history }
+            return started
+        })
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
+        let action = recordingAction
+        ODDialog(title: "Новая запись", close: { viewModel.mainPage = .history }) {
+            Text("Выбери встречу и источник звука. После остановки запись появится в библиотеке.")
+                .font(.system(size: 14)).foregroundStyle(ODColors.muted)
                 if viewModel.diagnosticRunning || !viewModel.transcriptionReady {
                     Section("Подготовка транскрибации") {
                         Text(viewModel.diagnosticRunning ? "Идёт проверка или загрузка…" : "Сначала скачайте модели для распознавания речи")
@@ -19,7 +61,10 @@ struct FullRecorderView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         HStack {
-                            Button("Скачать модели") { Task { await viewModel.checkTranscription(prepare: true) } }
+                            Button("Скачать модели") { Task {
+                                guard !viewModel.settingsPresented else { return }
+                                await viewModel.checkTranscription(prepare: true)
+                            } }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(viewModel.diagnosticRunning || viewModel.isBusy || viewModel.isRecording || viewModel.transcriptionJobs > 0)
                             Button("Настройки…", action: showSettings)
@@ -38,74 +83,64 @@ struct FullRecorderView: View {
                         }
                     }
                 }
-                Section(viewModel.isRecording ? "Текущая запись" : "Новая запись") {
+                VStack(alignment: .leading, spacing: 20) {
                     MeetingPicker(viewModel: viewModel, calendar: viewModel.calendar)
-                    HStack {
-                        Picker("Микрофон", selection: $viewModel.selectedMicrophoneID) {
-                            Text("Системный по умолчанию").tag(RecorderViewModel.defaultMicrophoneID)
-                            if viewModel.selectedMicrophoneID != RecorderViewModel.defaultMicrophoneID,
-                               !viewModel.microphones.contains(where: { $0.id == viewModel.selectedMicrophoneID }) {
-                                Text("Выбранный микрофон недоступен").tag(viewModel.selectedMicrophoneID)
-                            }
-                            ForEach(viewModel.microphones) { microphone in
-                                Text(microphone.name).tag(microphone.id)
-                            }
-                        }
-                        .onChange(of: viewModel.selectedMicrophoneID) { _, _ in viewModel.restartLevelMonitor() }
 
-                        Button("Обновить микрофоны", systemImage: "arrow.clockwise", action: viewModel.refreshMicrophones)
-                            .labelStyle(.iconOnly)
-                            .help("Обновить список микрофонов")
+                    ODField(title: "Название записи") {
+            TextField("Название записи", text: Binding(get: { viewModel.isRecording ? viewModel.lastRecordingTitle : titleDraft.text }, set: { if !viewModel.settingsPresented { titleDraft.edit($0) } }))
+                        .odInput()
+                        .disabled(viewModel.isBusy || viewModel.isRecording)
+                    }
+
+                    ODField(title: "Микрофон") {
+                        let missing = viewModel.selectedMicrophoneID != RecorderViewModel.defaultMicrophoneID
+                            && !viewModel.microphones.contains { $0.id == viewModel.selectedMicrophoneID }
+                        ODMenuField(title: "Микрофон", selection: Binding(get: { viewModel.selectedMicrophoneID }, set: { if !viewModel.settingsPresented { viewModel.selectedMicrophoneID = $0 } }),
+                            options: [("Системный по умолчанию", RecorderViewModel.defaultMicrophoneID)]
+                                + (missing ? [("Выбранный микрофон недоступен", viewModel.selectedMicrophoneID)] : [])
+                                + viewModel.microphones.map { ($0.name, $0.id) })
+                        .onChange(of: viewModel.selectedMicrophoneID) { _, _ in
+                            if !viewModel.settingsPresented { viewModel.restartLevelMonitor() }
+                        }
+                        Button("Обновить микрофоны") {
+                            if !viewModel.settingsPresented { viewModel.refreshMicrophones() }
+                        }
+                            .font(.system(size: 12)).buttonStyle(.plain).foregroundStyle(ODColors.accent)
                     }
                     .disabled(viewModel.isBusy || viewModel.isRecording)
+
+                    FormLevelMetersView(levels: viewModel.levels)
+
                     if viewModel.isRecording { Text(viewModel.elapsedText).monospacedDigit() }
-                    HStack {
-                        Spacer()
-                        Button(action: viewModel.toggleRecording) {
-                            Label(viewModel.isBusy ? "Подождите…" : viewModel.isRecording ? "Остановить запись" : "Начать запись", systemImage: viewModel.isRecording ? "stop.circle" : "record.circle")
-                        }
-                        .keyboardShortcut(.space, modifiers: [])
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(viewModel.isBusy || viewModel.diagnosticRunning)
-                    }
-                }
-                if let lastFileURL = viewModel.lastFileURL {
-                    Section("Последняя запись") {
-                        Text(viewModel.lastRecordingTitle).font(.headline)
-                            .help(lastFileURL.lastPathComponent)
-                        if !viewModel.transcriptionStatus.isEmpty {
-                            Label(viewModel.transcriptionStatus, systemImage: viewModel.transcriptionWarnings.isEmpty ? "text.alignleft" : "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(viewModel.transcriptionWarnings.isEmpty ? Color.secondary : Color.orange)
-                                .textSelection(.enabled)
-                        }
-                        HStack {
-                            if viewModel.lastTranscriptURL != nil {
-                                Button("Открыть текст", action: viewModel.openTranscript)
-                            } else if viewModel.transcriptionJobs == 0 && viewModel.transcriptionReady {
-                                Button("Получить текст", action: viewModel.transcribeLastRecording)
-                                    .disabled(viewModel.isBusy || viewModel.diagnosticRunning)
-                            }
-                            Button("Показать в Finder", action: viewModel.revealLastFile)
-                        }
-                    }
                 }
                 if let error = viewModel.errorMessage {
                     Section {
                         Text(error).foregroundStyle(.red).textSelection(.enabled)
                     }
                 }
+        } actions: {
+            Button("Отмена") { viewModel.mainPage = .history }.keyboardShortcut(.cancelAction)
+            Button {
+                Task { _ = await action.perform() }
+            } label: {
+                Label(viewModel.isBusy ? "Подождите…" : action.title,
+                      systemImage: viewModel.isRecording ? "stop.circle" : "record.circle")
             }
-            .formStyle(.grouped)
-            .frame(maxWidth: 680)
-            .frame(maxWidth: .infinity, alignment: .center)
-            HStack {
-                Spacer()
-                Text("v" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
-                    .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            .padding(.horizontal, 20).padding(.bottom, 12)
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(ODButtonStyle(primary: true))
+            .disabled(viewModel.isRecording ? viewModel.isBusy : !viewModel.canStartRecording || titleDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .disabled(viewModel.settingsPresented)
+        .allowsHitTesting(!viewModel.settingsPresented)
+        .accessibilityHidden(viewModel.settingsPresented)
+        .overlay { if viewModel.settingsPresented { WorkspaceSettingsOverlay(model: viewModel) } }
+        .interactiveDismissDisabled(viewModel.settingsPresented)
+        .onAppear {
+            viewModel.setRecordingFormVisible(true)
+        }
+        .onDisappear { viewModel.setRecordingFormVisible(false) }
+        .onChange(of: viewModel.selectedMeeting) { _, newMeeting in
+            titleDraft.meetingChanged(newMeeting)
         }
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
@@ -116,17 +151,12 @@ struct MeetingPicker: View {
     @ObservedObject var calendar: MeetingCalendar
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Picker("Встреча", selection: $viewModel.selectedMeeting) {
-                Text("Без встречи").tag(Optional<MeetingContext>.none)
-                ForEach(calendar.events) { event in
-                    Text(event.start.formatted(date: .omitted, time: .shortened) + " · " + event.summary)
-                        .tag(Optional(event))
-                }
-                if let selected = viewModel.selectedMeeting, !calendar.events.contains(selected) {
-                    Text(selected.summary).tag(Optional(selected))
-                }
-            }
+        ODField(title: "Встреча") {
+            let events = calendar.events + (viewModel.selectedMeeting.map { calendar.events.contains($0) ? [] : [$0] } ?? [])
+            ODMenuField(title: "Встреча", selection: $viewModel.selectedMeeting,
+                options: [("Без встречи", Optional<MeetingContext>.none)] + events.map {
+                    ($0.start.formatted(date: .omitted, time: .shortened) + " · " + $0.summary, Optional($0))
+                })
             .disabled(viewModel.isBusy || viewModel.isRecording)
             if !calendar.message.isEmpty {
                 Text(calendar.message).font(.caption).foregroundStyle(.secondary)
@@ -146,5 +176,25 @@ struct MeetingPicker: View {
                 .disclosureGroupStyle(FullWidthDisclosureStyle())
             }
         }
+    }
+}
+
+private struct FormLevelMetersView: View {
+    @ObservedObject var levels: AudioLevels
+    var body: some View {
+        VStack(spacing: 0) {
+            row("Микрофон", level: levels.mic)
+            row("Системный звук", level: levels.system)
+        }
+    }
+    private func row(_ title: String, level: Double) -> some View {
+        HStack(spacing: 16) {
+            Text(title)
+            Spacer()
+            ThinMeter(level: level, color: ODColors.accent).frame(width: 84, height: 18)
+        }.font(.system(size: 13)).padding(.vertical, 12)
+            .overlay(alignment: .top) { Rectangle().fill(ODColors.line).frame(height: 1) }
+            .accessibilityElement(children: .ignore).accessibilityLabel(title)
+            .accessibilityValue("\(Int(level * 100)) процентов")
     }
 }

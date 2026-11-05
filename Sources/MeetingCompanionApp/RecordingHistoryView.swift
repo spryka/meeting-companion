@@ -9,195 +9,481 @@ struct RecorderWorkspaceView: View {
     let showSettings: () -> Void
 
     var body: some View {
-        Group {
-            if model.mainPage == .recording {
-                FullRecorderView(viewModel: model, showSettings: showSettings)
-            } else {
-                RecordingHistoryView(model: model, history: model.history)
+        RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: showSettings)
+            .disabled(model.settingsPresented)
+            .allowsHitTesting(!model.settingsPresented)
+            .accessibilityHidden(model.settingsPresented)
+            .overlay { if model.settingsPresented && model.mainPage != .recording { WorkspaceSettingsOverlay(model: model) } }
+            .sheet(isPresented: Binding(get: { model.mainPage == .recording }, set: { if !$0 { model.mainPage = .history } })) {
+                    FullRecorderView(viewModel: model, showSettings: showSettings)
+                .background(ODColors.surface)
             }
-        }
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+            .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 }
 
 struct RecordingHistoryView: View {
     @ObservedObject var model: RecorderViewModel
     @ObservedObject var history: RecordingHistory
+    @ObservedObject var workspace: TranscriptReviewWindowManager
+    let showSettings: () -> Void
+
+    @StateObject private var search = RecordingSearch()
+    @StateObject private var windowState = AppWindowState()
+    @State private var query = ""
+    @State private var renameTarget: RecordingEntry?
+    @State private var renameTitle = ""
+    @State private var renameError: String?
+    @State private var renameSaving = false
+    @State private var moreHovered = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("История записей").font(.headline)
-                Spacer()
-                if history.loading { ProgressView().controlSize(.small).accessibilityLabel("Загрузка истории") }
-                Button("Обновить", systemImage: "arrow.clockwise") { Task { await history.refresh(root: model.outputDirectory) } }
-                    .labelStyle(.iconOnly).disabled(history.loading)
-            }.padding(12)
-            if let error = history.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).padding(.horizontal) }
-            if !history.initialLoadComplete {
-                ProgressView("Загружаем историю…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if history.entries.isEmpty {
-                ContentUnavailableView("Записей пока нет", systemImage: "waveform", description: Text("После первой записи здесь появятся её результаты и контекст встречи."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                HSplitView {
-                List(history.entries, selection: $model.selectedHistoryURL) { entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(entry.title).lineLimit(2)
-                        Text(entry.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                        statusLabel(entry).font(.caption)
-                    }.padding(.vertical, 4).tag(entry.id).id(entry.id)
+        let loadRequest = model.workspaceLoadRequest
+        GeometryReader { geometry in
+            let narrow = geometry.size.width <= 767
+            let isWide = geometry.size.width >= 1024
+            let sidebarWidth: CGFloat = narrow ? geometry.size.width : (isWide ? 304 : 264)
+            HStack(spacing: 0) {
+                if narrow ? model.workspaceShowsList : true {
+                    VStack(spacing: 0) {
+                        sidebarHeader(narrow: narrow, compact: !isWide)
+                        sidebarContent
+                        sidebarFooter
+                    }
+                    .frame(minWidth: narrow ? nil : sidebarWidth, idealWidth: sidebarWidth, maxWidth: narrow ? .infinity : sidebarWidth)
+                    .background(ODColors.sidebar)
+
+                    if !narrow {
+                        Rectangle().fill(ODColors.line).frame(width: 1)
+                    }
                 }
-                .listStyle(.plain)
-                .contentMargins(.vertical, 0, for: .scrollContent)
-                .frame(minWidth: 180, idealWidth: 220, maxWidth: 300)
-                if let url = model.selectedHistoryURL, let entry = history.entry(url) {
-                    details(entry).frame(minWidth: 300, maxWidth: .infinity)
-                } else {
-                    ContentUnavailableView("Выберите запись", systemImage: "waveform", description: Text("Здесь будут контекст встречи, результаты и проблемы обработки."))
-                        .frame(minWidth: 300, maxWidth: .infinity)
+
+                VStack(spacing: 0) {
+                    if let error = history.error {
+                        Text(error)
+                            .font(.system(size: 12))
+                            .foregroundColor(ODColors.red)
+                            .textSelection(.enabled)
+                            .padding(8)
+                    }
+
+                    if let url = model.selectedHistoryURL, let entry = history.entry(url) {
+                        if workspace.loading {
+                            ProgressView("Открываем текст…")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let current = workspace.current, current.state.id == entry.id, !entry.phase.isWorking,
+                                  current.currentResultID != nil || current.legacyText != nil {
+                            TranscriptReviewWindowView(model: current, title: entry.effectiveTitle, entryDate: entry.date, entryDuration: entry.duration, workspaceWidth: geometry.size.width)
+                        } else if entry.phase.isWorking {
+                            VStack(alignment: .leading, spacing: 16) {
+                                entryHeading(entry)
+                                Spacer()
+                                ProgressView()
+                                    .controlSize(.regular)
+                                Text("Готовим транскрипт")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(ODColors.ink)
+                                Text(history.progress[entry.id]?.text ?? entry.status)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(ODColors.muted)
+                                Text("Можно выбрать другую встречу. Обработка продолжится.")
+                                    .font(.system(size: 14)).foregroundStyle(ODColors.muted)
+                                Spacer()
+                            }
+                            .padding(32)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            VStack(alignment: .leading, spacing: 16) {
+                                entryHeading(entry)
+                                Spacer()
+                                ODIconView(.warning, size: 28, color: ODColors.warning)
+                                Text(entry.capabilities.canRetry || entry.availableFiles.contains(entry.recording) ? "Аудио сохранено" : "Аудио недоступно")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(ODColors.ink)
+                                let errors = entry.problems.filter(\.isError).map(\.message).joined(separator: "\n")
+                                Text(errors.isEmpty ? (entry.capabilities.reason ?? workspace.failure ?? entry.status) : errors)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(ODColors.muted)
+                                    .textSelection(.enabled)
+                                if entry.capabilities.canRetry {
+                                    Button("Повторить распознавание") {
+                                        model.retryRecording(entry.id)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.regular)
+                                    .disabled(model.isBusy || model.diagnosticRunning)
+                                }
+                                Spacer()
+                            }
+                            .padding(32)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+
+                    } else {
+                        ContentUnavailableView(
+                            "Выберите запись",
+                            systemImage: "doc.text",
+                            description: Text("Текст и аудио текущего результата откроются здесь.")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: narrow && model.workspaceShowsList ? 0 : nil)
+                .opacity(narrow && model.workspaceShowsList ? 0 : 1)
+                .accessibilityHidden(narrow && model.workspaceShowsList)
+                .clipped()
             }
+            .background(ODColors.surface)
+            .background(WindowAccessor { window in
+                windowState.attach(window)
+                windowState.updateHeader(
+                    brand: AnyView(WorkspaceBrand(narrow: narrow, compact: !isWide)),
+                    actions: AnyView(documentToolbar(narrow: narrow, compact: !isWide)
+                        .disabled(model.settingsPresented).allowsHitTesting(!model.settingsPresented).accessibilityHidden(model.settingsPresented)),
+                    width: geometry.size.width, sidebarWidth: sidebarWidth,
+                    narrow: narrow, showsList: model.workspaceShowsList)
+            })
         }
         .quickLookPreview($model.audioPreviewURL)
         .task {
             if !history.initialLoadComplete { await history.refresh(root: model.outputDirectory) }
             if model.selectedHistoryURL == nil { model.selectedHistoryURL = history.entries.first?.id }
         }
+        .task(id: loadRequest) { _ = await model.loadWorkspace(loadRequest) }
+        .task(id: SearchRequest(query: query, entries: history.entries, savedRevision: workspace.savedRevision)) {
+            await search.update(query: query, entries: history.entries)
+        }
+        .sheet(item: $renameTarget) { target in renameSheet(target) }
     }
 
-    private func statusLabel(_ entry: RecordingEntry) -> some View {
-        Label(entry.status, systemImage: entry.phase == .failed ? "xmark.circle" :
-            !entry.problems.isEmpty ? "exclamationmark.triangle" : entry.phase == .completed ? "checkmark.circle" : "clock")
-            .foregroundStyle(entry.phase == .failed ? Color.red : !entry.problems.isEmpty ? Color.orange : Color.secondary)
+    func renameSheet(_ target: RecordingEntry) -> some View {
+            ODDialog(title: "Название встречи", close: { if !renameSaving { renameTarget = nil; workspace.externalModal = false } }) {
+                ODField(title: "Название") {
+                TextField("Название", text: $renameTitle)
+                    .odInput()
+                }
+
+                if let message = renameError ?? workspace.commandNotice {
+                    Text(message)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+
+            } actions: {
+                    Button("Отмена") {
+                        renameTarget = nil
+                        workspace.externalModal = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(renameSaving)
+
+                    Button("Сохранить") {
+                        guard !renameSaving else { return }
+                        renameSaving = true
+                        Task {
+                            do {
+                                try await history.rename(target.id, displayTitle: renameTitle)
+                                renameTarget = nil
+                                workspace.externalModal = false
+                            } catch {
+                                renameError = error.localizedDescription
+                            }
+                            renameSaving = false
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(ODButtonStyle(primary: true))
+                    .disabled(renameSaving)
+            }
+            .interactiveDismissDisabled()
     }
 
-    private func exists(_ url: URL) -> Bool { history.entries.contains { $0.availableFiles.contains(url) } }
-
-    private func openButton(_ title: String, _ url: URL) -> some View {
-        Button(title) {
-            if !NSWorkspace.shared.open(url) { history.reportError("Не удалось открыть файл «" + url.lastPathComponent + "».") }
-        }.disabled(!exists(url))
+    private func entryHeading(_ entry: RecordingEntry) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(entry.phase.isWorking ? entry.status : "Обработка не завершена")
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(entry.phase.isWorking ? ODColors.muted : ODColors.red)
+            Text(entry.effectiveTitle).font(.system(size: 32, weight: .semibold)).tracking(-0.8)
+            Text(entry.date.formatted(date: .long, time: .shortened)).font(.system(size: 13)).foregroundStyle(ODColors.muted)
+        }
     }
+
+    private func sidebarHeader(narrow: Bool, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(spacing: 16) {
+            // Title row with badge and plus
+            HStack(alignment: .center) {
+                Text("Записи")
+                    .font(.system(size: narrow ? 28 : 22, weight: .semibold))
+                    .foregroundColor(ODColors.ink)
+                Spacer()
+                Text("\(visibleEntries.count)")
+                    .font(.system(size: 12))
+                    .foregroundColor(ODColors.muted)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .frame(minWidth: 24)
+                    .background(ODColors.hover, in: RoundedRectangle(cornerRadius: 6))
+                Button(action: { model.mainPage = .recording }) {
+                    ODIconView(.plus, size: 16, color: ODColors.ink)
+                        .frame(width: 36, height: 36)
+                        .background(ODColors.hover, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Новая запись")
+            }
+
+            // Search input (font 14)
+            HStack(spacing: 8) {
+                ODIconView(.search, size: 16, color: ODColors.muted)
+                TextField("Поиск по встречам и тексту", text: Binding(get: { query }, set: { if !workspace.hasInput { query = $0 } }))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .odLineBox(size: 14, height: 21.7)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line, lineWidth: 1))
+
+            if search.loading {
+                ProgressView("Поиск…").controlSize(.small)
+            }
+            if !search.result.failures.isEmpty {
+                Text("Часть записей не прочитана: " + search.result.failures.joined(separator: "; "))
+                    .font(.caption)
+                    .foregroundColor(ODColors.warning)
+            }
+            }
+            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 20)
+        }
+    }
+
+    private var sidebarContent: some View {
+        Group {
+            if !history.initialLoadComplete {
+                ProgressView("Загружаем записи…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if history.entries.isEmpty {
+                ContentUnavailableView("Записей пока нет", systemImage: "tray", description: Text("Начните новую запись встречи."))
+            } else if visibleEntries.isEmpty && !search.loading {
+                ContentUnavailableView("Совпадений нет", systemImage: "magnifyingglass", description: Text(search.result.failures.isEmpty ? "Попробуйте другой запрос." : "Поиск неполный: некоторые файлы недоступны."))
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        let groups = groupedEntries
+                        ForEach(groups, id: \.title) { group in
+                            Text(group.title)
+                                .font(.system(size: 12, weight: .semibold))
+                                .odLineBox(size: 12, height: 18.6)
+                                .tracking(0.2)
+                                .foregroundColor(ODColors.muted)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 16)
+                                .padding(.bottom, 8)
+
+                            ForEach(group.entries) { entry in
+                                recordCard(entry)
+                            }
+                        }
+                    }
+                    .padding(.bottom, 16)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func recordCard(_ entry: RecordingEntry) -> some View {
+        let isSelected = entry.id == model.selectedHistoryURL
+        return Button(action: {
+            guard !workspace.hasInput else { return }
+            model.selectedHistoryURL = entry.id
+            model.workspaceShowsList = false
+        }) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(entry.effectiveTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(isSelected ? ODColors.selectedInk : ODColors.ink)
+                    .lineLimit(2)
+                    .odLineBox(size: 15, height: 21)
+
+                HStack {
+                    Text(entry.date.formatted(date: .omitted, time: .shortened))
+                    Spacer()
+                    if let dur = entry.duration {
+                        Text(formatClock(dur))
+                    }
+                }
+                .font(.system(size: 12))
+                .odLineBox(size: 12, height: 15.6)
+                .foregroundColor(ODColors.muted)
+                .padding(.top, 5)
+
+                HStack(spacing: 6) {
+                    ODIconView(entry.phase == .failed || !entry.problems.isEmpty ? .warning : entry.phase == .completed ? .check : .clock, size: 13, color: ODColors.muted)
+                    Text(entry.phase == .completed ? (entry.problems.isEmpty ? "Транскрипт готов" : "Готово · есть замечание") : entry.phase.text)
+                        .font(.system(size: 12))
+                        .foregroundColor(ODColors.muted)
+                        .lineLimit(1)
+                }
+                .odLineBox(size: 12, height: 15.6)
+                .padding(.top, 7)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                isSelected ? ODColors.selected : Color.clear,
+                in: RoundedRectangle(cornerRadius: 10)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? ODColors.accent.opacity(0.12) : Color.clear, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 4)
+    }
+
+    private var sidebarFooter: some View {
+        HStack(spacing: 8) {
+            ODIconView(.shield, size: 16, color: ODColors.muted)
+            Text("Локальная обработка\nДанные остаются на Mac")
+                .font(.system(size: 11)).foregroundStyle(ODColors.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: showSettings) {
+                ODIconView(.settings, size: 16, color: ODColors.muted).frame(width: 36, height: 36).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Настройки")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .overlay(alignment: .top) { Rectangle().fill(ODColors.line).frame(height: 1) }
+        .background(ODColors.sidebar)
+    }
+
+    private func documentToolbar(narrow: Bool, compact: Bool) -> some View {
+        HStack(spacing: compact ? 8 : 16) {
+            if narrow && !model.workspaceShowsList {
+                Button(action: { if !workspace.hasInput { model.workspaceShowsList = true } }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Все записи")
+                    }
+                    .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("Транскрипт")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(ODColors.muted)
+            }
+
+            Spacer()
+
+            if let url = model.selectedHistoryURL, let entry = history.entry(url) {
+                Button(action: { exportTranscript(entry) }) {
+                    ODIconView(.export, size: 16, color: ODColors.ink)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(workspace.hasInput || workspace.model(for: entry.id)?.canExport != true)
+                .help(workspace.model(for: entry.id)?.canExport == true ? "Экспорт сохранённого текста" : "Экспорт доступен для открытого сохранённого транскрипта")
+                .accessibilityLabel("Экспорт")
+
+                Menu {
+                    Button { model.retryRecording(entry.id) } label: {
+                        Label("Повторить обработку", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!entry.capabilities.canRetry || entry.phase.isWorking || model.isBusy || model.diagnosticRunning || workspace.hasInput)
+                    .help(entry.capabilities.canRetry ? "Получить новый текст из исходных дорожек" : entry.capabilities.reason ?? "Повторная обработка недоступна")
+                    Button {
+                        guard !workspace.hasInput, RecordingPaths.isStandardLayout(entry.recording), !entry.phase.isWorking else { return }
+                        renameTitle = entry.effectiveTitle
+                        renameError = nil
+                        workspace.externalModal = true
+                        renameTarget = entry
+                    } label: { Label("Переименовать", systemImage: "pencil") }
+                    .disabled(!RecordingPaths.isStandardLayout(entry.recording) || entry.phase.isWorking || workspace.hasInput)
+
+                    Button {
+                        guard !workspace.hasInput else { return }
+                        if let current = workspace.model(for: entry.id) {
+                            current.copySavedText()
+                        }
+                    } label: { Label("Копировать транскрипт", systemImage: "doc.on.doc") }
+                    .disabled(workspace.hasInput || workspace.model(for: entry.id)?.canCopySavedText != true)
+
+                    Button(action: showSettings) { Label("Настройки", systemImage: "gearshape") }
+                } label: {
+                    ODIconView(.more, size: 20, color: ODColors.muted)
+                        .frame(width: 36, height: 36)
+                        .background(moreHovered ? ODColors.hover : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.button).buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .onHover { moreHovered = $0 }
+                .disabled(workspace.hasInput)
+                .accessibilityLabel("Дополнительные действия")
+
+                if !narrow { Rectangle().fill(ODColors.line).frame(width: 1, height: 20) }
+            }
+
+            Button(action: { model.mainPage = .recording }) {
+                HStack(spacing: 6) {
+                    ODIconView(.record, size: 16, color: ODColors.primaryButtonForeground)
+                    Text("Новая запись")
+                        .font(.system(size: narrow ? 13 : 14, weight: .medium))
+                        .foregroundColor(ODColors.primaryButtonForeground)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(ODColors.accent, in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, narrow ? 12 : compact ? 16 : 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(narrow ? Color.clear : ODColors.toolbar)
+        .overlay(alignment: .bottom) {
+            if !narrow { Rectangle().frame(height: 1).foregroundColor(ODColors.line) }
+        }
+    }
+
+    private struct GroupedEntries: Identifiable {
+        let title: String
+        let entries: [RecordingEntry]
+        var id: String { title }
+    }
+
+    private var groupedEntries: [GroupedEntries] {
+        var groups: [GroupedEntries] = []
+        for entry in visibleEntries {
+            let groupTitle = entry.dateGroupTitle
+            if let index = groups.firstIndex(where: { $0.title == groupTitle }) {
+                let existing = groups[index]
+                groups[index] = GroupedEntries(title: existing.title, entries: existing.entries + [entry])
+            } else {
+                groups.append(GroupedEntries(title: groupTitle, entries: [entry]))
+            }
+        }
+        return groups
+    }
+
+    private struct SearchRequest: Equatable {
+        let query: String
+        let entries: [RecordingEntry]
+        let savedRevision: Int
+    }
+    private var visibleEntries: [RecordingEntry] { query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? history.entries : search.result.matches }
 
     private func exportTranscript(_ entry: RecordingEntry) {
-        guard entry.capabilities.canReview else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = entry.transcript.lastPathComponent
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            Task {
-            do {
-                try await Task.detached {
-                guard let document = try TranscriptResultStorage(recordingURL: entry.recording).currentDocument() else {
-                    throw TranscriptWindowError.transcriptNotFound(entry.recording.path)
-                }
-                let edits = try TranscriptEditsRepository(recordingDirectory: entry.folder).loadEdits(resultID: document.resultID)
-                try TranscriptExportWriter(recordingDirectory: entry.folder).export(document: document, edits: edits, to: url, allowOverwrite: true)
-                }.value
-            } catch { history.reportError("Не удалось экспортировать текст: " + error.localizedDescription) }
-            }
-        }
+        guard !workspace.hasInput, let current = workspace.model(for: entry.id) else { return }
+        current.requestExport()
     }
 
-    private func details(_ entry: RecordingEntry) -> some View {
-        Form {
-            Section {
-                Text(entry.title).font(.title2).textSelection(.enabled)
-                Text(entry.date.formatted(date: .complete, time: .shortened)).foregroundStyle(.secondary)
-                statusLabel(entry)
-                if let warning = entry.persistenceWarning { Text(warning).foregroundStyle(.orange).textSelection(.enabled) }
-                if let problem = entry.problems.first(where: { $0.isError }) ?? entry.problems.first {
-                    Text(problem.stage.title + ": " + problem.message)
-                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        .lineLimit(3)
-                    Text("Подробности — в разделе «Проблемы» ниже.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if let duration = entry.duration { Text("Длительность: " + formatClock(duration)).font(.caption) }
-                if let progress = history.progress[entry.id], entry.phase == .processing {
-                    TranscriptionProgressView(progress: progress)
-                }
-            }
-            if entry.capabilities.isTextOnly {
-                Section("Файлы") {
-                    Button("Открыть текст только для чтения") { model.onOpenTranscript?(entry) }
-                        .disabled(!entry.capabilities.hasSavedText)
-                    Text(entry.capabilities.reason ?? "Доступен только просмотр сохранённого текста.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Section("Файлы") {
-                    Button("Открыть расшифровку") { model.onOpenTranscript?(entry) }
-                        .disabled(!entry.capabilities.canReview && !entry.capabilities.hasSavedText)
-                    HStack {
-                        Button("Открыть аудио") { model.audioPreviewURL = entry.recording }
-                            .disabled(!entry.capabilities.canPreviewAudio)
-                            .help("Прослушать запись в системном предпросмотре Quick Look")
-                        Button("Открыть текст") { model.onOpenTranscript?(entry) }
-                            .disabled(!entry.capabilities.hasSavedText)
-                        Button("Показать в Finder") { NSWorkspace.shared.open(entry.folder) }
-                    }
-                    Button("Экспортировать текст…") { exportTranscript(entry) }
-                        .disabled(!entry.capabilities.canReview)
-                    Text("В экспортируемой копии технические пути заменяются относительными; исходный файл сохраняется.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if let reason = entry.capabilities.reason { Text(reason).font(.caption).foregroundStyle(.secondary) }
-                DisclosureGroup("Дополнительные действия") {
-                    if entry.capabilities.canReview {
-                        HStack {
-                            openButton("Текст микрофона", entry.rawBase.appendingPathExtension("host_record.local.transcript.txt"))
-                            openButton("Текст системного звука", entry.rawBase.appendingPathExtension("remote_record.local.transcript.txt"))
-                        }
-                    }
-                    Button("Повторить обработку") { model.retryRecording(entry.id) }
-                        .disabled(!entry.capabilities.canRetry || entry.phase.isWorking || model.isBusy || model.diagnosticRunning)
-                }
-                if let meeting = entry.meeting {
-                    Section("Контекст встречи") {
-                        Text(meeting.start.formatted(date: .omitted, time: .shortened) + " — " + meeting.end.formatted(date: .omitted, time: .shortened))
-                        if !meeting.agenda.isEmpty { Text(meeting.agenda).textSelection(.enabled) }
-                        if !meeting.attendees.isEmpty {
-                            LabeledContent("Приглашены") { Text(meeting.attendees.joined(separator: ", ")).textSelection(.enabled) }
-                            Text("Список приглашённых не подтверждает участие и не определяет голоса в транскрипте.").font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(meeting.links, id: \.self) { link in
-                            if let url = URL(string: link), ["http", "https"].contains(url.scheme) { Link(link, destination: url).lineLimit(2) }
-                        }
-                        openButton("Файл контекста", entry.context)
-                    }
-                }
-            }
-            Section("Проблемы") {
-                if entry.problems.isEmpty {
-                    Text(entry.phase == .completed ? "Предупреждений не обнаружено. Это не проверка точности распознавания." : "Пока нет обнаруженных проблем.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(entry.problems) { problem in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(problem.stage.title + " · " + (problem.isError ? "Ошибка" : "Предупреждение"), systemImage: problem.isError ? "xmark.circle" : "exclamationmark.triangle")
-                            .foregroundStyle(problem.isError ? Color.red : Color.orange)
-                        Text(problem.message).textSelection(.enabled)
-                        Text(problem.advice).font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 4)
-                }
-                if !entry.capabilities.isTextOnly {
-                if !model.transcriptionReady {
-                    Button("Скачать модели") { Task { await model.checkTranscription(prepare: true) } }
-                        .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0)
-                }
-                openButton("Отчёт захвата", entry.captureReport)
-                if let log = entry.log { openButton("Последний журнал обработки", log) }
-                Button("Журналы обработки в Finder") { NSWorkspace.shared.open(entry.rawBase.deletingLastPathComponent()) }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .disclosureGroupStyle(FullWidthDisclosureStyle())
-    }
 }

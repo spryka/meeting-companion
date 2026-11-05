@@ -699,6 +699,28 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
             }
         }
 
+        let words = Dictionary(uniqueKeysWithValues: document.words.map { ($0.id, $0.text) })
+        let speakers = Dictionary(uniqueKeysWithValues: document.speakers.map { ($0.id, $0.displayNumber) })
+        for turn in document.turns {
+            guard var value = newOverrides[turn.id] else { continue }
+            let prior = snapshot.edits.overrides[turn.id]
+            if prior?.text == nil, value.text?.utf8.elementsEqual(turn.wordIDs.compactMap({ words[$0] }).joined(separator: " ").utf8) == true { value.text = nil }
+            if prior?.displayName == nil, value.displayName == "Speaker \(speakers[turn.speakerID] ?? 1)" { value.displayName = nil }
+            if value.text == nil, value.displayName == nil, prior == nil { newOverrides.removeValue(forKey: turn.id) }
+            else { newOverrides[turn.id] = value }
+        }
+        let unchanged = newOverrides.count == snapshot.edits.overrides.count && newOverrides.allSatisfy { id, value in
+            guard let prior = snapshot.edits.overrides[id] else { return false }
+            let sameText: Bool
+            switch (value.text, prior.text) {
+            case (.none, .none): sameText = true
+            case let (.some(lhs), .some(rhs)): sameText = lhs.utf8.elementsEqual(rhs.utf8)
+            default: sameText = false
+            }
+            return sameText && value.displayName == prior.displayName
+        }
+        if unchanged { return snapshot.edits }
+
         let newEdits = TranscriptEdits(
             schemaVersion: 1,
             resultID: resultID,
@@ -777,7 +799,10 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         text: String?,
         displayName: String?
     ) throws -> TranscriptEdits {
-        try saveOverridesInternal(resultID: resultID) { overrides in
+        if let text, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw TranscriptEditsError.malformed("text must not be empty or blank")
+        }
+        return try saveOverridesInternal(resultID: resultID) { overrides in
             guard !turnID.isEmpty else {
                 throw TranscriptEditsError.invalidReference("turnID must not be empty")
             }
@@ -787,13 +812,9 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
                 }
             }
             var existing = overrides[turnID] ?? TranscriptTurnOverride()
-            if text != nil {
-                existing.text = text
-            }
-            if displayName != nil {
-                existing.displayName = displayName
-            }
-            overrides[turnID] = existing
+            if let text { existing.text = text }
+            if let displayName { existing.displayName = displayName }
+            if existing.text != nil || existing.displayName != nil { overrides[turnID] = existing }
         }
     }
 

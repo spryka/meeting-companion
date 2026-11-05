@@ -15,7 +15,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         historyRepository: historyRepository,
         retryAdmission: { [weak self] recording in
             guard let self else { return false }
-            return await self.transcriptWindows.prepareForRetry(recording)
+            return await self.model.workspace.prepareForRetry(recording)
         }
     )
     private lazy var model = RecorderViewModel(
@@ -23,51 +23,27 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         processingService: processingService,
         historyRepository: historyRepository
     )
-    private var window: NSWindow!
-    private var settingsWindow: NSWindow?
+    private(set) var capsuleController: RecordingCapsuleController!
+    private(set) var window: NSWindow!
+    private weak var settingsReturnFocus: NSResponder?
+    private weak var settingsFocusWindow: NSWindow?
     private var statusItem: NSStatusItem!
     private var reminder: NSPanel?
     private var recordingObserver: AnyCancellable?
     private var busyObserver: AnyCancellable?
     private var updateObserver: AnyCancellable?
-    private let appUpdater = AppUpdater()
-    private lazy var transcriptWindows = makeTranscriptWindows()
+    private lazy var appUpdater = AppUpdater(defaults: model.defaults)
+    private var workspacePresenter: (() -> Void)?
+    private var updateChecker: (() -> Void)?
 
-    private func makeTranscriptWindows() -> TranscriptReviewWindowManager {
-        let service = processingService
-        return TranscriptReviewWindowManager(isProcessing: { recording in
-            await service.isProcessing(recordingURL: recording)
-        })
+    convenience init(model: RecorderViewModel, presentWorkspace: @escaping () -> Void = {}, checkForUpdates: (() -> Void)? = nil) {
+        self.init()
+        self.model = model
+        self.workspacePresenter = presentWorkspace
+        self.updateChecker = checkForUpdates
     }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
-        model.onOpenTranscript = { [weak self] entry in
-            guard let self else { return }
-            Task {
-            do {
-                _ = try await self.transcriptWindows.open(recordingURL: entry.recording, title: entry.title)
-            } catch {
-                self.model.history.reportError("Не удалось открыть расшифровку: " + error.localizedDescription)
-            }
-            }
-        }
-        NSApp.appearance = model.appearance.value
-        NSApp.setActivationPolicy(.accessory)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.toolbarStyle = .unified
-        window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() })
-        window.center()
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(statusClicked)
-        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        recordingObserver = model.$isRecording.sink { [weak self] recording in
-            self?.statusItem.button?.image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "mic.circle",
-                                                     accessibilityDescription: recording ? "Идёт запись" : "Meeting Companion")
-        }
+        setUpPresentation()
         busyObserver = model.$isBusy.dropFirst().filter { !$0 }.sink { [weak self] _ in
             Task { @MainActor in self?.model.calendar.recheckReminders() }
         }
@@ -80,7 +56,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         showWindow()
         Task { await model.calendar.start() }
-        appUpdater.isBusy = { [weak self] in self?.model.preventsTermination ?? true }
+        configureUpdatePolicy(appUpdater)
         updateObserver = model.objectWillChange.sink { [weak self] in
             Task { @MainActor in self?.appUpdater.refreshReadyMessage() }
         }
@@ -88,73 +64,140 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         catch { NSLog("Meeting Companion updater unavailable: %@", error.localizedDescription) }
     }
 
-    @objc private func statusClicked() {
-        if NSApp.currentEvent?.type == .rightMouseUp, let button = statusItem.button {
-            let menu = NSMenu()
-            menu.addItem(withTitle: "Открыть Meeting Companion", action: #selector(showWindow), keyEquivalent: "")
-            menu.addItem(withTitle: "Настройки и диагностика…", action: #selector(showSettings), keyEquivalent: "")
-            let login = menu.addItem(withTitle: "Запускать при входе", action: #selector(toggleLogin), keyEquivalent: "")
-            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-            menu.addItem(.separator())
-            menu.addItem(withTitle: appUpdater.menuTitle, action: #selector(checkForUpdates), keyEquivalent: "")
-            menu.addItem(withTitle: "Выйти", action: #selector(quit), keyEquivalent: "")
-            for item in menu.items { item.target = self }
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
-        } else { showWindow() }
+    func configureUpdatePolicy(_ updater: AppUpdater) {
+        updater.isBusy = { [weak self] in self?.model.preventsTermination ?? true }
+        updater.isCheckBusy = { [weak self] in self?.model.preventsSettingsOperation ?? true }
     }
+
+    func setUpPresentation() {
+        guard window == nil else { return }
+        workspacePresenter = nil
+        model.onCheckForUpdates = { [weak self] in self?.checkForUpdates() }
+        model.onSettingsVisibilityChange = { [weak self] in
+            guard let self else { return }
+            self.updatePreviewVisibility()
+            if !self.model.settingsPresented {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.model.settingsPresented, let host = self.settingsFocusWindow,
+                          host.isVisible, !host.isMiniaturized else { return }
+                    if let target = self.settingsReturnFocus as? NSView, target.window === host {
+                        host.makeFirstResponder(target)
+                    } else { host.makeFirstResponder(host.contentView) }
+                    self.settingsReturnFocus = nil
+                }
+            }
+        }
+        model.onOpenTranscript = { [weak self] entry in
+            guard let self else { return }
+            guard self.model.workspace.admitNavigation() else { return }
+            self.model.showTranscript(entry.id)
+            self.showWindow()
+        }
+        NSApp.appearance = model.appearance.value
+        NSApp.setActivationPolicy(.accessory)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.contentMinSize = AppWindowState.workspaceMinimumSize
+        AppWindowState.configureWorkspaceHeader(window)
+        window.contentView = NSHostingView(rootView: ContentView(viewModel: model) { [weak self] in self?.showSettings() }.defaultAppStorage(model.defaults))
+        window.center()
+        capsuleController = RecordingCapsuleController(model: model, defaults: model.defaults)
+        model.onRecordingStarted = { [weak self] in
+            self?.window.orderOut(nil)
+            self?.model.setWindowVisible(false)
+            self?.updatePreviewVisibility()
+        }
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusClicked)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        recordingObserver = Publishers.CombineLatest3(model.$isRecording, model.$microphoneMuted, model.$transcriptionJobs)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] recording, muted, jobs in
+                self?.updateStatusIcon(isRecording: recording, microphoneMuted: muted, isProcessing: jobs > 0)
+            }
+        model.onPresentWorkspace = { [weak self] in
+            self?.showWindow()
+        }
+    }
+
+    @objc func statusClicked() {
+        guard let button = statusItem.button else { return }
+        let menu = makeStatusMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+    }
+
+    func makeStatusMenu() -> NSMenu { StatusMenu.build(model: model, appUpdater: appUpdater, target: self) }
 
     @objc func showSettings() {
-        if settingsWindow == nil {
-            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
-                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            settings.contentMinSize = NSSize(width: 580, height: 400)
-            settings.title = "Настройки"
-            settings.isReleasedWhenClosed = false
-            settings.delegate = self
-            let controller = RecorderSettingsView.makeController(model: model)
-            controller.onSelectionChange = { [weak self] in self?.updatePreviewVisibility() }
-            settings.contentViewController = controller
-            settings.toolbarStyle = .preference
-            settings.center()
-            settingsWindow = settings
+        if !model.settingsPresented {
+            let host = window?.attachedSheet ?? window
+            settingsFocusWindow = host
+            settingsReturnFocus = host?.firstResponder
         }
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        updatePreviewVisibility()
+        _ = model.presentSettings()
+        presentWorkspace()
     }
 
-    @objc private func openRecordings() {
+    @objc func openRecordings() {
         model.mainPage = .history
         showWindow()
     }
 
-    @objc private func toggleLogin() {
-        do {
-            if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
-            else { try SMAppService.mainApp.register() }
-        } catch {
-            model.errorMessage = "Автозапуск: " + error.localizedDescription
-            showWindow()
-        }
+    @objc func startRecordingAction() {
+        guard model.canStartRecording else { return }
+        model.mainPage = .recording
+        showWindow()
+    }
+    @objc func stopRecordingAction(_ sender: NSMenuItem? = nil) {
+        let sessionID = sender?.representedObject as? UUID
+        Task { await model.stopRecordingIntent(sessionID: sessionID) }
+    }
+    @objc func cancelRecordingAction(_ sender: NSMenuItem? = nil) {
+        let sessionID = sender?.representedObject as? UUID
+        Task { await model.cancelRecordingIntent(sessionID: sessionID) }
+    }
+    @objc func toggleMicrophoneMuteAction(_ sender: NSMenuItem? = nil) {
+        let sessionID = sender?.representedObject as? UUID
+        model.toggleMicrophoneMute(sessionID: sessionID)
+    }
+    @objc func showCapsuleAction() {
+        capsuleController?.showCapsule()
     }
 
-    @objc private func quit() { NSApp.terminate(nil) }
-    @objc func checkForUpdates() { appUpdater.check() }
+    @objc func quit() { NSApp.terminate(nil) }
+    @objc func checkForUpdates() {
+        if let updateChecker { updateChecker() } else { appUpdater.check() }
+    }
 
-    @objc private func showWindow() {
-        model.mainWindowRequested = true
+    static func showWorkspace(_ model: RecorderViewModel,
+                              load: (RecorderViewModel.WorkspaceLoadRequest) -> Void,
+                              present: () -> Void) {
+        if let request = model.requestWorkspaceOpen() { load(request) }
+        present()
+    }
+
+    @objc func showWindow() {
+        Self.showWorkspace(model, load: { request in
+            Task { _ = await self.model.loadWorkspace(request) }
+        }, present: { self.presentWorkspace() })
+    }
+
+    private func presentWorkspace() {
+        if let workspacePresenter { workspacePresenter(); return }
         if window.styleMask.contains(.titled) { NSApp.setActivationPolicy(.regular) }
         NSApp.activate(ignoringOtherApps: true)
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         updatePreviewVisibility()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard model.admitWindowClose(isWorkspace: sender === window) else { return false }
         sender.orderOut(nil)
         if sender === window {
-            if !model.isRecording { model.dismissCapsule() }
-            model.mainWindowRequested = false
             model.setWindowVisible(false)
         }
         updatePreviewVisibility()
@@ -163,17 +206,29 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
 
     private func updatePreviewVisibility() {
         AppWindowState.refreshActivationPolicy()
-        let selected = (settingsWindow?.contentViewController as? NSTabViewController)?.selectedTabViewItemIndex
-        model.setAudioCheckVisible(AppWindowState.settingsPageVisible(window: settingsWindow,
-            pageSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .diagnostics),
-            applicationHidden: NSApp.isHidden))
-        model.setWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
-        model.calendar.setMainWindowVisible(!NSApp.isHidden && window.isVisible && !window.isMiniaturized
-            && window.occlusionState.contains(.visible) && window.styleMask.contains(.titled)
-            && !model.showsRecordingCapsule && !model.showsProcessingCapsule)
-        model.calendar.setCalendarSettingsVisible(AppWindowState.settingsPageVisible(window: settingsWindow,
-            pageSelected: selected == RecorderSettingsView.Page.allCases.firstIndex(of: .calendar),
-            applicationHidden: NSApp.isHidden))
+        let appHidden = NSApp?.isHidden ?? false
+        let isMainWindowVisible = !appHidden && window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true
+        let visible = isMainWindowVisible && window?.attachedSheet?.isVisible != false
+        updateSettingsPresentationVisibility(workspaceVisible: visible)
+        let isTitledMainWindowVisible = isMainWindowVisible && window?.styleMask.contains(.titled) == true
+        model.calendar.setMainWindowVisible(isTitledMainWindowVisible)
+    }
+
+    func updateSettingsPresentationVisibility(workspaceVisible: Bool) {
+        let section = workspaceVisible && model.settingsPresented ? model.settingsPage : nil
+        updateAudioPreviewVisibility(workspaceVisible: workspaceVisible, settingsSection: section)
+        model.calendar.setCalendarSettingsVisible(section == .calendar)
+    }
+
+    func updateAudioPreviewVisibility(workspaceVisible: Bool, settingsSection: RecorderSettingsView.Page?) {
+        model.setWindowVisible(workspaceVisible)
+        model.setRecordingFormVisible(workspaceVisible && model.mainPage == .recording && !model.settingsPresented)
+        let checkPage = settingsSection == .recording || settingsSection == .diagnostics
+        model.setAudioCheckVisible(checkPage, section: checkPage ? settingsSection : nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        updatePreviewVisibility()
     }
 
     func windowDidChangeOcclusionState(_ notification: Notification) { updatePreviewVisibility() }
@@ -181,6 +236,27 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     func windowDidDeminiaturize(_ notification: Notification) { updatePreviewVisibility() }
     func applicationDidHide(_ notification: Notification) { updatePreviewVisibility() }
     func applicationDidUnhide(_ notification: Notification) { updatePreviewVisibility() }
+
+    private func updateStatusIcon(isRecording: Bool, microphoneMuted: Bool, isProcessing: Bool) {
+        let (symbolName, description): (String, String)
+        if isRecording {
+            if microphoneMuted {
+                symbolName = "mic.slash.circle"
+                description = "Идёт запись (микрофон выключен)"
+            } else {
+                symbolName = "mic.circle.fill"
+                description = "Идёт запись"
+            }
+        } else if isProcessing {
+            symbolName = "mic.badge.ellipsis"
+            description = "Обработка записи"
+        } else {
+            symbolName = "mic.circle"
+            description = "Meeting Companion"
+        }
+        statusItem?.button?.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
+    }
+
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
@@ -190,6 +266,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !model.workspace.admitNavigation() { showWindow(); return .terminateCancel }
         if model.preventsTermination {
             showWindow()
             let alert = NSAlert()
@@ -209,7 +286,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         reminder?.orderOut(nil)
         reminder = nil
-        if !model.isRecording { model.dismissCapsule() }
+        model.prepareForAutomaticReminder()
         let now = Date()
         for event in model.calendar.events where event.needsReminder(now: now, handled: []) {
             model.calendar.acknowledge(event)
@@ -226,11 +303,12 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         let candidates = MeetingSelection.orderedCurrent(events: model.calendar.events, now: now)
             .filter { $0.id != model.recordingMeetingID }
         model.reminderMeeting = candidates.first ?? meeting
+        let expectedSessionID = model.activeSessionID
         panel.contentView = NSHostingView(rootView: MeetingReminderView(model: model, calendar: model.calendar) { [weak self, weak panel] accept, selected in
             guard let self, let panel, self.reminder === panel else { return }
             panel.orderOut(nil)
             self.reminder = nil
-            if accept { self.model.startMeeting(selected) }
+            if accept { self.model.startMeeting(selected, expectedSessionID: expectedSessionID) }
         })
         let screen = window.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
         let y = screen.maxY - 244 - (model.isRecording ? 96 : 0)

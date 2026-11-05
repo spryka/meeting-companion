@@ -18,11 +18,23 @@ public final class TranscriptAVPlayerTransport: TranscriptPlaybackTransport {
     private var playbackEpoch: UInt64 = 0
     private var seekEpoch: UInt64 = 0
     private var isSeeking = false
+    private var currentRate: Float = 1.0
+
     public var hasPeriodicObserver: Bool { periodicObserver != nil }
     public var timeControlStatus: AVPlayer.TimeControlStatus { player.timeControlStatus }
     public var currentPosition: Double { player.currentTime().seconds }
+    public var playbackRate: Float { currentRate }
+    var actualPlaybackRate: Float { player.rate }
 
-    public init() {}
+    public init(isMuted: Bool = false) { player.isMuted = isMuted }
+
+    public func setRate(_ rate: Float) {
+        guard rate.isFinite, rate > 0 else { return }
+        currentRate = rate
+        if wantsPlay && player.timeControlStatus == .playing {
+            player.rate = rate
+        }
+    }
 
     public func prepare(url: URL) async throws -> Double {
         stop()
@@ -61,6 +73,9 @@ public final class TranscriptAVPlayerTransport: TranscriptPlaybackTransport {
             let playing = player.timeControlStatus == .playing
             Task { @MainActor [weak self] in
                 guard let self, self.generation == ticket else { return }
+                if playing && self.wantsPlay && self.player.rate != self.currentRate {
+                    self.player.rate = self.currentRate
+                }
                 self.refreshPeriodicObserver()
                 self.onEvent?(.playing(playing && self.wantsPlay))
             }
@@ -98,6 +113,7 @@ public final class TranscriptAVPlayerTransport: TranscriptPlaybackTransport {
         installEndObserver(item: item, ticket: generation)
         wantsPlay = true
         player.play()
+        player.rate = currentRate
         refreshPeriodicObserver()
     }
 
@@ -123,6 +139,9 @@ public final class TranscriptAVPlayerTransport: TranscriptPlaybackTransport {
         }
         guard generation == ticket, seekEpoch == seekTicket else { return false }
         isSeeking = false
+        if wantsPlay && player.timeControlStatus == .playing {
+            player.rate = currentRate
+        }
         return success
     }
 

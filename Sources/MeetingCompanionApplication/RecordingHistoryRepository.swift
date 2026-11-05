@@ -24,6 +24,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     private var generation: Int = 0
     private var lastError: String?
     private var unsavedEntries: Set<URL> = []
+    private var workReservations: [URL: Set<UUID>] = [:]
     private let fileManager = FileManager.default
     private var subscribers: [@Sendable ([RecordingEntry]) -> Void] = []
 
@@ -105,17 +106,20 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     }
 
     /// Internal put implementation. Caller MUST hold lock.
-    private func lockedPutThrowing(_ entry: RecordingEntry, persist: Bool = true) throws -> RecordingEntry {
+    private func lockedPutThrowing(_ entry: RecordingEntry, persist: Bool = true, preserveTitle: Bool = true) throws -> RecordingEntry {
         let canonical = canonicalURL(entry.recording)
         var updatedEntry = entry
         if updatedEntry.recording != canonical {
             updatedEntry = RecordingEntry(recording: canonical, date: entry.date, title: entry.title, phase: entry.phase)
+            updatedEntry.displayTitle = entry.displayTitle
             updatedEntry.duration = entry.duration
             updatedEntry.problems = entry.problems
             updatedEntry.meeting = entry.meeting
             updatedEntry.log = entry.log
         }
 
+        // Lifecycle callers may have captured an entry before a successful rename.
+        if preserveTitle { updatedEntry.displayTitle = entriesMap[canonical]?.displayTitle ?? RecordingEntry.load(recording: canonical).displayTitle ?? updatedEntry.displayTitle }
         if persist {
             try RecordingPaths.requireStandardLayout(canonical)
             updatedEntry.assessCapabilities()
@@ -146,6 +150,38 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         revisions[canonical, default: 0] += 1
         entriesMap[canonical] = updatedEntry
         return updatedEntry
+    }
+
+    // Shares rename's transaction lock; callers retain ownership through awaited teardown.
+    public func reserveWork(_ url: URL, id: UUID) {
+        withLock { workReservations[canonicalURL(url), default: []].insert(id) }
+    }
+
+    public func releaseWork(_ url: URL, id: UUID) {
+        withLock {
+            let key = canonicalURL(url)
+            workReservations[key]?.remove(id)
+            if workReservations[key]?.isEmpty == true { workReservations.removeValue(forKey: key) }
+        }
+    }
+
+    @discardableResult
+    public func rename(_ url: URL, displayTitle: String) throws -> RecordingEntry {
+        try RecordingPaths.requireStandardLayout(url)
+        let name = displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 120,
+              !displayTitle.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw TranscriptEditsError.malformed("Название: от 1 до 120 символов, без управляющих символов.")
+        }
+        let saved = try withLock {
+            guard var target = lockedEntry(url) else { throw TranscriptStorageError.metadataNotFound(url.path) }
+            guard !target.phase.isWorking, workReservations[canonicalURL(url), default: []].isEmpty else { throw TranscriptEditsError.conflict("Дождитесь завершения работы с записью.") }
+            guard target.effectiveTitle != name else { return target }
+            target.displayTitle = name
+            return try lockedPutThrowing(target, preserveTitle: false)
+        }
+        notifySubscribers()
+        return saved
     }
 
     /// Retrieves an entry by URL if present in cache, otherwise tries loading from disk.
@@ -188,6 +224,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
 
     private func retainUnsaved(_ entry: RecordingEntry, warning: String) -> RecordingEntry {
         var updated = entry
+        updated.displayTitle = entriesMap[canonicalURL(entry.recording)]?.displayTitle ?? entry.displayTitle
         updated.assessCapabilities()
         updated.persistenceWarning = warning
         let id = canonicalURL(entry.recording)

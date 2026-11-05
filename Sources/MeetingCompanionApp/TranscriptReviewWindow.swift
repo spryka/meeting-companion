@@ -7,118 +7,110 @@ import MeetingCompanionPlatform
 #endif
 
 @MainActor
-final class TranscriptReviewWindowManager {
+final class TranscriptReviewWindowManager: ObservableObject {
     let coordinator = TranscriptWindowCoordinator()
     private let isProcessing: @Sendable (URL) async -> Bool
+    private let transportFactory: @MainActor () -> any TranscriptPlaybackTransport
+    @Published private(set) var current: TranscriptReviewWindowModel?
+    @Published private(set) var loading = false
+    @Published private(set) var failure: String?
+    @Published var externalModal = false
+    var settingsInput: @MainActor () -> Bool = { false }
+    @Published var savedRevision = 0
+    @Published private(set) var commandNotice: String?
+    private var generation = 0
+    private var opening: Task<TranscriptReviewWindowModel, Error>?
+    private var openingURL: URL?
+    var hasForeignInput: Bool { externalModal || current?.currentDraftIdentity != nil }
+    var hasInput: Bool { settingsInput() || hasForeignInput }
 
-    init(isProcessing: @escaping @Sendable (URL) async -> Bool = { _ in false }) {
-        self.isProcessing = isProcessing
-    }
-
-    func prepareForRetry(_ recording: URL) async -> Bool {
-        let key = await Task.detached { RecordingEntry.canonicalURL(recording) }.value
-        if let pending = opening[key] { _ = try? await pending.value }
-        guard let model = hosts[key]?.model else { coordinator.closeWindow(for: key); return true }
-        guard await model.resolveForRetry() else { return false }
-        windows[key]?.close()
+    func admitNavigation() -> Bool {
+        guard !hasInput else {
+            commandNotice = "Сохраните или отмените ввод перед этим действием."
+            current?.rejectConflictingAction()
+            return false
+        }
+        commandNotice = nil
         return true
     }
 
-    private(set) var windows: [URL: NSWindow] = [:]
-    private var hosts: [URL: TranscriptWindowHost] = [:]
-    private var opening: [URL: Task<NSWindow, Error>] = [:]
-
-    func open(recordingURL: URL, title: String) async throws -> NSWindow {
-        let key = await Task.detached { RecordingEntry.canonicalURL(recordingURL) }.value
-        guard !(await isProcessing(key)) else { throw TranscriptWindowError.readOnlyLegacy("Идёт повторная обработка; откройте расшифровку после её завершения.") }
-        if let pending = opening[key] { return try await pending.value }
-        let task = Task {
-            try await createWindow(recordingURL: key, title: title)
-        }
-        opening[key] = task
-        defer { opening.removeValue(forKey: key) }
-        return try await task.value
+    init(isProcessing: @escaping @Sendable (URL) async -> Bool = { _ in false },
+         transportFactory: @escaping @MainActor () -> any TranscriptPlaybackTransport = { TranscriptAVPlayerTransport() }) {
+        self.isProcessing = isProcessing
+        self.transportFactory = transportFactory
     }
 
-    private func createWindow(recordingURL: URL, title: String) async throws -> NSWindow {
-        let opened = try await coordinator.openWindow(for: recordingURL)
-        let state = opened.state
-        if let window = windows[state.id] {
-            window.deminiaturize(nil)
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return window
+    func prepareForRetry(_ recording: URL) async -> Bool {
+        guard admitNavigation() else { return false }
+        generation += 1
+        let expected = generation
+        _ = try? await opening?.value
+        guard expected == generation, admitNavigation() else { return false }
+        opening = nil; openingURL = nil; loading = false
+        if let current, current.state.id == RecordingEntry.canonicalURL(recording) { closeCurrent() }
+        return true
+    }
+
+    @discardableResult
+    func open(recordingURL: URL, title: String) async throws -> TranscriptReviewWindowModel {
+        guard admitNavigation() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
+        let key = RecordingEntry.canonicalURL(recordingURL)
+        if openingURL == key, let opening { return try await opening.value }
+        generation += 1
+        let expected = generation
+        guard !(await isProcessing(key)) else { throw TranscriptWindowError.readOnlyLegacy("Идёт обработка; откройте текст после её завершения.") }
+        guard expected == generation else { throw TranscriptWindowError.closed }
+        guard admitNavigation() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
+        if let current, current.state.id == key, !current.state.isClosed { return current }
+        let previous = opening
+        loading = true; failure = nil; openingURL = key
+        let task = Task { [self] in
+            _ = try? await previous?.value
+            guard expected == generation, !hasInput else { throw TranscriptWindowError.closed }
+            closeLoadedSession()
+            let state = try await coordinator.openWindow(for: key).state
+            do {
+                let model = try await TranscriptReviewWindowModel(state: state, transportFactory: transportFactory)
+                model.inputBlocked = { [weak self] in self?.settingsInput() ?? true }
+                let processing = await isProcessing(key)
+                guard expected == generation, !hasInput, !state.isClosed, !processing else {
+                    model.close(); throw TranscriptWindowError.closed
+                }
+                model.onSaved = { [weak self] in self?.savedRevision += 1 }
+                current = model
+                return model
+            } catch { state.close(); throw error }
         }
+        opening = task
         do {
-            let model = try await TranscriptReviewWindowModel(state: state)
-            guard !state.isClosed, !(await isProcessing(recordingURL)) else { throw TranscriptWindowError.closed }
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 620),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                                  backing: .buffered, defer: false)
-            window.title = title
-            window.contentMinSize = NSSize(width: 480, height: 320)
-            window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: TranscriptReviewWindowView(model: model, title: title))
-            let host = TranscriptWindowHost(model: model) { [weak self, weak state] in
-                guard let self, let state, self.hosts[state.id]?.model.state === state else { return }
-                self.windows.removeValue(forKey: state.id)
-                self.hosts.removeValue(forKey: state.id)
-                state.close()
-            }
-            hosts[state.id] = host
-            windows[state.id] = window
-            window.delegate = host
-            window.center()
-            NSApp.setActivationPolicy(.regular)
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return window
+            let model = try await task.value
+            if expected == generation { loading = false; opening = nil; openingURL = nil }
+            return model
         } catch {
-            state.close()
+            if expected == generation { loading = false; opening = nil; openingURL = nil; failure = error.localizedDescription }
             throw error
         }
     }
 
+    func closeCurrent() {
+        guard admitNavigation() else { return }
+        generation += 1
+        loading = false; openingURL = nil
+        closeLoadedSession()
+    }
+
+    private func closeLoadedSession() {
+        current?.close(); current?.state.close(); current = nil
+    }
+
     func model(for recordingURL: URL) -> TranscriptReviewWindowModel? {
-        hosts[TranscriptWindowCoordinator.canonicalURL(for: recordingURL)]?.model
-    }
-}
-
-@MainActor
-private final class TranscriptWindowHost: NSObject, NSWindowDelegate {
-    let model: TranscriptReviewWindowModel
-    private var onClose: (() -> Void)?
-    private var isAuthorizedClosing = false
-
-    init(model: TranscriptReviewWindowModel, onClose: @escaping () -> Void) {
-        self.model = model
-        self.onClose = onClose
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if isAuthorizedClosing { return true }
-        if model.hasUnsavedChanges {
-            model.requestWindowClose { [weak self, weak sender] in
-                guard let self, let sender else { return }
-                self.isAuthorizedClosing = true
-                sender.close()
-            }
-            return false
-        }
-        return true
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        model.close()
-        let callback = onClose
-        onClose = nil
-        (notification.object as? NSWindow)?.delegate = nil
-        callback?()
+        current?.state.id == RecordingEntry.canonicalURL(recordingURL) ? current : nil
     }
 }
 
 @MainActor
 final class TranscriptReviewWindowModel: ObservableObject {
+    var inputBlocked: @MainActor () -> Bool = { false }
     struct Row: Identifiable, Sendable {
         let id: String
         let start: Double
@@ -152,7 +144,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     enum SpeakerAssignmentScope: String, CaseIterable, Identifiable, Sendable {
         case thisTurn = "Только этой реплике"
-        case allVoiceGroup = "Всему голосу"
+        case allVoiceGroup = "Этот голос отсюда до конца"
         var id: String { rawValue }
     }
 
@@ -163,8 +155,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
         let turnID: String
         let speakerID: String
         let confirmedName: String
-        let replaceExistingManual: Bool
-        let preview: TranscriptBulkAssignmentPreview
+        let preview: TranscriptBulkAssignmentPreview?
+        let willReplaceManual: Bool
+        let affectedTurnsCount: Int
 
         init(
             id: UUID = UUID(),
@@ -173,8 +166,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
             turnID: String,
             speakerID: String,
             confirmedName: String,
-            replaceExistingManual: Bool,
-            preview: TranscriptBulkAssignmentPreview
+            preview: TranscriptBulkAssignmentPreview? = nil,
+            willReplaceManual: Bool = false,
+            affectedTurnsCount: Int = 1
         ) {
             self.id = id
             self.draftID = draftID
@@ -182,8 +176,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
             self.turnID = turnID
             self.speakerID = speakerID
             self.confirmedName = confirmedName
-            self.replaceExistingManual = replaceExistingManual
             self.preview = preview
+            self.willReplaceManual = willReplaceManual
+            self.affectedTurnsCount = affectedTurnsCount
         }
     }
 
@@ -193,11 +188,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
         let speakerID: String
         let sourceID: TranscriptDocument.SourceID
         let localID: Int
-        let currentName: String
         let initialName: String
         var inputName: String
         var scope: SpeakerAssignmentScope
-        var replaceExistingManual: Bool
         var pendingConfirmation: GroupConfirmationPayload?
         var preview: TranscriptBulkAssignmentPreview?
         let targetResultID: String
@@ -238,6 +231,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
+    var onSaved: (() -> Void)?
     let state: TranscriptWindowState
     @Published private(set) var rows: [Row] = []
     @Published private(set) var currentResultID: String?
@@ -247,6 +241,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
     @Published private(set) var playbackState: TranscriptPlaybackController.State = .idle
     @Published private(set) var playbackPosition: Double = 0
     @Published private(set) var playbackDuration: Double = 0
+    @Published private(set) var playbackRate: Float = 1.0
+    @Published private(set) var waveform: TranscriptWaveform? = nil
+    @Published private(set) var waveformMessage: String? = nil
     @Published private(set) var activeTurnIDs: [String] = []
     @Published private(set) var follow = TranscriptFollowState()
     enum DraftIdentity: Equatable {
@@ -256,42 +253,15 @@ final class TranscriptReviewWindowModel: ObservableObject {
             turnID: String,
             inputName: String,
             scope: SpeakerAssignmentScope,
-            replaceExistingManual: Bool,
             confirmationID: UUID?
         )
     }
 
-    enum UnsavedPromptResolution {
-        case save
-        case discard
-        case stay
-    }
-
-    struct UnsavedChangesPrompt: Identifiable, Equatable {
-        let id: UUID
-        let targetResultID: String
-        let expectedDraft: DraftIdentity
-    }
-
-    @Published private(set) var unsavedPrompt: UnsavedChangesPrompt? = nil
-    private var authorizedCloseAction: (() -> Void)? = nil
-    private var cancelledCloseAction: (() -> Void)? = nil
-
     func resolveForRetry() async -> Bool {
-        await withCheckedContinuation { continuation in
-            requestWindowClose(onAuthorizedClose: { [self] in
-                close()
-                state.close()
-                continuation.resume(returning: true)
-            }, onCancelled: { continuation.resume(returning: false) })
-        }
-    }
-
-    private func cancelPendingClose() {
-        authorizedCloseAction = nil
-        let callback = cancelledCloseAction
-        cancelledCloseAction = nil
-        callback?()
+        guard !isClosed, !state.isClosed else { return false }
+        guard currentDraftIdentity == nil else { rejectConflictingAction(); return false }
+        close(); state.close()
+        return true
     }
 
     var currentDraftIdentity: DraftIdentity? {
@@ -303,7 +273,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 turnID: nameDraft.turnID,
                 inputName: nameDraft.inputName,
                 scope: nameDraft.scope,
-                replaceExistingManual: nameDraft.replaceExistingManual,
                 confirmationID: nameDraft.pendingConfirmation?.id
             )
         }
@@ -319,111 +288,32 @@ final class TranscriptReviewWindowModel: ObservableObject {
         guard let draft = activeDraft else { return false }
         let nameChanged = draft.inputName != draft.initialName
         let groupScope = draft.scope == .allVoiceGroup
-        let replaceToggled = draft.replaceExistingManual
-        return nameChanged || groupScope || replaceToggled
+        return nameChanged || groupScope
     }
 
     var hasUnsavedChanges: Bool {
         isTextDraftDirty || isNameDraftDirty
     }
 
+    var isExportAvailable: Bool {
+        switch state.mode {
+        case .review:
+            return currentResultID != nil && !state.isClosed && !isClosed
+        case .legacyReadOnly, .corrupt:
+            return false
+        }
+    }
+
+    func rejectConflictingAction() { error = "Сохраните или отмените ввод перед этим действием." }
+
     func requestWindowClose(onAuthorizedClose: @escaping () -> Void, onCancelled: (() -> Void)? = nil) {
         guard !isClosed, !state.isClosed else { onCancelled?(); return }
-        guard let draftIdentity = currentDraftIdentity, hasUnsavedChanges, let currentResultID else {
-            onAuthorizedClose()
-            return
-        }
-        cancelPendingClose()
-        authorizedCloseAction = onAuthorizedClose
-        cancelledCloseAction = onCancelled
-        unsavedPrompt = UnsavedChangesPrompt(
-            id: UUID(),
-            targetResultID: currentResultID,
-            expectedDraft: draftIdentity
-        )
+        guard currentDraftIdentity == nil else { rejectConflictingAction(); onCancelled?(); return }
+        onAuthorizedClose()
     }
 
-    func resolveUnsavedPrompt(_ resolution: UnsavedPromptResolution, promptID: UUID) {
-        guard !isClosed, !state.isClosed else {
-            unsavedPrompt = nil
-            cancelPendingClose()
-            return
-        }
-
-        // Strict NOOP for foreign prompt ID or mismatched result:
-        guard let prompt = unsavedPrompt, prompt.id == promptID, prompt.targetResultID == currentResultID else {
-            return
-        }
-
-        // Matching prompt: verify draft has not changed under prompt
-        guard currentDraftIdentity == prompt.expectedDraft else {
-            unsavedPrompt = nil
-            cancelPendingClose()
-            return
-        }
-
-        switch resolution {
-        case .stay:
-            unsavedPrompt = nil
-            cancelPendingClose()
-
-        case .discard:
-            switch prompt.expectedDraft {
-            case .text(let draftID, _, _):
-                cancelTextDraft(draftID: draftID)
-            case .speaker(let draftID, _, _, _, _, _):
-                cancelDraft(draftID: draftID)
-            }
-            unsavedPrompt = nil
-            let closeAction = authorizedCloseAction
-            authorizedCloseAction = nil
-            cancelledCloseAction = nil
-            closeAction?()
-
-        case .save:
-            var saveSucceeded = false
-            switch prompt.expectedDraft {
-            case .text(let draftID, _, _):
-                saveTextEditing(draftID: draftID)
-                saveSucceeded = (activeTextDraft == nil && error == nil)
-            case .speaker(let draftID, _, _, let scope, _, let expectedConfirmationID):
-                if scope == .allVoiceGroup {
-                    guard let expectedConfID = expectedConfirmationID,
-                          let draft = activeDraft,
-                          draft.id == draftID,
-                          let confirmation = draft.pendingConfirmation,
-                          confirmation.id == expectedConfID else {
-                        self.error = "Для сохранения группового назначения требуется предварительное подтверждение группы."
-                        return
-                    }
-                    confirmGroupAssignment(confirmation: confirmation)
-                    saveSucceeded = (activeDraft == nil && error == nil)
-                } else {
-                    saveSpeakerAssignment(draftID: draftID)
-                    saveSucceeded = (activeDraft == nil && error == nil)
-                }
-            }
-
-            if saveSucceeded {
-                unsavedPrompt = nil
-                let closeAction = authorizedCloseAction
-                authorizedCloseAction = nil
-                cancelledCloseAction = nil
-                closeAction?()
-            } else {
-                unsavedPrompt = nil
-                cancelPendingClose()
-            }
-        }
-    }
-
-    @Published private(set) var activeDraft: SpeakerAssignmentDraft? = nil {
-        didSet { updateCanUndo() }
-    }
-    @Published private(set) var activeTextDraft: TextEditingDraft? = nil {
-        didSet { updateCanUndo() }
-    }
-    @Published private(set) var canUndo: Bool = false
+    @Published private(set) var activeDraft: SpeakerAssignmentDraft? = nil
+    @Published private(set) var activeTextDraft: TextEditingDraft? = nil
     @Published private(set) var calendarAttendees: [String] = []
     @Published private(set) var contextAttendees: [String]? = nil
     @Published private(set) var presentationWarnings: [PresentationWarningItem] = []
@@ -431,15 +321,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
         presentationWarnings.map(\.message)
     }
 
-    private func updateCanUndo() {
-        guard !isClosed, !state.isClosed, activeDraft == nil, activeTextDraft == nil, let resultID = currentResultID, let session = state.session else {
-            canUndo = false
-            return
-        }
-        canUndo = session.editsRepository.canUndo(resultID: resultID)
-    }
-
     func userScrollPhaseChanged(_ phase: ScrollPhase) {
+        guard !inputBlocked() else { return }
         switch phase {
         case .tracking, .interacting, .decelerating: follow.manualScroll()
         case .idle, .animating: break
@@ -447,24 +330,43 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
-    func beginEditing() { follow.beginEditing() }
-    func returnToPlayback() { follow.returnToPlayback() }
+    func beginEditing() {
+        follow.beginEditing()
+        playback.pause()
+    }
+    func returnToPlayback() { if !inputBlocked() { follow.returnToPlayback() } }
+    func setFollow(_ follow: Bool) {
+        guard !isClosed else { return }
+        if follow {
+            self.follow.returnToPlayback()
+        } else {
+            self.follow.manualScroll()
+        }
+    }
     var playbackEnabled: Bool { playbackState == .ready || playbackState == .playing }
     @Published private(set) var playbackMessage: String? = "Для старого TXT или недоступного результата воспроизведение не поддерживается."
-    private var playback = TranscriptPlaybackController(transport: TranscriptAVPlayerTransport())
+    private var playback: TranscriptPlaybackController
+    private let transportFactory: @MainActor () -> any TranscriptPlaybackTransport
     private var preparation: Task<Void, Never>?
+    private var waveformTask: Task<Void, Never>?
     private var index: TranscriptIntervalIndex?
     private var isClosed = false
 
     func togglePlayback() {
-        guard !isClosed else { return }
+        guard !isClosed, !inputBlocked() else { return }
         if playback.state == .playing { playback.pause() }
         else { playback.play() }
     }
 
     func seekPlayback(to seconds: Double) async {
-        guard !isClosed else { return }
+        guard !isClosed, !inputBlocked() else { return }
         await playback.seek(to: seconds)
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        guard !isClosed, !inputBlocked() else { return }
+        playback.setPlaybackRate(rate)
+        playbackRate = playback.playbackRate
     }
 
     func close() {
@@ -472,33 +374,56 @@ final class TranscriptReviewWindowModel: ObservableObject {
         isClosed = true
         preparation?.cancel()
         preparation = nil
+        waveformTask?.cancel()
+        waveformTask = nil
+        waveform = nil
+        waveformMessage = nil
         playback.close()
         playbackState = .closed
         follow.close()
         activeDraft = nil
         activeTextDraft = nil
-        unsavedPrompt = nil
-        cancelPendingClose()
         activeExportRequest = nil
-        canUndo = false
     }
 
     private func preparePlayback(resultID: String) {
         guard !isClosed, !state.isClosed else { return }
         preparation?.cancel()
+        waveformTask?.cancel()
+        waveform = nil
+        waveformMessage = "Загрузка формы звуковой волны…"
         // Synchronously stop the prior item before a new async task can be scheduled.
         playback.close()
-        playback = TranscriptPlaybackController(transport: TranscriptAVPlayerTransport())
+        playback = TranscriptPlaybackController(transport: transportFactory())
         playbackState = .loading
         playbackMessage = "Загрузка аудио текущего результата…"
         playbackPosition = 0
         playbackDuration = 0
+        playbackRate = 1.0
         activeTurnIDs = []
         follow.versionChanged()
         playback.onChange = { [weak self] in self?.refreshPlayback() }
         preparation = Task { [weak self] in
             guard let self, !self.isClosed, !Task.isCancelled else { return }
             await self.playback.select(resultID: resultID, recordingDirectory: self.state.recordingDirectory)
+            guard !Task.isCancelled else { return }
+            if let mix = self.playback.mixURL {
+                self.waveformTask = Task { [weak self] in
+                    do {
+                        let wf = try await TranscriptWaveformExtractor.extractEnvelope(from: mix, sampleCount: 120)
+                        guard !Task.isCancelled else { return }
+                        self?.waveform = wf
+                        self?.waveformMessage = nil
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        self?.waveformMessage = "Форма звуковой волны недоступна: " + error.localizedDescription
+                    }
+                }
+            } else {
+                self.waveformMessage = nil
+            }
         }
     }
 
@@ -507,6 +432,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         playbackState = playback.state
         playbackPosition = playback.position
         playbackDuration = playback.duration
+        playbackRate = playback.playbackRate
         switch playback.state {
         case .unavailable:
             playbackMessage = "Аудио текущего результата не подготовлено. Текст и сохранённые правки доступны; другая дорожка не подставляется."
@@ -520,8 +446,10 @@ final class TranscriptReviewWindowModel: ObservableObject {
         follow.update(activeIDs: activeTurnIDs, playing: playback.state == .playing)
     }
 
-    init(state: TranscriptWindowState) async throws {
+    init(state: TranscriptWindowState, transportFactory: @escaping @MainActor () -> any TranscriptPlaybackTransport = { TranscriptAVPlayerTransport() }) async throws {
         self.state = state
+        self.transportFactory = transportFactory
+        self.playback = TranscriptPlaybackController(transport: transportFactory())
         switch state.mode {
         case .review(let id):
             guard let session = state.session else { throw TranscriptWindowError.closed }
@@ -538,14 +466,13 @@ final class TranscriptReviewWindowModel: ObservableObject {
             contextAttendees = content.2
             presentationWarnings = content.3
             currentResultID = id
-            updateCanUndo()
             index = content.4
             preparePlayback(resultID: id)
         case .legacyReadOnly(let url):
             explanation = "Сохранённый TXT — только чтение. Редактирование и переход по аудио недоступны."
             await loadLegacy(url)
-        case .corrupt(_, let fallback):
-            explanation = "Не удалось прочитать текущий структурированный результат. Старый TXT показан только для чтения; ошибка не исправлена."
+        case .corrupt(let reason, let fallback):
+            explanation = "Текущий результат недоступен: " + reason + ". Сохранённый TXT доступен только для чтения."
             if let fallback { await loadLegacy(fallback) }
         }
     }
@@ -671,80 +598,56 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func openSpeakerAssignment(for turnID: String) {
+        guard !inputBlocked() else { return }
         guard !isClosed, !state.isClosed, !state.isReadOnly, state.session != nil, let resultID = currentResultID else { return }
-        guard activeTextDraft == nil else {
+        guard activeTextDraft == nil, activeDraft == nil else {
             self.error = "Завершите или отмените редактирование текста перед назначением имени."
             return
         }
         guard let row = rows.first(where: { $0.id == turnID }) else { return }
         beginEditing()
-        let initial = row.hasManualName ? row.name : ""
+        let initial = row.name
         activeDraft = SpeakerAssignmentDraft(
             id: UUID(),
             turnID: row.id,
             speakerID: row.speakerID,
             sourceID: row.sourceID,
             localID: row.localID,
-            currentName: row.name,
             initialName: initial,
             inputName: initial,
             scope: .thisTurn,
-            replaceExistingManual: false,
             pendingConfirmation: nil,
             preview: nil,
             targetResultID: resultID,
-            calendarAttendees: calendarAttendees
+            calendarAttendees: calendarAttendees.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         )
+        saveSpeakerAssignment()
     }
 
     func updateDraftName(_ name: String, draftID: UUID? = nil) {
         guard !isClosed, !state.isClosed, var draft = activeDraft else { return }
         if let id = draftID, draft.id != id { return }
         draft.inputName = name
+        draft.preview = nil
         draft.pendingConfirmation = nil
         activeDraft = draft
+        error = nil
+        saveSpeakerAssignment(draftID: draft.id)
     }
 
     func selectDraftScope(_ scope: SpeakerAssignmentScope, draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, var draft = activeDraft, let session = state.session else { return }
+        guard !isClosed, !state.isClosed, var draft = activeDraft, state.session != nil else { return }
         if let id = draftID, draft.id != id { return }
         draft.scope = scope
         draft.pendingConfirmation = nil
-        if scope == .allVoiceGroup {
-            do {
-                draft.preview = try session.previewGroupAssignment(speakerID: draft.speakerID, replaceManuallyAssigned: draft.replaceExistingManual)
-            } catch {
-                draft.preview = nil
-                self.error = error.localizedDescription
-            }
-        } else {
-            draft.preview = nil
-        }
+        draft.preview = nil
         activeDraft = draft
-    }
-
-    func toggleReplaceExistingManual(_ replace: Bool, draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, var draft = activeDraft, let session = state.session else { return }
-        if let id = draftID, draft.id != id { return }
-        draft.replaceExistingManual = replace
-        draft.pendingConfirmation = nil
-        if draft.scope == .allVoiceGroup {
-            do {
-                draft.preview = try session.previewGroupAssignment(speakerID: draft.speakerID, replaceManuallyAssigned: replace)
-            } catch {
-                draft.preview = nil
-                self.error = error.localizedDescription
-            }
-        }
-        activeDraft = draft
+        error = nil
+        saveSpeakerAssignment(draftID: draft.id)
     }
 
     func selectCalendarAttendee(_ attendee: String, draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, var draft = activeDraft else { return }
-        if let id = draftID, draft.id != id { return }
-        draft.inputName = attendee
-        draft.pendingConfirmation = nil
-        activeDraft = draft
+        updateDraftName(attendee, draftID: draftID)
     }
 
     func saveSpeakerAssignment(draftID: UUID? = nil) {
@@ -756,36 +659,46 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
         let trimmed = draft.inputName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            self.error = "Имя говорящего не может быть пустым."
+            draft.preview = nil
+            draft.pendingConfirmation = nil
+            activeDraft = draft
             return
         }
 
         if draft.scope == .allVoiceGroup {
-            guard let preview = draft.preview else {
-                self.error = "Превью массового назначения не сформировано."
-                return
-            }
+            let preview: TranscriptBulkAssignmentPreview
+            do { preview = try session.previewRemainingAssignment(anchorTurnID: draft.turnID, displayName: draft.inputName) }
+            catch { self.error = error.localizedDescription; return }
+            draft.preview = preview
             draft.pendingConfirmation = GroupConfirmationPayload(
                 draftID: draft.id,
                 resultID: resultID,
                 turnID: draft.turnID,
                 speakerID: draft.speakerID,
                 confirmedName: draft.inputName,
-                replaceExistingManual: draft.replaceExistingManual,
-                preview: preview
+                preview: preview,
+                willReplaceManual: preview.replacedManualAssignmentsCount > 0,
+                affectedTurnsCount: preview.affectedTurnsCount
             )
             activeDraft = draft
             return
-        }
-
-        do {
-            _ = try session.assignSpeakerName(turnID: draft.turnID, displayName: draft.inputName)
-            rows = try Self.loadRows(resultID: resultID, session: session)
-            activeDraft = nil
-            updateCanUndo()
-            error = nil
-        } catch {
-            self.error = "Ошибка назначения имени: \(error.localizedDescription)"
+        } else {
+            guard let row = rows.first(where: { $0.id == draft.turnID }) else { return }
+            let changes = row.name != draft.inputName
+            let willReplace = changes && row.hasManualName
+            draft.preview = nil
+            draft.pendingConfirmation = GroupConfirmationPayload(
+                draftID: draft.id,
+                resultID: resultID,
+                turnID: draft.turnID,
+                speakerID: draft.speakerID,
+                confirmedName: draft.inputName,
+                preview: nil,
+                willReplaceManual: willReplace,
+                affectedTurnsCount: changes ? 1 : 0
+            )
+            activeDraft = draft
+            return
         }
     }
 
@@ -798,7 +711,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
               confirmation.resultID == resultID,
               draft.turnID == confirmation.turnID,
               draft.speakerID == confirmation.speakerID,
-              draft.scope == .allVoiceGroup,
               let currentConfirmation = draft.pendingConfirmation,
               currentConfirmation.id == confirmation.id else {
             self.error = "Подтверждение группы устарело или не совпадает с текущим состоянием."
@@ -806,11 +718,15 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
 
         do {
-            _ = try session.assignSpeakerName(preview: confirmation.preview, displayName: confirmation.confirmedName)
+            if draft.scope == .thisTurn {
+                _ = try session.assignSpeakerName(turnID: draft.turnID, displayName: confirmation.confirmedName)
+            } else if let preview = confirmation.preview {
+                _ = try session.assignSpeakerName(preview: preview, displayName: confirmation.confirmedName)
+            }
             rows = try Self.loadRows(resultID: resultID, session: session)
             activeDraft = nil
-            updateCanUndo()
             error = nil
+            onSaved?()
         } catch {
             self.error = "Ошибка назначения имени: \(error.localizedDescription)"
         }
@@ -825,23 +741,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         confirmGroupAssignment(confirmation: confirmation)
     }
 
-    func resetSpeakerName(draftID: UUID? = nil) {
-        guard !isClosed, !state.isClosed, let draft = activeDraft, let session = state.session, let resultID = currentResultID, draft.targetResultID == resultID else {
-            activeDraft = nil
-            return
-        }
-        if let id = draftID, draft.id != id { return }
-        do {
-            _ = try session.unassignSpeakerName(turnID: draft.turnID)
-            rows = try Self.loadRows(resultID: resultID, session: session)
-            activeDraft = nil
-            updateCanUndo()
-            error = nil
-        } catch {
-            self.error = "Ошибка сброса имени: \(error.localizedDescription)"
-        }
-    }
-
     func cancelDraft(draftID: UUID? = nil) {
         guard let draft = activeDraft else { return }
         if let id = draftID, draft.id != id { return }
@@ -851,18 +750,13 @@ final class TranscriptReviewWindowModel: ObservableObject {
     // MARK: - Section 4.4a Text Editing Operations
 
     func openTextEditing(for turnID: String) {
+        guard !inputBlocked() else { return }
         guard !isClosed, !state.isClosed, !state.isReadOnly, state.session != nil, let resultID = currentResultID else { return }
         guard activeDraft == nil else {
             self.error = "Завершите или отмените назначение имени перед редактированием текста."
             return
         }
-        if let currentTextDraft = activeTextDraft {
-            if currentTextDraft.turnID == turnID { return }
-            if currentTextDraft.text != currentTextDraft.initialText {
-                self.error = "Завершите или отмените текущее редактирование текста перед переходом к другой реплике."
-                return
-            }
-        }
+        guard activeTextDraft == nil else { return }
         guard let row = rows.first(where: { $0.id == turnID }) else { return }
         beginEditing()
         activeTextDraft = TextEditingDraft(
@@ -899,28 +793,30 @@ final class TranscriptReviewWindowModel: ObservableObject {
             _ = try session.editsRepository.saveTurnOverride(resultID: resultID, turnID: draft.turnID, text: draft.text, displayName: nil)
             rows = try Self.loadRows(resultID: resultID, session: session)
             activeTextDraft = nil
-            updateCanUndo()
             error = nil
+            onSaved?()
         } catch {
             self.error = "Ошибка сохранения текста: \(error.localizedDescription)"
         }
     }
 
-    func undoLastEdit() {
-        guard !isClosed, !state.isClosed, let session = state.session, let resultID = currentResultID else { return }
-        guard activeDraft == nil && activeTextDraft == nil else {
-            self.error = "Отмените или сохраните текущий ввод перед отменой предыдущих сохранённых правок."
+    func copySavedText(write: @MainActor (String) -> Bool = { text in
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(text, forType: .string)
+    }) {
+        guard !inputBlocked() else { return }
+        guard canCopySavedText else { self.error = "Сохранённый текст недоступен для копирования."; return }
+        if let legacyText {
+            if !write(legacyText) { self.error = "Не удалось скопировать сохранённый текст." }
             return
         }
-        guard session.editsRepository.canUndo(resultID: resultID) else { return }
+        guard let session = state.session, let id = currentResultID else { return }
         do {
-            _ = try session.undo()
-            rows = try Self.loadRows(resultID: resultID, session: session)
-            updateCanUndo()
-            error = nil
-        } catch {
-            self.error = "Ошибка отмены: \(error.localizedDescription)"
-        }
+            let document = try TranscriptDocument.load(from: session.editsRepository.resultURL(for: id), recordingDirectory: state.recordingDirectory)
+            let edits = try session.editsRepository.loadEdits(resultID: id)
+            let text = try TranscriptExportFormatter().format(document: document, edits: edits, recordingDirectory: state.recordingDirectory)
+            if !write(text) { self.error = "Не удалось скопировать сохранённый текст." }
+        } catch { self.error = error.localizedDescription }
     }
 
     // MARK: - Section 4.5b Export Implementation
@@ -941,18 +837,11 @@ final class TranscriptReviewWindowModel: ObservableObject {
     @Published private(set) var activeExportRequest: ExportRequest? = nil
     @Published private(set) var exportNotice: String? = nil
 
-    var isExportAvailable: Bool {
-        guard !isClosed, !state.isClosed else { return false }
-        switch state.mode {
-        case .review:
-            return currentResultID != nil
-        case .legacyReadOnly, .corrupt:
-            return false
-        }
-    }
-
     var canExport: Bool {
         isExportAvailable
+    }
+    var canCopySavedText: Bool {
+        !isClosed && !state.isClosed && (legacyText != nil || isExportAvailable)
     }
 
     typealias SavePanelRunner = @MainActor (_ panel: NSSavePanel, _ completion: @escaping (_ response: NSApplication.ModalResponse, _ destinationURL: URL?) -> Void) -> Void
@@ -1010,11 +899,10 @@ final class TranscriptReviewWindowModel: ObservableObject {
         savePanelRunner: SavePanelRunner? = nil,
         overwriteConsentHandler: OverwriteConsentHandler? = nil
     ) {
+        guard !inputBlocked() else { return }
         guard canExport, !isClosed, !state.isClosed, let resultID = currentResultID, let session = state.session else { return }
 
-        // Invalidate prior active export request immediately at the start of a replacement request:
         self.activeExportRequest = nil
-
         self.error = nil
 
         let dirtyDraft = hasUnsavedChanges || activeDraft != nil || activeTextDraft != nil
@@ -1070,7 +958,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         destinationURL: URL?,
         overwriteConsentHandler: OverwriteConsentHandler? = nil
     ) {
-        guard !isClosed, !state.isClosed else { return }
+        guard !isClosed, !state.isClosed, !inputBlocked() else { return }
         guard let activeRequest = activeExportRequest, activeRequest.id == requestID else {
             return
         }
@@ -1094,7 +982,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
             let consentHandler = overwriteConsentHandler ?? defaultOverwriteConsentHandler
             let consent = consentHandler(destStandard)
             guard consent else {
-                // Declined overwrite consent: cancel immediately with zero output
                 if self.activeExportRequest?.id == requestID {
                     self.activeExportRequest = nil
                 }
@@ -1102,12 +989,10 @@ final class TranscriptReviewWindowModel: ObservableObject {
             }
             allowOverwrite = true
         } else {
-            // File did not exist at selection; race-created destination is NOT authorized to overwrite.
             allowOverwrite = false
         }
 
-        // Revalidate generation, window close and replacement request AFTER modal consent:
-        guard !isClosed, !state.isClosed else {
+        guard !isClosed, !state.isClosed, !inputBlocked() else {
             self.activeExportRequest = nil
             return
         }
@@ -1140,332 +1025,595 @@ final class TranscriptReviewWindowModel: ObservableObject {
         } catch {
             self.error = "Ошибка экспорта: \(error.localizedDescription)"
         }
-    }
+        }
 }
 
-private struct TranscriptReviewWindowView: View {
-    @ObservedObject var model: TranscriptReviewWindowModel
-    let title: String
+// MARK: - Waveform Scrubber Component (Genuine 120-bar Envelope)
+
+struct WaveformScrubberView: View {
+    let waveform: TranscriptWaveform?
+    let position: Double
+    let duration: Double
+    let isEnabled: Bool
+    let onSeek: (Double) -> Void
+
+    @State private var dragFraction: Double? = nil
+
+    private var currentFraction: Double {
+        if let drag = dragFraction { return drag }
+        guard duration > 0 else { return 0 }
+        return min(1.0, max(0.0, position / duration))
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(title).font(.title2).textSelection(.enabled)
-                Spacer()
-                if !model.state.isReadOnly {
-                    Button("Отменить изменение") {
-                        model.undoLastEdit()
-                    }
-                    .disabled(!model.canUndo)
-                    .accessibilityLabel("Отменить последнее изменение")
-                    .accessibilityIdentifier("transcript-undo")
-                }
-                if model.isExportAvailable {
-                    Button("Экспортировать…") {
-                        model.requestExport()
-                    }
-                    .disabled(!model.canExport)
-                    .accessibilityLabel("Экспортировать расшифровку в файл")
-                    .accessibilityIdentifier("transcript-export")
-                }
+        GeometryReader { geometry in
+            let count = 120
+            let samples = waveform?.envelope ?? []
+            let width = geometry.size.width
+            let barWidth = max(1.5, min(3.0, (width / CGFloat(count)) * 0.55))
+            let activeFrac = currentFraction
 
-            }
-            if model.state.isReadOnly {
-                Text("Только чтение").font(.caption).foregroundStyle(.secondary)
-            }
-            if let explanation = model.explanation {
-                Text(explanation).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            if let error = model.error {
-                Text(error).foregroundStyle(.red).textSelection(.enabled).accessibilityLabel("Ошибка: " + error)
-            }
-            if let notice = model.exportNotice {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: notice.contains("Внимание") ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(notice.contains("Внимание") ? .orange : .green)
-                    Text(notice).font(.callout).textSelection(.enabled)
+            Canvas { context, size in
+                for i in samples.indices {
+                    let sampleVal = CGFloat(samples[i])
+                    let barH = max(4.0, sampleVal * (size.height - 8))
+                    let x = CGFloat(i) * (size.width / CGFloat(count)) + (size.width / CGFloat(count) - barWidth) / 2
+                    let y = (size.height - barH) / 2
+                    let rect = CGRect(x: x, y: y, width: barWidth, height: barH)
+                    let barFraction = Double(i) / Double(count)
+                    let color = barFraction <= activeFrac ? ODColors.accent : ODColors.track
+                    context.fill(Path(roundedRect: rect, cornerRadius: barWidth / 2), with: .color(color))
                 }
-                .padding(6)
-                .background((notice.contains("Внимание") ? Color.orange : Color.green).opacity(0.12))
-                .cornerRadius(6)
-                .accessibilityIdentifier("transcript-export-notice")
             }
-
-            if let prompt = model.unsavedPrompt {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                        Text("Несохранённые изменения").font(.headline)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard isEnabled, duration > 0 else { return }
+                        let frac = min(1.0, max(0.0, Double(value.location.x / width)))
+                        dragFraction = frac
+                        onSeek(frac * duration)
                     }
-                    Text("В расшифровке есть несохранённые изменения. Сохранить их перед закрытием окна?")
-                        .font(.callout)
-                    HStack {
-                        Button("Сохранить") {
-                            model.resolveUnsavedPrompt(.save, promptID: prompt.id)
+                    .onEnded { value in
+                        guard isEnabled, duration > 0 else { return }
+                        let frac = min(1.0, max(0.0, Double(value.location.x / width)))
+                        dragFraction = nil
+                        onSeek(frac * duration)
+                    }
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Позиция воспроизведения")
+            .accessibilityValue(TranscriptExportFormatter.formatTimestamp(seconds: position))
+            .focusable(isEnabled)
+            .onKeyPress(.leftArrow) {
+                guard isEnabled, duration > 0 else { return .ignored }
+                onSeek(max(0, position - 5))
+                return .handled
+            }
+            .onKeyPress(.rightArrow) {
+                guard isEnabled, duration > 0 else { return .ignored }
+                onSeek(min(duration, position + 5))
+                return .handled
+            }
+            .accessibilityAdjustableAction { direction in
+                guard isEnabled, duration > 0 else { return }
+                switch direction {
+                case .increment:
+                    onSeek(min(duration, position + 5))
+                case .decrement:
+                    onSeek(max(0, position - 5))
+                @unknown default:
+                    break
+                }
+            }
+        }
+        .frame(height: 36)
+    }
+
+}
+
+// MARK: - Document & Turn Presentation
+
+struct TranscriptReviewWindowView: View {
+    @ObservedObject var model: TranscriptReviewWindowModel
+    let title: String
+    var entryDate: Date? = nil
+    var entryDuration: Double? = nil
+    var workspaceWidth: CGFloat = 1392
+    private var narrow: Bool { workspaceWidth <= 767 }
+    private var compact: Bool { workspaceWidth <= 1023 }
+    @State private var scrollPosition: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        documentHeader
+
+                        if let error = model.error {
+                            Text(error)
+                                .font(.system(size: 13))
+                                .foregroundColor(ODColors.red)
+                                .textSelection(.enabled)
+                                .padding(.bottom, 12)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("transcript-unsaved-save")
-
-                        Button("Отбросить") {
-                            model.resolveUnsavedPrompt(.discard, promptID: prompt.id)
+                        if let notice = model.exportNotice {
+                            Text(notice)
+                                .font(.system(size: 13))
+                                .foregroundColor(ODColors.ink)
+                                .textSelection(.enabled)
+                                .padding(.bottom, 12)
                         }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("transcript-unsaved-discard")
 
-                        Button("Остаться") {
-                            model.resolveUnsavedPrompt(.stay, promptID: prompt.id)
+                        if let text = model.legacyText {
+                            Text(text)
+                                .font(.system(size: 16))
+                                .lineSpacing(6)
+                                .foregroundColor(ODColors.ink)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        } else {
+                            transcriptTurns(proxy: proxy)
                         }
-                        .accessibilityIdentifier("transcript-unsaved-stay")
+                    }
+                    .padding(.horizontal, narrow ? 16 : compact ? 24 : 48)
+                    .padding(.top, narrow ? 28 : compact ? 32 : workspaceWidth >= 1392 ? 48 : 40)
+                    .padding(.bottom, compact ? (narrow ? 28 : 32) : 48)
+                    .frame(maxWidth: 840)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .scrollPosition(id: $scrollPosition, anchor: .top)
+                .onScrollPhaseChange { _, phase in model.userScrollPhaseChanged(phase) }
+                .onChange(of: model.follow.request) { _, _ in
+                    guard model.follow.isFollowing, let target = model.follow.targetID else { return }
+                    proxy.scrollTo(target, anchor: .center)
+                }
+            }
+
+            playerFooter
+        }
+        .background(ODColors.surface)
+        .sheet(isPresented: Binding(get: { model.currentDraftIdentity != nil }, set: { _ in })) {
+            editingSheet.interactiveDismissDisabled()
+        }
+    }
+
+    private var documentHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if model.legacyText != nil {
+                HStack(spacing: 6) {
+                    ODIconView(.copy, size: 14, color: ODColors.muted)
+                    Text("Архивный текст")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(ODColors.muted)
+                }
+                .odLineBox(size: 12, height: 18.6)
+                .padding(.bottom, 16)
+            } else if model.state.isReadOnly {
+                HStack(spacing: 6) {
+                    ODIconView(.shield, size: 14, color: ODColors.muted)
+                    Text("Только чтение")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(ODColors.muted)
+                }
+                .odLineBox(size: 12, height: 18.6)
+                .padding(.bottom, 16)
+            } else if !model.rows.isEmpty {
+                HStack(spacing: 6) {
+                    ODIconView(.check, size: 14, color: ODColors.green)
+                    Text("Транскрипт готов")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(ODColors.green)
+                }
+                .odLineBox(size: 12, height: 18.6)
+                .padding(.bottom, 16)
+            }
+
+            Text(title)
+                .font(.system(size: min(32, max(24, workspaceWidth * 0.025)), weight: .semibold))
+                .tracking(-0.8)
+                .foregroundColor(ODColors.ink)
+                .odLineBox(size: min(32, max(24, workspaceWidth * 0.025)), height: min(32, max(24, workspaceWidth * 0.025)) * 1.25)
+                .textSelection(.enabled)
+                .padding(.bottom, 16)
+
+            ViewThatFits(in: .horizontal) {
+            HStack(spacing: narrow ? 12 : 16) {
+                if let entryDate {
+                    let formatter: DateFormatter = {
+                        let f = DateFormatter()
+                        f.locale = Locale(identifier: "ru_RU")
+                        f.dateFormat = "d MMMM yyyy · HH:mm"
+                        return f
+                    }()
+                    HStack(spacing: 6) {
+                        ODIconView(.calendar, size: 14, color: ODColors.muted)
+                        Text(formatter.string(from: entryDate))
                     }
                 }
-                .padding(12)
-                .background(Color.yellow.opacity(0.15))
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.4), lineWidth: 1))
-                .accessibilityIdentifier("transcript-unsaved-prompt")
-                Divider()
+
+                let dur = entryDuration ?? (model.playbackDuration > 0 ? model.playbackDuration : nil)
+                if let dur, dur > 0 {
+                    HStack(spacing: 6) {
+                        ODIconView(.clock, size: 14, color: ODColors.muted)
+                        Text(Self.clock(seconds: dur))
+                    }
+                }
+
+                if !model.rows.isEmpty {
+                    let speakers = Set(model.rows.map(\.speakerID)).count
+                    HStack(spacing: 6) {
+                        ODIconView(.people, size: 14, color: ODColors.muted)
+                        Text("\(speakers) говорящих")
+                    }
+                }
             }
+            VStack(alignment: .leading, spacing: 8) {
+                if let entryDate { Text(entryDate.formatted(date: .long, time: .shortened)) }
+                if let duration = entryDuration, duration > 0 { Text(Self.clock(seconds: duration)) }
+                if !model.rows.isEmpty { Text("\(Set(model.rows.map(\.speakerID)).count) говорящих") }
+            }
+            }
+            .font(.system(size: 13))
+            .odLineBox(size: 13, height: 20.15)
+            .foregroundColor(ODColors.muted)
 
             if let attendees = model.contextAttendees {
-                HStack(alignment: .top, spacing: 6) {
-                    Text("Приглашены:").font(.caption).bold().foregroundStyle(.secondary)
-                    Text(attendees.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                .accessibilityIdentifier("transcript-attendees-header")
+                Text("Приглашены: " + attendees.joined(separator: ", "))
+                    .font(.system(size: 13))
+                    .foregroundColor(ODColors.muted)
+                    .textSelection(.enabled)
+                    .padding(.bottom, 12)
+            }
+
+            if let explanation = model.explanation {
+                Text(explanation)
+                    .font(.system(size: 13))
+                    .foregroundColor(ODColors.muted)
+                    .textSelection(.enabled)
+                    .padding(.bottom, 12)
             }
 
             ForEach(model.presentationWarnings) { item in
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        if let sourceLabel = item.sourceLabel {
-                            Text(sourceLabel).font(.caption).bold().foregroundStyle(.secondary)
-                        }
-                        Text(item.message).font(.callout)
+                DisclosureGroup {
+                    Text(item.message)
+                        .font(.system(size: 13))
+                        .foregroundColor(ODColors.ink)
+                        .padding(.top, 4)
+                        .textSelection(.enabled)
+                } label: {
+                    HStack(spacing: 8) {
+                        ODIconView(.warning, size: 14, color: ODColors.warning)
+                        Text(item.sourceLabel.map { $0 + ": " } ?? "Есть замечание к разделению голосов")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(ODColors.warning)
                     }
                 }
-                .padding(6)
-                .background(Color.orange.opacity(0.12))
-                .cornerRadius(6)
-                .accessibilityIdentifier("transcript-warning-item")
+                .padding(12)
+                .background(ODColors.warningBg, in: RoundedRectangle(cornerRadius: 8))
+                .padding(.top, 8).padding(.bottom, 0)
             }
-            Divider()
 
-            if let draft = model.activeDraft {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Назначить имя говорящего").font(.headline)
-                        Spacer()
-                        Button("Закрыть") { model.cancelDraft(draftID: draft.id) }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("transcript-speaker-form-close")
+            Rectangle()
+                .fill(ODColors.line)
+                .frame(height: 1)
+                .padding(.top, 28)
+                .padding(.bottom, 24)
+
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Транскрипт")
+                    .font(.system(size: 14, weight: .semibold))
+                    .odLineBox(size: 14, height: 18.9)
+                    .foregroundColor(ODColors.ink)
+                Text("Нажми на имя, чтобы сменить спикера, или «Редактировать», чтобы исправить текст.")
+                    .font(.system(size: 13))
+                    .odLineBox(size: 13, height: 20.15)
+                    .foregroundColor(ODColors.muted)
+            }
+            .padding(.bottom, 16)
+        }
+    }
+
+    private func transcriptTurns(proxy: ScrollViewProxy) -> some View {
+        LazyVStack(alignment: .leading, spacing: 8) {
+            ForEach(model.rows) { row in
+                HStack(alignment: .top, spacing: narrow ? 8 : 16) {
+                    Button(action: { Task { await model.seekPlayback(to: row.start) } }) {
+                        Text(Self.clock(seconds: row.start))
+                            .font(.system(size: 12)).monospacedDigit()
+                            .odLineBox(size: 12, height: 15.6)
+                            .foregroundColor(model.activeTurnIDs.contains(row.id) ? ODColors.accent : ODColors.muted)
+                            .frame(width: narrow ? 44 : 48, alignment: .leading)
+                            .padding(.vertical, 4)
                     }
-                    TextField("Имя говорящего", text: Binding(
-                        get: { model.activeDraft?.inputName ?? "" },
-                        set: { model.updateDraftName($0, draftID: draft.id) }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("transcript-speaker-name-input")
+                    .buttonStyle(.plain)
+                    .disabled(!model.playbackEnabled)
+                    .accessibilityLabel("Перейти к " + Self.clock(seconds: row.start))
 
-                    if !draft.calendarAttendees.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Подсказки из календаря:").font(.caption).foregroundStyle(.secondary)
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack {
-                                    ForEach(draft.calendarAttendees, id: \.self) { attendee in
-                                        Button(attendee) {
-                                            model.selectCalendarAttendee(attendee, draftID: draft.id)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        .accessibilityIdentifier("transcript-calendar-attendee-" + attendee)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ODWrappingChips(trailingLast: true) {
+                            HStack(spacing: 8) {
+                            Circle()
+                                .fill(row.sourceID == .host ? ODColors.accent : ODColors.muted)
+                                .frame(width: 6, height: 6)
+
+                            if !model.state.isReadOnly {
+                                Button(action: { model.openSpeakerAssignment(for: row.id) }) {
+                                    HStack(spacing: 4) {
+                                        Text(row.name)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .odLineBox(size: 13, height: 16.9)
+                                            .foregroundColor(ODColors.ink)
+                                        Text("▾")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundColor(ODColors.muted)
                                     }
-                                }
-                            }
-                        }
-                    }
-
-                    Picker("Область действия", selection: Binding(
-                        get: { model.activeDraft?.scope ?? .thisTurn },
-                        set: { model.selectDraftScope($0, draftID: draft.id) }
-                    )) {
-                        ForEach(TranscriptReviewWindowModel.SpeakerAssignmentScope.allCases) { scope in
-                            let sourceLabel = draft.sourceID == .host ? "Микрофон" : "Системный звук"
-                            Text(scope == .thisTurn ? "Только этой реплике" : "Всему голосу (\(sourceLabel) · Голос \(draft.localID))").tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("transcript-speaker-scope-picker")
-
-                    if draft.scope == .allVoiceGroup {
-                        Toggle("Заменять существующие ручные назначения", isOn: Binding(
-                            get: { model.activeDraft?.replaceExistingManual ?? false },
-                            set: { model.toggleReplaceExistingManual($0, draftID: draft.id) }
-                        ))
-                        .accessibilityIdentifier("transcript-speaker-replace-manual-toggle")
-
-                        if let preview = draft.preview {
-                            Text("Затрагивает: \(preview.affectedTurnsCount) из \(preview.totalTurnsInGroup) реплик; заменяет ручных: \(preview.replacedManualAssignmentsCount)")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .accessibilityIdentifier("transcript-speaker-preview-summary")
-                        }
-
-                        if let confirmation = draft.pendingConfirmation {
-                            let sourceLabel = draft.sourceID == .host ? "Микрофон" : "Системный звук"
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Подтвердите массовое назначение имени «\(confirmation.confirmedName)» для группы \(sourceLabel) · Голос \(draft.localID): будет изменено \(confirmation.preview.affectedTurnsCount) реплик.")
-                                    .font(.callout).bold()
-                                HStack {
-                                    Button("Подтвердить") { model.confirmGroupAssignment(confirmation: confirmation) }
-                                        .buttonStyle(.borderedProminent)
-                                        .accessibilityIdentifier("transcript-speaker-confirm-group")
-                                    Button("Отмена") { model.cancelDraft(draftID: draft.id) }
-                                        .accessibilityIdentifier("transcript-speaker-cancel-group")
-                                }
-                            }
-                            .padding(8)
-                            .background(Color.secondary.opacity(0.1))
-                            .cornerRadius(6)
-                        }
-                    }
-
-                    if !draft.isConfirmingGroup {
-                        HStack {
-                            Button("Сохранить") { model.saveSpeakerAssignment(draftID: draft.id) }
-                                .buttonStyle(.borderedProminent)
-                                .accessibilityIdentifier("transcript-speaker-save")
-                            Button("Отмена") { model.cancelDraft(draftID: draft.id) }
-                                .accessibilityIdentifier("transcript-speaker-cancel")
-                            if draft.currentName != "Speaker \(draft.localID)" {
-                                Spacer()
-                                Button("Сбросить имя") {
-                                    model.resetSpeakerName(draftID: draft.id)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line, lineWidth: 1))
+                                    .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .accessibilityIdentifier("transcript-speaker-reset")
+                                .accessibilityLabel("Имя говорящего: " + row.name)
+                            } else {
+                                Text(row.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(ODColors.ink)
+                            }
+
+                            }
+
+                            if !model.state.isReadOnly {
+                                Button("Редактировать") {
+                                    model.openTextEditing(for: row.id)
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 13, weight: .semibold))
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .foregroundColor(ODColors.muted)
+                                .accessibilityLabel("Изменить текст в " + Self.clock(seconds: row.start))
                             }
                         }
+
+                        Text(row.text)
+                            .font(.system(size: 16))
+                            .odLineBox(size: 16, height: 28)
+                            .foregroundColor(ODColors.ink)
+                            .textSelection(.enabled)
                     }
                 }
-                .padding(10)
-                .background(Color.secondary.opacity(0.08))
-                .cornerRadius(8)
-                Divider()
+                .padding(.horizontal, narrow ? 8 : 12)
+                .padding(.vertical, narrow ? 12 : 16)
+                .background(
+                    model.activeTurnIDs.contains(row.id)
+                        ? ODColors.surface.mix(with: ODColors.selected, by: 0.65)
+                        : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10)
+                )
+                .id(row.id)
             }
+        }
+        .scrollTargetLayout()
+    }
 
-            ScrollViewReader { proxy in
-            ScrollView {
-                if let legacyText = model.legacyText {
-                    Text(legacyText).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                } else {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(model.rows) { row in
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Button(Self.timestamp(row.start)) {
-                                        Task { await model.seekPlayback(to: row.start) }
-                                    }.disabled(!model.playbackEnabled)
-                                        .accessibilityIdentifier("transcript-turn-" + row.id)
-                                    if model.state.isReadOnly {
-                                        Text(row.name).font(.headline).textSelection(.enabled)
-                                    } else {
-                                        Button(action: {
-                                            model.openSpeakerAssignment(for: row.id)
-                                        }) {
-                                            Text(row.name).font(.headline)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .accessibilityLabel("Назначить имя для реплики " + row.id)
-                                        .accessibilityIdentifier("transcript-speaker-" + row.id)
+    private var playerFooter: some View {
+        VStack(spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: compact ? 12 : 20) {
+                    playButton
+                    waveformScrubber.frame(minWidth: 120)
+                    timeReadout.fixedSize()
+                    speedMenu.fixedSize()
+                }
+                VStack(spacing: 12) {
+                    HStack(spacing: 12) { playButton; waveformScrubber.frame(minWidth: 120) }
+                    HStack(spacing: 12) { timeReadout; Spacer(); speedMenu }
+                }
+            }
+            HStack(spacing: 8) {
+                if let message = model.waveformMessage ?? model.playbackMessage {
+                    Text(message).font(.system(size: narrow ? 10 : 11)).foregroundStyle(ODColors.muted).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button(model.follow.isFollowing ? "Следовать за текстом" : "Следование выключено") {
+                    guard !model.inputBlocked() else { return }
+                    model.setFollow(!model.follow.isFollowing)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: narrow ? 10 : 11)).foregroundStyle(ODColors.accent)
+                .padding(4)
+                .disabled(model.playbackState == .closed)
+                .accessibilityValue(model.follow.isFollowing ? "Включено" : "Выключено")
+            }
+        }
+        .padding(.horizontal, narrow ? 12 : compact ? 16 : 28)
+        .padding(.top, narrow ? 12 : 16)
+        .padding(.bottom, narrow ? 12 : compact ? 16 : 12)
+        .background(ODColors.toolbar)
+        .overlay(alignment: .top) { Rectangle().fill(ODColors.line).frame(height: 1) }
+    }
 
-                                        Button(action: {
-                                            model.openTextEditing(for: row.id)
-                                        }) {
-                                            Image(systemName: "pencil")
-                                        }
-                                        .buttonStyle(.plain)
-                                        .accessibilityLabel("Редактировать текст реплики " + row.id)
-                                        .accessibilityIdentifier("transcript-edit-text-" + row.id)
-                                    }
-                                }
+    private var playButton: some View {
+        Button(action: model.togglePlayback) {
+            ODIconView(model.playbackState == .playing ? .pause : .play, size: 19, color: ODColors.ink)
+                .frame(width: 44, height: 44)
+                .background(ODColors.surface, in: Circle())
+                .overlay(Circle().strokeBorder(ODColors.line))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain).disabled(!model.playbackEnabled)
+        .accessibilityLabel(model.playbackState == .playing ? "Пауза" : "Воспроизвести")
+    }
 
-                                if let textDraft = model.activeTextDraft, textDraft.turnID == row.id {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        TextEditor(text: Binding(
-                                            get: { model.activeTextDraft?.text ?? "" },
-                                            set: { model.updateDraftText($0, draftID: textDraft.id) }
-                                        ))
-                                        .frame(minHeight: 60)
-                                        .padding(4)
-                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
-                                        .accessibilityIdentifier("transcript-text-editor-" + row.id)
+    private var waveformScrubber: some View {
+        WaveformScrubberView(waveform: model.waveform, position: model.playbackPosition,
+            duration: model.playbackDuration, isEnabled: model.playbackEnabled,
+            onSeek: { target in Task { await model.seekPlayback(to: target) } })
+    }
 
-                                        HStack {
-                                            Button("Сохранить текст") {
-                                                model.saveTextEditing(draftID: textDraft.id)
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            .accessibilityIdentifier("transcript-text-save-" + row.id)
+    private var timeReadout: some View {
+        HStack(spacing: 2) {
+            Text(Self.clock(seconds: model.playbackPosition)).foregroundStyle(ODColors.ink)
+            Text(" / " + Self.clock(seconds: model.playbackDuration)).foregroundStyle(ODColors.muted)
+        }
+        .font(.system(size: narrow ? 11 : 12)).monospacedDigit()
+    }
 
-                                            Button("Отмена") {
-                                                model.cancelTextDraft(draftID: textDraft.id)
-                                            }
-                                            .accessibilityIdentifier("transcript-text-cancel-" + row.id)
-                                        }
-                                    }
-                                    .padding(6)
-                                    .background(Color.secondary.opacity(0.08))
-                                    .cornerRadius(8)
-                                } else {
-                                    Text(row.text).textSelection(.enabled)
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(6)
-                                .background(model.activeTurnIDs.contains(row.id) ? Color.accentColor.opacity(0.15) : Color.clear)
-                                .id(row.id)
+    private var speedMenu: some View {
+        Menu {
+            ForEach([1, 1.25, 1.5, 2] as [Float], id: \.self) { rate in
+                Button(String(format: "%g×", rate)) { model.setPlaybackRate(rate) }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(String(format: "%g×", model.playbackRate))
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium))
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(ODColors.ink)
+            .padding(6)
+            .frame(minWidth: 48, maxWidth: narrow ? 62 : 70)
+            .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ODColors.line))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(!model.playbackEnabled).accessibilityLabel("Скорость воспроизведения")
+    }
+
+    var editingSheet: some View {
+        ODDialog(title: model.activeTextDraft != nil ? "Исправить реплику" : "Сменить спикера", width: 560, close: {
+            if let draft = model.activeTextDraft { model.cancelTextDraft(draftID: draft.id) }
+            if let draft = model.activeDraft { model.cancelDraft(draftID: draft.id) }
+        }) {
+            if let draft = model.activeTextDraft {
+                if let row = model.rows.first(where: { $0.id == draft.turnID }) {
+                    Text("\(Self.clock(seconds: row.start)) · \(row.name)")
+                        .font(.system(size: 13))
+                        .foregroundColor(ODColors.muted)
+                }
+
+                ODField(title: "Текст реплики") {
+                TextEditor(text: Binding(get: { model.activeTextDraft?.text ?? "" }, set: { model.updateDraftText($0, draftID: draft.id) }))
+                    .font(.system(size: 16))
+                    .scrollContentBackground(.hidden)
+                    .padding(12)
+                    .background(ODColors.toolbar, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line))
+                    .frame(height: 192)
+                    .accessibilityLabel("Текст реплики")
+                Text("До сохранения можно отменить ввод. После сохранения текст можно исправить повторно.")
+                    .font(.system(size: 12)).foregroundStyle(ODColors.muted)
+                }
+
+                if let error = model.error {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+
+            } else if let draft = model.activeDraft {
+                if let row = model.rows.first(where: { $0.id == draft.turnID }) {
+                    Text("\(Self.clock(seconds: row.start)) · \(row.name) (\(TranscriptDocument.localizedSourceLabel(for: draft.sourceID)) · Голос \(draft.localID))")
+                        .font(.system(size: 13))
+                        .foregroundColor(ODColors.muted)
+                }
+
+                Text(draft.calendarAttendees.isEmpty ? "В сохранённом контексте нет приглашённых. Можно выбрать имя из транскрипта или ввести своё." : "Приглашённые из календаря — только подсказки. Календарь не определяет, кому принадлежит голос.")
+                    .font(.system(size: 14)).odLineBox(size: 14, height: 22.4)
+                    .foregroundStyle(ODColors.muted)
+
+                let suggestions = Array(Set(draft.calendarAttendees + model.rows.map(\.name))).sorted()
+                ODWrappingChips {
+                    ForEach(suggestions, id: \.self) { name in
+                        Button(name) { model.selectCalendarAttendee(name, draftID: draft.id) }
+                            .buttonStyle(ODButtonStyle())
+                    }
+                }
+
+                ODField(title: "Имя спикера") {
+                    TextField("Введи имя", text: Binding(get: { model.activeDraft?.inputName ?? "" }, set: { model.updateDraftName($0, draftID: draft.id) }))
+                        .textFieldStyle(.plain).font(.system(size: 15))
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(ODColors.toolbar, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line))
+                        .accessibilityLabel("Имя говорящего")
+                    Text("Можно выбрать подсказку или вписать своё имя.")
+                        .font(.system(size: 12)).foregroundStyle(ODColors.muted)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Какие реплики изменить?").font(.system(size: 14, weight: .semibold))
+                    ForEach(TranscriptReviewWindowModel.SpeakerAssignmentScope.allCases) { scope in
+                        Button { model.selectDraftScope(scope, draftID: draft.id) } label: {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: draft.scope == scope ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(draft.scope == scope ? ODColors.accent : ODColors.muted)
+                                Text(scope.rawValue).font(.system(size: 14))
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(draft.scope == scope ? .isSelected : [])
+                        .accessibilityValue(draft.scope == scope ? "Выбрано" : "Не выбрано")
                     }
                 }
+
+                if let confirmation = draft.pendingConfirmation {
+                    let changedRows = draft.scope == .thisTurn
+                        ? model.rows.filter { $0.id == draft.turnID && confirmation.affectedTurnsCount > 0 }
+                        : model.rows.filter { confirmation.preview?.affectedTurnIDs.contains($0.id) == true }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(confirmation.affectedTurnsCount) реплик → \(confirmation.confirmedName)")
+                            .fontWeight(.semibold)
+                        Text("Группа: \(draft.sourceID.rawValue) / \(draft.localID). Другие голоса и предыдущие реплики не изменятся. Ручных назначений будет заменено: \(confirmation.preview?.replacedManualAssignmentsCount ?? (confirmation.willReplaceManual && confirmation.affectedTurnsCount > 0 ? 1 : 0)).")
+                        ForEach(Array(changedRows.prefix(3))) { row in
+                            Text("• " + Self.clock(seconds: row.start) + " · " + row.name + ": " + String(row.text.prefix(96)) + (row.text.count > 96 ? "…" : ""))
+                                .padding(.leading, 8)
+                        }
+                        if changedRows.count > 3 { Text("И ещё реплик: \(changedRows.count - 3)") }
+                    }
+                    .font(.system(size: 14)).odLineBox(size: 14, height: 22.4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12).background(ODColors.toolbar, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line))
+                } else {
+                    Text("Введи имя, чтобы увидеть изменения.")
+                        .font(.system(size: 14)).foregroundStyle(ODColors.muted)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ODColors.toolbar, in: RoundedRectangle(cornerRadius: 8))
+                }
+
+                if let error = model.error {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+
             }
-            .onScrollPhaseChange { _, phase in model.userScrollPhaseChanged(phase) }
-            .onChange(of: model.follow.request) { _, _ in
-                guard model.follow.isFollowing, let target = model.follow.targetID else { return }
-                proxy.scrollTo(target, anchor: .center)
+        } actions: {
+            if let draft = model.activeTextDraft {
+                Button("Отменить") { model.cancelTextDraft(draftID: draft.id) }.keyboardShortcut(.cancelAction)
+                Button("Сохранить") { model.saveTextEditing(draftID: draft.id) }
+                    .buttonStyle(ODButtonStyle(primary: true)).keyboardShortcut(.defaultAction)
+            } else if let draft = model.activeDraft {
+                    Button("Отменить") { model.cancelDraft(draftID: draft.id) }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Подтвердить замену") {
+                        if let confirmation = draft.pendingConfirmation { model.confirmGroupAssignment(confirmation: confirmation) }
+                    }
+                        .buttonStyle(ODButtonStyle(primary: true))
+                        .disabled((draft.pendingConfirmation?.affectedTurnsCount ?? 0) == 0)
+                        .keyboardShortcut(.defaultAction)
             }
-            }
-            if !model.follow.isFollowing && model.playbackState != .closed {
-                Button("Вернуться к воспроизведению") { model.returnToPlayback() }
-                    .accessibilityLabel("Вернуться к воспроизведению")
-                    .accessibilityIdentifier("transcript-return-to-playback")
-            }
-            Divider()
-            HStack {
-                Button(model.playbackState == .playing ? "Пауза" : "Воспроизвести") { model.togglePlayback() }
-                    .disabled(!model.playbackEnabled)
-                    .accessibilityIdentifier("transcript-play-pause")
-                Text(Self.timestamp(model.playbackPosition) + " / " + Self.timestamp(model.playbackDuration))
-                    .monospacedDigit().accessibilityIdentifier("transcript-playback-time")
-                Slider(value: Binding(get: { model.playbackPosition }, set: { position in
-                    Task { await model.seekPlayback(to: position) }
-                }), in: 0...max(1, model.playbackDuration))
-                    .disabled(!model.playbackEnabled)
-                    .accessibilityLabel("Позиция воспроизведения")
-                    .accessibilityIdentifier("transcript-playback-seek")
-            }
-            if let message = model.playbackMessage {
-                Text(message)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .accessibilityLabel(message)
-                    .accessibilityIdentifier("transcript-audio-status")
-            }
-        }.padding(20).frame(minWidth: 440, minHeight: 280)
+        }
+        .font(.system(size: 16))
     }
 
-    private static func timestamp(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "00:00:00" }
-        // Input is validated finite/nonnegative; format without a narrowing Int conversion.
-        return String(format: "%02.0f:%02.0f:%02.0f", floor(seconds / 3600), floor(seconds / 60).truncatingRemainder(dividingBy: 60), floor(seconds).truncatingRemainder(dividingBy: 60))
-    }
+    private static func clock(seconds: Double) -> String { formatClock(seconds) }
+    private static func timestamp(_ seconds: Double) -> String { TranscriptExportFormatter.formatTimestamp(seconds: seconds) }
 }

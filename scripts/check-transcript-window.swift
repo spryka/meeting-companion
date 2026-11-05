@@ -8,8 +8,6 @@ import MeetingCompanionPlatform
 @main struct TranscriptWindowCheck {
     enum Failure: Error { case check(String), persistence }
     @MainActor static func main() async throws {
-        _ = NSApplication.shared
-        NSApp.setActivationPolicy(.accessory)
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true).appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let fixture = URL(fileURLWithPath: CommandLine.arguments[2])
@@ -42,7 +40,7 @@ import MeetingCompanionPlatform
         let window = try await manager.open(recordingURL: recording, title: "Synthetic")
         let model = manager.model(for: recording)!
         let retainedSession = model.state.session!
-        try check(window.isVisible && window.title == "Synthetic", "real NSWindow opens with title")
+        try check(manager.current === window, "one embedded current model opens")
         try check(model.currentResultID == "v2", "current ignores old selection")
         model.openTextEditing(for: model.rows[0].id)
         model.updateDraftText("Saved override")
@@ -51,24 +49,24 @@ import MeetingCompanionPlatform
         model.updateDraftName("Saved name")
         model.saveSpeakerAssignment()
         let repeated = try await manager.open(recordingURL: root.appendingPathComponent("./meeting.m4a"), title: "Ignored")
-        try check(repeated === window && manager.windows.count == 1, "canonical repeat focuses existing window")
-        window.close()
+        try check(repeated === window && manager.coordinator.openWindows.count == 1, "canonical repeat focuses existing window")
+        manager.closeCurrent()
         try check(model.state.isClosed && retainedSession.isClosed && manager.model(for: recording) == nil,
                   "closing window invalidates session and registry")
-        let reopened = try await manager.open(recordingURL: recording, title: "Reopened")
+        _ = try await manager.open(recordingURL: recording, title: "Reopened")
         let reopenedModel = manager.model(for: recording)!
         try check(reopenedModel.currentResultID == "v2" && reopenedModel.rows[0].text == "Saved override" && reopenedModel.rows[0].name == "Saved name", "reopen retains current corrections")
-        reopened.close()
+        manager.closeCurrent()
         try version("v3", date: "2000-01-01T00:00:00Z", text: "Third")
         try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: root.appendingPathComponent("raw/transcripts/v2").path)
         try Data("{broken".utf8).write(to: root.appendingPathComponent("raw/transcripts/v3/result.json"))
         try "Saved text".write(to: root.appendingPathComponent("meeting.sources.transcript.txt"), atomically: true, encoding: .utf8)
-        let unavailable = try await manager.open(recordingURL: recording, title: "Unavailable")
+        _ = try await manager.open(recordingURL: recording, title: "Unavailable")
         let readOnly = manager.model(for: recording)!
         try check(readOnly.state.isReadOnly && readOnly.currentResultID == nil && readOnly.legacyText == "Saved text" && readOnly.explanation != nil, "corrupt newest has contained saved text without older fallback")
         try check(!readOnly.canExport && !readOnly.playbackEnabled, "saved compatibility text is read-only")
-        unavailable.close()
-        try check(manager.windows.isEmpty && manager.coordinator.openWindows.isEmpty, "all window state removed")
-        print("APPKIT CURRENT WINDOW HARNESS GREEN")
+        manager.closeCurrent()
+        try check(manager.current == nil && manager.coordinator.openWindows.isEmpty, "all window state removed")
+        print("EMBEDDED CURRENT WORKSPACE HARNESS GREEN")
     }
 }

@@ -7,7 +7,6 @@ import MeetingCompanionPlatform
 @main struct PlayerWindowCheck {
     enum Failure: Error { case check(String), timeout(String), persistence }
     @MainActor static func main() async throws {
-        _ = NSApplication.shared
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true).appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         func check(_ value: Bool, _ message: String) throws {
@@ -49,7 +48,7 @@ import MeetingCompanionPlatform
         // Immediate assertion provides semantic RED for the compiled API skeleton.
         try check(model.playbackState == .loading, "window starts asynchronous player preparation")
         try await wait("ready") { model.playbackState == .ready }
-        try check(window.isVisible && abs(model.playbackDuration - 6) < 0.05, "actual window ready with v2 clip duration")
+        try check(manager.current === window && abs(model.playbackDuration - 6) < 0.05, "actual window ready with v2 clip duration")
         await model.seekPlayback(to: 0.75)
         try check(model.playbackState == .ready && abs(model.playbackPosition - 0.75) < 0.05, "paused seek stays paused")
         try check(model.activeTurnIDs == model.rows.map(\.id), "interval index highlights ALL overlapping stable rows")
@@ -92,7 +91,7 @@ import MeetingCompanionPlatform
         try check(!actualTransport.hasPeriodicObserver, "actual pause removes periodic observer immediately")
         model.togglePlayback()
         try await wait("repeat replay") { model.playbackState == .playing }
-        window.close()
+        manager.closeCurrent()
         let closedPosition = model.playbackPosition
         try await Task.sleep(for: .milliseconds(200))
         try check(model.playbackState == .closed && model.playbackPosition == closedPosition && model.state.isClosed,
@@ -100,27 +99,27 @@ import MeetingCompanionPlatform
         try check(actualPlayer.currentItem == nil && !actualTransport.hasPeriodicObserver && actualTransport.onEvent == nil,
                   "actual close releases item observer and callbacks")
         try check(model.follow.isClosed && model.follow.targetID == nil, "close clears follow target and ignores further return")
-        let rapid = try await manager.open(recordingURL: recording, title: "Reopen")
+        _ = try await manager.open(recordingURL: recording, title: "Reopen")
         let rapidModel = manager.model(for: recording)!
-        rapid.close()
+        manager.closeCurrent()
         try await Task.sleep(for: .milliseconds(150))
         try check(rapidModel.playbackState == .closed && rapidModel.playbackDuration == 0, "close during preparation rejects late ready callback")
         // Missing current mix preserves all transcript rows and displays audio failure.
         try FileManager.default.removeItem(at: root.appendingPathComponent("raw/transcripts/v2/mix.wav"))
-        let broken = try await manager.open(recordingURL: recording, title: "Missing mix")
+        _ = try await manager.open(recordingURL: recording, title: "Missing mix")
         let brokenModel = manager.model(for: recording)!
         try await wait("failed") { brokenModel.playbackState == .failed }
         try check(!brokenModel.rows.isEmpty && !brokenModel.playbackEnabled, "missing mix preserves text with disabled player")
-        broken.close()
+        manager.closeCurrent()
         let legacyDir = root.appendingPathComponent("legacy")
         try FileManager.default.createDirectory(at: legacyDir, withIntermediateDirectories: true)
         let legacyURL = legacyDir.appendingPathComponent("old.m4a")
         try "Legacy text".write(to: legacyDir.appendingPathComponent("old.sources.transcript.txt"), atomically: true, encoding: .utf8)
-        let legacy = try await manager.open(recordingURL: legacyURL, title: "Legacy")
+        _ = try await manager.open(recordingURL: legacyURL, title: "Legacy")
         let legacyModel = manager.model(for: legacyURL)!
         try check(!legacyModel.playbackEnabled && legacyModel.legacyText == "Legacy text" && legacyModel.explanation != nil,
                   "legacy retains TXT and disabled audio")
-        legacy.close()
-        print("ACTUAL APPKIT PLAYER WINDOW GREEN")
+        manager.closeCurrent()
+        print("EMBEDDED PLAYER HARNESS GREEN")
     }
 }

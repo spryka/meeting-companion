@@ -15,6 +15,11 @@ public protocol TranscriptPlaybackTransport: AnyObject {
     func pause()
     func seek(to seconds: Double) async -> Bool
     func stop()
+    func setRate(_ rate: Float)
+}
+
+public extension TranscriptPlaybackTransport {
+    func setRate(_ rate: Float) {}
 }
 
 @MainActor
@@ -22,14 +27,24 @@ public final class TranscriptPlaybackController {
     public enum State: Equatable, Sendable { case idle, loading, ready, playing, unavailable, failed, closed }
     public private(set) var state: State = .idle
     public private(set) var resultID: String?
+    public private(set) var mixURL: URL?
     public private(set) var duration: Double = 0
     public private(set) var position: Double = 0
+    public private(set) var playbackRate: Float = 1.0
     public var onChange: (@MainActor () -> Void)?
     private let transport: any TranscriptPlaybackTransport
     private var generation: UInt64 = 0
     private var seekGeneration: UInt64 = 0
 
     public init(transport: any TranscriptPlaybackTransport) { self.transport = transport }
+
+    public func setPlaybackRate(_ rate: Float) {
+        guard rate.isFinite, rate > 0 else { return }
+        playbackRate = rate
+        transport.setRate(rate)
+        onChange?()
+    }
+
     public func select(resultID: String, recordingDirectory: URL) async {
         guard state != .closed else { return }
         generation &+= 1
@@ -37,6 +52,7 @@ public final class TranscriptPlaybackController {
         transport.onEvent = nil
         transport.stop()
         self.resultID = resultID
+        self.mixURL = nil
         duration = 0
         position = 0
         state = .loading
@@ -66,6 +82,7 @@ public final class TranscriptPlaybackController {
                 throw PlaybackError.invalidMix
             }
             guard generation == ticket, state != .closed else { return }
+            self.mixURL = mix
             transport.onEvent = { [weak self] event in
                 guard let self, self.generation == ticket, self.state != .closed else { return }
                 self.receive(event)
@@ -75,12 +92,14 @@ public final class TranscriptPlaybackController {
             try Task.checkCancellation()
             guard loadedDuration.isFinite, loadedDuration > 0 else { throw PlaybackError.invalidDuration }
             duration = loadedDuration
+            transport.setRate(playbackRate)
             state = .ready
             onChange?()
         } catch {
             guard generation == ticket, state != .closed else { return }
             transport.onEvent = nil
             transport.stop()
+            self.mixURL = nil
             state = .failed
             onChange?()
         }
@@ -88,6 +107,7 @@ public final class TranscriptPlaybackController {
 
     public func play() {
         guard state == .ready else { return }
+        transport.setRate(playbackRate)
         transport.play()
     }
 
@@ -116,6 +136,7 @@ public final class TranscriptPlaybackController {
         generation &+= 1
         transport.onEvent = nil
         transport.stop()
+        mixURL = nil
         state = .closed
         onChange = nil
     }
