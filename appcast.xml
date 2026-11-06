@@ -5,6 +5,17 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.0.0-beta.31</title>
+            <description><![CDATA[<p>Обновления публичных сборок теперь используют Sparkle независимо от способа установки, включая Homebrew. Удалены проверка Caskroom и окно с brew-командами; beta opt-in, подписи и защита текущей работы сохранены.</p><p>Если старый бинарник ещё блокирует updater или отправляет в Homebrew, один раз установите beta.31 из DMG. Бинарник не может получить новую политику до замены.</p>]]></description>
+            <pubDate>Fri, 06 Nov 2026 22:40:05 +0300</pubDate>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>67</sparkle:version>
+            <sparkle:shortVersionString>2.0.0-beta.31</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.0.0-beta.31/Meeting-Companion-2.0.0-beta.31-arm64.zip" length="16809932" type="application/octet-stream" sparkle:edSignature="jHkievdA3X3PLTdUecqDeDHW6MU4BxPoDB37tze3IArIypvP5vhmPtMpZnaNahRs9W1L9umBdBV7ksnBXk00Bw=="/>
+        </item>
+        <item>
             <title>2.0.0-beta.30</title>
             <description><![CDATA[<p>Первая публичная бета Meeting Companion 2.0: локальный Swift/MLX без Python, обновлённая библиотека и плеер, правки текста и имён, хронологические реплики.</p><ul><li>⌘N — новая запись, ⌘F — поиск, пробел — play/pause, ←/→ — ±5 секунд.</li><li>↑/↓ выбирают встречи или реплики с перемоткой; исправлено застревание при удержании.</li><li>Esc закрывает верхнюю форму или настройки, не прерывая запись.</li></ul><p>macOS 15+, Apple Silicon. Предварительная версия без Apple notarization; расширенные проверки IME/VoiceOver не проводились и сняты владельцем из обязательной приёмки.</p>]]></description>
             <pubDate>Fri, 06 Nov 2026 20:49:42 +0300</pubDate>
