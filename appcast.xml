@@ -5,6 +5,17 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.0.0-beta.30</title>
+            <description><![CDATA[<p>Первая публичная бета Meeting Companion 2.0: локальный Swift/MLX без Python, обновлённая библиотека и плеер, правки текста и имён, хронологические реплики.</p><ul><li>⌘N — новая запись, ⌘F — поиск, пробел — play/pause, ←/→ — ±5 секунд.</li><li>↑/↓ выбирают встречи или реплики с перемоткой; исправлено застревание при удержании.</li><li>Esc закрывает верхнюю форму или настройки, не прерывая запись.</li></ul><p>macOS 15+, Apple Silicon. Предварительная версия без Apple notarization; полная IME/VoiceOver UAT остаётся открытой.</p>]]></description>
+            <pubDate>Fri, 06 Nov 2026 20:49:42 +0300</pubDate>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>66</sparkle:version>
+            <sparkle:shortVersionString>2.0.0-beta.30</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.0.0-beta.30/Meeting-Companion-2.0.0-beta.30-arm64.zip" length="16810907" type="application/octet-stream" sparkle:edSignature="Z7YP9jQkuBEDu112Kr5dJfpbtBpRkispG/dCaqMXSq0lC81GtwyR6kVsSaIo437fjKqI1k2/WEkNM1ux9q/FDg=="/>
+        </item>
+        <item>
             <title>1.7.2</title>
             <description><![CDATA[<ul><li>Записи короче 10 секунд отменяются без сборки аудио и распознавания. Они не остаются в истории; исходники перемещаются в Корзину. До 10 секунд вместо стопа показан крестик отмены. После отмены капсула на 2 секунды показывает &quot;Запись отменена&quot; и скрывается.</li><li>Значок остановки записи в капсуле явно окрашен в красный в обеих темах.</li><li>Добавлена тонкая постоянная обводка капсул записи и обработки, адаптирующаяся к светлой и тёмной теме.</li><li>Капсула напоминает о продолжающейся записи плавной пульсацией обводки после окончания встречи или часа записи без календаря. Напоминание можно отложить на 15 минут. При уменьшении движения обводка постоянная.</li><li>Исправлено открытие истории кнопкой &quot;Открыть результаты&quot; из капсулы: окно больше не скрывается сразу после открытия.</li><li>В окне готового обновления добавлены кнопки &quot;Установить и перезапустить&quot; и &quot;Позже&quot;. Перезапуск недоступен во время записи, обработки и подготовки.</li></ul>]]></description>
             <pubDate>Tue, 27 Oct 2026 16:49:07 +0300</pubDate>
