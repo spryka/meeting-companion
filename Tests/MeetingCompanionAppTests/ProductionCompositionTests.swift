@@ -636,7 +636,8 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
 @MainActor private final class BufferingPresentationTransport: TranscriptPlaybackTransport {
     var onEvent: (@MainActor @Sendable (TranscriptPlaybackEvent) -> Void)?
     var pendingPlay = false
-    func prepare(url: URL) async throws -> Double { 1 }
+    var duration: Double = 1
+    func prepare(url: URL) async throws -> Double { duration }
     func play() { pendingPlay = true }
     func pause() { pendingPlay = false; onEvent?(.playing(false)) }
     func seek(to seconds: Double) async -> Bool { true }
@@ -1093,8 +1094,8 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
         model.workspaceShowsList = true // normal narrow back
         model.showTranscript(url)
         #expect(!model.workspaceShowsList)
-        model.workspace.externalModal = true
         model.workspaceShowsList = true
+        model.workspace.externalModal = true
         model.showTranscript(root.appendingPathComponent("other.m4a"))
         #expect(model.workspaceShowsList && model.selectedHistoryURL == url)
     }
@@ -1573,6 +1574,137 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
         #expect(!model.preventsTermination)
         #expect(model.canResetCache)
     }
+    @Test func chronologicalReadingEditingCopyAndReopen() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/chronological.json")
+        let result = root.appendingPathComponent("raw/transcripts/res_chronological")
+        try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
+        let resultURL = result.appendingPathComponent("result.json")
+        let original = try Data(contentsOf: fixture)
+        try original.write(to: resultURL)
+        let manager = TranscriptReviewWindowManager()
+        defer { manager.closeCurrent() }
+        let recording = root.appendingPathComponent("meeting.m4a")
+        var editor = try await manager.open(recordingURL: recording, title: "Synthetic interruption")
+        #expect(editor.rows.map(\.text) == ["Обсудим…", "Да", "…релиз"])
+        #expect(try Data(contentsOf: resultURL) == original)
+        editor.openTextEditing(for: "t0")
+        #expect(editor.activeTextDraft?.text == "Обсудим")
+        editor.cancelTextDraft()
+        #expect(editor.rows.first?.text == "Обсудим…")
+        editor.openTextEditing(for: "t0")
+        editor.saveTextEditing()
+        #expect(editor.rows.first?.text == "Обсудим…")
+        let repository = try #require(editor.state.session?.editsRepository)
+        #expect(try repository.loadEdits(resultID: "res_chronological").overrides["t0"]?.text == nil)
+        #expect(!repository.canUndo(resultID: "res_chronological"))
+        editor.openTextEditing(for: "t0")
+        let exact = "  Ручная правка\nбез маркера  "
+        editor.updateDraftText(exact)
+        editor.saveTextEditing()
+        #expect(editor.error == nil && editor.rows.first?.text == exact)
+        var copied = ""
+        editor.copySavedText { copied = $0; return true }
+        #expect(copied.contains(exact + "\n\n"))
+        #expect(copied.contains("…релиз"))
+        _ = try repository.undo(resultID: "res_chronological")
+        manager.closeCurrent()
+        editor = try await manager.open(recordingURL: recording, title: "Synthetic interruption")
+        #expect(editor.rows.first?.text == "Обсудим…")
+        editor.openTextEditing(for: "t0")
+        #expect(editor.activeTextDraft?.text == "Обсудим")
+        editor.updateDraftText(exact); editor.saveTextEditing()
+        manager.closeCurrent()
+        let reopened = try await manager.open(recordingURL: recording, title: "Synthetic interruption")
+        #expect(reopened.rows.first?.text == exact)
+        reopened.openTextEditing(for: "t0")
+        #expect(reopened.activeTextDraft?.text == exact)
+        reopened.cancelTextDraft()
+        #expect(try Data(contentsOf: resultURL) == original)
+    }
+
+    @Test func chronologicalPlaybackFocusAndUserFollowing() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/chronological.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        json["playback"] = ["status": "ready", "mixPath": "raw/transcripts/res_chronological/mix.m4a"]
+        json["warnings"] = []
+        let result = root.appendingPathComponent("raw/transcripts/res_chronological")
+        try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: json)
+        let resultURL = result.appendingPathComponent("result.json")
+        try data.write(to: resultURL)
+        try Data([0]).write(to: result.appendingPathComponent("mix.m4a"))
+        let transport = BufferingPresentationTransport()
+        transport.duration = 100
+        let state = try await TranscriptWindowCoordinator().openWindow(for: root.appendingPathComponent("meeting.m4a")).state
+        let editor = try await TranscriptReviewWindowModel(state: state, transportFactory: { transport })
+        defer { editor.close(); state.close() }
+        for _ in 0..<500 where editor.playbackState != .ready { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(editor.playbackState == .ready)
+        editor.togglePlayback(); transport.releaseBuffer()
+        for (time, expected) in [(10.5, ["t0"]), (11.0, ["t1"]), (11.5, []), (12.2, ["t2"])] {
+            transport.onEvent?(.position(time))
+            #expect(editor.activeTurnIDs == expected)
+            if let id = expected.first { #expect(editor.follow.targetID == id) }
+        }
+        editor.userScrollPhaseChanged(.interacting)
+        #expect(!editor.follow.isFollowing)
+        transport.onEvent?(.position(11))
+        #expect(editor.activeTurnIDs == ["t1"])
+        editor.returnToPlayback()
+        #expect(editor.follow.isFollowing && editor.follow.targetID == "t1")
+        editor.openTextEditing(for: "t1")
+        #expect(!editor.follow.isFollowing)
+        editor.cancelTextDraft()
+        await editor.seekPlayback(to: 10.5)
+        #expect(editor.activeTurnIDs == ["t0"])
+        await editor.seekPlayback(to: 11.6)
+        #expect(editor.activeTurnIDs.isEmpty)
+        #expect(try Data(contentsOf: resultURL) == data)
+    }
+
+    @Test func oldOverlappingDocumentOpensWithoutRegroupingOrWritingEdits() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/chronological.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        var turns = json["turns"] as! [[String: Any]]
+        turns[0]["wordIDs"] = ["a1", "a2"]; turns[0]["end"] = 13.0
+        turns.removeLast(); json["turns"] = turns
+        json["playback"] = ["status": "ready", "mixPath": "raw/transcripts/res_chronological/mix.m4a"]
+        json["warnings"] = []
+        let result = root.appendingPathComponent("raw/transcripts/res_chronological")
+        try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
+        let documentBytes = try JSONSerialization.data(withJSONObject: json)
+        let editBytes = try JSONEncoder().encode(TranscriptEdits(resultID: "res_chronological", revision: 3,
+            overrides: ["t0": .init(text: "  Старая правка  ")]))
+        try documentBytes.write(to: result.appendingPathComponent("result.json"))
+        try editBytes.write(to: result.appendingPathComponent("edits.json"))
+        try Data([0]).write(to: result.appendingPathComponent("mix.m4a"))
+        let transport = BufferingPresentationTransport(); transport.duration = 100
+        let manager = TranscriptReviewWindowManager(transportFactory: { transport })
+        defer { manager.closeCurrent() }
+        let editor = try await manager.open(recordingURL: root.appendingPathComponent("meeting.m4a"), title: "Old")
+        #expect(editor.rows.map(\.id) == ["t0", "t1"])
+        #expect(editor.rows.map(\.text) == ["  Старая правка  ", "Да"])
+        for _ in 0..<500 where editor.playbackState != .ready { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(editor.playbackState == .ready)
+        await editor.seekPlayback(to: 11)
+        #expect(editor.activeTurnIDs == ["t1"])
+        await editor.seekPlayback(to: 11.6)
+        #expect(editor.activeTurnIDs.isEmpty)
+        await editor.seekPlayback(to: 10.5)
+        #expect(editor.activeTurnIDs == ["t0"])
+        #expect(try Data(contentsOf: result.appendingPathComponent("result.json")) == documentBytes)
+        #expect(try Data(contentsOf: result.appendingPathComponent("edits.json")) == editBytes)
+    }
+
     private func fixtureRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("raw"), withIntermediateDirectories: true)

@@ -591,36 +591,23 @@ public final class PipelineRunner: @unchecked Sendable {
             }
         }
 
-        // Group turns per channel and merge
-        var turnCounter = 0
-        for channel in channels {
-            let channelPrefix = channel.id == .host ? "h" : "r"
-            let channelDocWords = docWords.filter { $0.id.hasPrefix("w_\(channelPrefix)_") }
-            let pipelineWords = channelDocWords.map {
-                PipelineWord(start: $0.start, end: $0.end, text: $0.text, speaker: Int($0.speakerID.dropFirst(5)))
-            }
-            let turnGroups = PipelineLogic.groupTurnIndices(pipelineWords)
-
-            for group in turnGroups {
-                guard group.first != nil else { continue }
-                turnCounter += 1
-                let groupWords = group.map { channelDocWords[$0] }
-                let turnStart = groupWords.map(\.start).min() ?? 0.0
-                let turnEnd = groupWords.map(\.end).max() ?? 0.0
-                let speakerID = groupWords[0].speakerID
-                let wordIDs = groupWords.map(\.id)
-
-                docTurns.append(TranscriptDocument.Turn(
-                    id: "turn_\(turnCounter)",
-                    speakerID: speakerID,
-                    start: turnStart,
-                    end: turnEnd,
-                    wordIDs: wordIDs
-                ))
-            }
+        // Keep stored words untouched; order references before grouping across sources.
+        let sourceBySpeaker = Dictionary(uniqueKeysWithValues: docSpeakers.map { ($0.id, $0.sourceID) })
+        let orderedWords = docWords.enumerated().sorted {
+            if $0.element.start != $1.element.start { return $0.element.start < $1.element.start }
+            let lhsSource = sourceBySpeaker[$0.element.speakerID]
+            let rhsSource = sourceBySpeaker[$1.element.speakerID]
+            if lhsSource != rhsSource { return lhsSource == .host }
+            return $0.offset < $1.offset
+        }.map(\.element)
+        docTurns = TranscriptParagraphs.groupWordIndices(orderedWords).enumerated().map { index, group in
+            let words = group.map { orderedWords[$0] }
+            return TranscriptDocument.Turn(
+                id: "turn_\(index + 1)", speakerID: words[0].speakerID,
+                start: words.map(\.start).min()!, end: words.map(\.end).max()!,
+                wordIDs: words.map(\.id)
+            )
         }
-
-        docTurns.sort { $0.start < $1.start }
 
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime]

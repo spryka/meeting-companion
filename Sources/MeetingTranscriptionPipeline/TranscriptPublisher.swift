@@ -113,6 +113,7 @@ public struct TranscriptPublisher: Sendable {
         }
 
         let transcriptsDir = try validateDirectoryContainment()
+        let document = try document.includingSavedContext(in: recordingDirectory)
         let targetDir = transcriptsDir.appendingPathComponent(resultID)
 
         if FileManager.default.fileExists(atPath: targetDir.path) {
@@ -235,7 +236,7 @@ public struct TranscriptPublisher: Sendable {
         }
 
         let speakerMap = Dictionary(uniqueKeysWithValues: document.speakers.map { ($0.id, $0.displayNumber) })
-        let wordsByID = Dictionary(uniqueKeysWithValues: document.words.map { ($0.id, $0.text) })
+        let presentation = TranscriptTextPresentation(document: document)
         for turn in document.turns {
             let num = speakerMap[turn.speakerID] ?? 1
             let totalSeconds = Int(turn.start)
@@ -243,7 +244,7 @@ public struct TranscriptPublisher: Sendable {
             let minutes = (totalSeconds % 3600) / 60
             let seconds = totalSeconds % 60
             let timeStr = String(format: "[%02d:%02d:%02d]", hours, minutes, seconds)
-            let turnText = turn.wordIDs.compactMap { wordsByID[$0] }.joined(separator: " ")
+            let turnText = presentation.readingText[turn.id] ?? ""
             lines.append("\(timeStr) Speaker \(num): \(turnText)")
         }
 

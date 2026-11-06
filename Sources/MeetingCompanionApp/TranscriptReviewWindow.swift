@@ -116,6 +116,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         let start: Double
         let name: String
         let text: String
+        let editText: String
         let speakerID: String
         let sourceID: TranscriptDocument.SourceID
         let localID: Int
@@ -129,12 +130,14 @@ final class TranscriptReviewWindowModel: ObservableObject {
             speakerID: String = "",
             sourceID: TranscriptDocument.SourceID = .host,
             localID: Int = 1,
-            hasManualName: Bool = false
+            hasManualName: Bool = false,
+            editText: String? = nil
         ) {
             self.id = id
             self.start = start
             self.name = name
             self.text = text
+            self.editText = editText ?? text
             self.speakerID = speakerID
             self.sourceID = sourceID
             self.localID = localID
@@ -442,7 +445,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         case .loading: playbackMessage = "Загрузка аудио текущего результата…"
         case .idle, .closed: break
         }
-        activeTurnIDs = index?.activeTurnIDs(at: playback.position) ?? []
+        activeTurnIDs = index?.readingFocusTurnID(at: playback.position).map { [$0] } ?? []
         follow.update(activeIDs: activeTurnIDs, playing: playback.state == .playing)
     }
 
@@ -510,7 +513,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
             throw TranscriptStorageError.currentResultUnavailable(resultID)
         }
         let edits = try storage.editsRepository.loadEdits(resultID: resultID)
-        let words = Dictionary(uniqueKeysWithValues: document.words.map { ($0.id, $0.text) })
+        let presentation = TranscriptTextPresentation(document: document, overrides: edits.overrides)
         let speakers = Dictionary(uniqueKeysWithValues: document.speakers.map { ($0.id, $0) })
         return document.turns.map { turn in
             let override = edits.overrides[turn.id]
@@ -522,11 +525,12 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 id: turn.id,
                 start: turn.start,
                 name: override?.displayName ?? "Speaker \(displayNumber)",
-                text: override?.text ?? turn.wordIDs.compactMap { words[$0] }.joined(separator: " "),
+                text: presentation.readingText[turn.id] ?? "",
                 speakerID: turn.speakerID,
                 sourceID: sourceID,
                 localID: localID,
-                hasManualName: override?.displayName != nil
+                hasManualName: override?.displayName != nil,
+                editText: presentation.editableText[turn.id] ?? ""
             )
         }
     }
@@ -762,8 +766,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
         activeTextDraft = TextEditingDraft(
             id: UUID(),
             turnID: row.id,
-            initialText: row.text,
-            text: row.text,
+            initialText: row.editText,
+            text: row.editText,
             targetResultID: resultID
         )
         error = nil

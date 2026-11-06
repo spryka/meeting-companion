@@ -73,13 +73,14 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("synthetic.wav")
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1))
-        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8000))
-        buffer.frameLength = 8000
-        for i in 0..<8000 { buffer.floatChannelData![0][i] = 0 }
+        // Keep the muted clip alive while parallel App tests contend for MainActor.
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160000))
+        buffer.frameLength = 160000
+        for i in 0..<160000 { buffer.floatChannelData![0][i] = 0 }
         do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: buffer) }
         let transport = TranscriptAVPlayerTransport(isMuted: true)
         defer { transport.stop() }
-        #expect(try await transport.prepare(url: url) == 0.5)
+        #expect(try await transport.prepare(url: url) == 10)
         var observations: [[String: Any]] = []
         for rate: Float in [1,1.25,1.5,2] {
             transport.setRate(1)
@@ -98,7 +99,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             observations.append(["requested": rate, "initialTimeControlStatus": initialStatus, "actualRateAfterResume": transport.actualPlaybackRate])
             transport.pause()
         }
-        #expect(try await transport.prepare(url: url) == 0.5)
+        #expect(try await transport.prepare(url: url) == 10)
         transport.setRate(2); transport.play()
         for _ in 0..<100 where transport.timeControlStatus != .playing { try await Task.sleep(for: .milliseconds(5)) }
         #expect(transport.actualPlaybackRate == 2)
@@ -130,11 +131,11 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         var playback = json["playback"] as! [String: Any]
         playback["mixPath"] = "raw/transcripts/res_valid_parakeet_off/mix.wav"
         json["playback"] = playback
-        let starts = [0.0,68,204,326,489,731,1054,1328]
+        let starts = [0.0,0.6,1.2,326,489,731,1054,1328]
         let texts = [
-            "Давайте начнём с того, что изменилось за неделю. Хочется сегодня договориться о приоритетах и понять, что берём в следующую итерацию.",
-            "По основному сценарию мы закончили подготовку. Осталось разобраться с состояниями, когда обработка ещё идёт или завершилась с предупреждением.",
-            "Мне кажется, результат встречи должен быть доступен сразу. Открываешь запись — видишь текст и можешь перейти к нужному моменту, не разбираясь в файлах.",
+            "Давайте обсудим",
+            "Да, слушаю",
+            "следующий релиз и оставшиеся задачи",
             "Да, и важно отделить предупреждение от самого результата. Если текст готов, он должен оставаться читаемым. А подробности о проблеме можно раскрыть отдельно.",
             "Тогда оставляем один основной путь: выбрать встречу, открыть транскрипт, при необходимости послушать фрагмент. Экспорт и технические детали убираем в дополнительные действия.",
             "Согласен. Ещё предлагаю сохранить компактную панель во время записи. В ней достаточно таймера, микрофона и кнопки остановки — ничего лишнего.",
@@ -189,7 +190,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         manager.closeCurrent()
         let current = try await manager.open(recordingURL: url, title: entry.title)
         for _ in 0..<100 where current.waveform == nil { try await Task.sleep(for: .milliseconds(5)) }
-        await current.seekPlayback(to: 204)
+        await current.seekPlayback(to: 0.6)
         var provenance: [[String: Any]] = []
         var actions: [[String: Any]] = []
         func accessibilityElements(_ object: Any, depth: Int = 0) -> [any NSAccessibilityProtocol] {
@@ -198,7 +199,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         }
         func render<V: View>(_ view: V, _ name: String, _ width: CGFloat, _ height: CGFloat, dark: Bool = false, press: String? = nil) async throws {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-                                  styleMask: [.borderless], backing: .buffered, defer: false)
+                                  styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.title = "SOL synthetic — " + name
             window.isReleasedWhenClosed = false
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -240,7 +241,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         try await render(RecorderWorkspaceView(model: model, showSettings: {}), "workspace-reference-narrow", 700, 1000)
         try await render(RecorderWorkspaceView(model: model, showSettings: {}), "workspace-reference-narrow-dark", 700, 1000, dark: true)
         current.setPlaybackRate(1)
-        await current.seekPlayback(to: 204)
+        await current.seekPlayback(to: 0.6)
         for page in RecorderSettingsView.Page.allCases {
             model.settingsPage = page
             try await render(SettingsShell(model: model), "settings-"+page.symbol, 760, 740)
