@@ -220,8 +220,8 @@ cache; исходные файлы сохраняются. Discovery не пер
 неизменяемый результат машинной обработки конкретной версии записи для последующего
 просмотра и редактирования без повторного запуска моделей
 ([ADR-0001](../adr/0001-preserve-recognition-and-user-edits.md)).
-Нормативные требования закреплены в [спецификации](../openspec/changes/transcript-editor/specs/transcript-document/spec.md),
-архитектурные решения — в [дизайне](../openspec/changes/transcript-editor/design.md),
+Нормативные требования закреплены в [спецификации](../openspec/changes/archive/2026-11-06-transcript-editor/specs/transcript-document/spec.md),
+архитектурные решения — в [дизайне](../openspec/changes/archive/2026-11-06-transcript-editor/design.md),
 а эталонные наборы данных — в [фикстурах](../Tests/Fixtures/transcript-document/README.md).
 
 ### Обязательные поля и nullable

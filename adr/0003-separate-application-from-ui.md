@@ -28,7 +28,7 @@ Core и model libraries, App/CLI не линкуют его.
 существующее файловое хранение не требует отдельной универсальной абстракции.
 
 Карта компонентов и порядок выделения:
-[design.md](../openspec/changes/swift-mlx-pipeline/design.md#границы-модулей-приложения).
+[design.md](../openspec/changes/archive/2026-11-06-swift-mlx-pipeline/design.md#границы-модулей-приложения).
 JSON v1, edits, selected version и оба вида audio preview сохраняются.
 
 ## Alternatives

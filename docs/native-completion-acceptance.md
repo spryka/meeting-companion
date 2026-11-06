@@ -27,3 +27,10 @@ it is not tracked or used by the application. Its checkout-wide Python-free
 scan therefore fails until those obsolete development files are removed.
 No user data or model caches were changed for closeout. No fresh audio,
 inference, performance or hardware checks were run.
+
+## Final archival decision — 2026-11-06
+
+The owner has now explicitly withdrawn all residual research and extended checks
+and requested closure without follow-up obligations. [Beta.30 final acceptance](beta30-acceptance.md)
+supersedes the earlier unarchived disposition above; historical unexecuted
+checks remain unexecuted rather than PASS.

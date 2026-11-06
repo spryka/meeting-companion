@@ -6,7 +6,7 @@
         <language>ru</language>
         <item>
             <title>2.0.0-beta.30</title>
-            <description><![CDATA[<p>Первая публичная бета Meeting Companion 2.0: локальный Swift/MLX без Python, обновлённая библиотека и плеер, правки текста и имён, хронологические реплики.</p><ul><li>⌘N — новая запись, ⌘F — поиск, пробел — play/pause, ←/→ — ±5 секунд.</li><li>↑/↓ выбирают встречи или реплики с перемоткой; исправлено застревание при удержании.</li><li>Esc закрывает верхнюю форму или настройки, не прерывая запись.</li></ul><p>macOS 15+, Apple Silicon. Предварительная версия без Apple notarization; полная IME/VoiceOver UAT остаётся открытой.</p>]]></description>
+            <description><![CDATA[<p>Первая публичная бета Meeting Companion 2.0: локальный Swift/MLX без Python, обновлённая библиотека и плеер, правки текста и имён, хронологические реплики.</p><ul><li>⌘N — новая запись, ⌘F — поиск, пробел — play/pause, ←/→ — ±5 секунд.</li><li>↑/↓ выбирают встречи или реплики с перемоткой; исправлено застревание при удержании.</li><li>Esc закрывает верхнюю форму или настройки, не прерывая запись.</li></ul><p>macOS 15+, Apple Silicon. Предварительная версия без Apple notarization; расширенные проверки IME/VoiceOver не проводились и сняты владельцем из обязательной приёмки.</p>]]></description>
             <pubDate>Fri, 06 Nov 2026 20:49:42 +0300</pubDate>
             <sparkle:channel>beta</sparkle:channel>
             <sparkle:version>66</sparkle:version>

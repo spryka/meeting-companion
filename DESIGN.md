@@ -4,7 +4,7 @@
 таблицы ниже помогают выбрать существующую роль, а не создают второй набор токенов.
 HTML-референс и активные предложения объясняют замысел; при расхождении фактическое
 поведение нужно смотреть в production caller. Состояние проверки описано отдельно
-в [verification-release](openspec/changes/refresh-macos-interface/verification-release.md).
+в [verification-release](openspec/changes/archive/2026-11-06-refresh-macos-interface/verification-release.md).
 
 ## Где менять
 
