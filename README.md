@@ -8,30 +8,17 @@
 
 ## Установка
 
-Готовые опубликованные версии доступны через [Homebrew tap](https://github.com/spryka/homebrew-tap)
-и [GitHub Releases](https://github.com/spryka/meeting-companion/releases).
+Готовые версии доступны в [GitHub Releases](https://github.com/spryka/meeting-companion/releases).
 Версия в master может быть новее опубликованной сборки.
 
-Публичная бета новой версии — [2.0.0-beta.31](https://github.com/spryka/meeting-companion/releases/tag/v2.0.0-beta.31).
+Публичная бета новой версии — [2.0.0-beta.32](https://github.com/spryka/meeting-companion/releases/tag/v2.0.0-beta.32).
 Скачай DMG для Apple Silicon со страницы релиза. Публичные сборки могут получать
-беты через «Настройки → Основные → Получать бета-версии»; Homebrew-команды ниже устанавливают
-стабильную версию.
-
-~~~sh
-brew tap spryka/tap
-brew install --cask spryka/tap/meeting-companion
-~~~
-
-Если Homebrew сообщает о недоверенном tap, разреши загрузку этого рецепта:
-
-~~~sh
-brew trust --cask spryka/tap/meeting-companion
-~~~
+беты через «Настройки → Основные → Получать бета-версии».
 
 Для обновления заверши запись, обработку и подготовку, затем выбери
 «Проверить обновления…» в меню приложения. Публичные сборки с beta.31 используют
-Sparkle независимо от способа установки, включая Homebrew. Если старая версия
-отправляет обновляться через Homebrew или сообщает, что обновления отключены,
+Sparkle независимо от способа установки. Если в старой версии недоступно
+обновление из приложения,
 один раз установи текущий DMG; следующие обновления доступны из приложения.
 
 Для ручной установки скачай DMG на странице релиза, перенеси приложение в

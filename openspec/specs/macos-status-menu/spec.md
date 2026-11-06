@@ -106,12 +106,12 @@
 
 - **GIVEN** snapshots присоединены, работы и modal input нет
 - **WHEN** выбраны update или quit
-- **THEN** update-enabled публичная .app использует Sparkle, disabled local build сообщает об отключённых обновлениях либо приложение завершается без лишнего busy prompt; Homebrew не выбирает другой updater
+- **THEN** update-enabled публичная .app использует Sparkle, disabled local build сообщает об отключённых обновлениях либо приложение завершается без лишнего busy prompt; источник установки не выбирает другой updater
 
 #### Scenario: M04.5 Installation source does not select updater
-- **GIVEN** свободная публичная .app с MCEnableUpdates=true, включая установку с Homebrew receipt
+- **GIVEN** свободная публичная .app с MCEnableUpdates=true независимо от источника установки
 - **WHEN** updater запускается и пользователь проверяет обновления
-- **THEN** применяются те же Sparkle flow и beta opt-in, без поиска Caskroom, brew-команд или требования обновляться через терминал
+- **THEN** применяются те же Sparkle flow и beta opt-in, без поиска installation receipts, команд пакетного менеджера или требования обновляться через терминал
 - **AND** ни тип установки, ни наличие receipt не отменяют guards текущей работы и проверки подписи обновления
 
 ### Requirement: M05 Login item belongs to the application
