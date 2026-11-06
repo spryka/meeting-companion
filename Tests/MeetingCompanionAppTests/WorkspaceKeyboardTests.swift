@@ -1,4 +1,5 @@
 import AppKit
+import CoreMedia
 import SwiftUI
 import Testing
 import MeetingCompanionCore
@@ -846,6 +847,8 @@ struct WorkspaceKeyboardTests {
         await current.seekPlayback(to: 1.2)
         _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
         try await fixture.settle { current.playbackPosition == 5 && current.highlightedTurnID == current.rows[2].id }
+        window.sendEvent(fixture.key("", code: 125, type: .keyUp))
+        current.togglePlayback()
         fixture.transport.onEvent?(.position(11))
         _ = window.performKeyEquivalent(with: fixture.key("", code: 126))
         try await fixture.settle { current.playbackPosition == 5 }
@@ -874,6 +877,242 @@ struct WorkspaceKeyboardTests {
         }
         #expect(current.highlightedTurnID == current.rows.last?.id)
         #expect(fixture.transport.seekTargets == [1, 10])
+    }
+
+    @Test(arguments: [false, true])
+    func heldTurnArrowProgressesAcrossQuantizedPlaybackCallbacks(playing: Bool) async throws {
+        let fixture = try KeyboardFixture(seekDelay: .milliseconds(10))
+        defer { fixture.close() }
+        try await fixture.ready()
+        let starts = (0..<80).map { Double($0) * 0.25 + 0.1001 }
+        try await fixture.loadPlayableRecording(turnStarts: starts)
+        let current = try #require(fixture.model.workspace.current)
+        let window = fixture.delegate.window!
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        if playing { current.togglePlayback() }
+        let state = current.playbackState
+        for index in starts.indices {
+            _ = window.performKeyEquivalent(with: fixture.key("", code: 125, repeatKey: index > 0))
+            try await fixture.settle { fixture.transport.completedSeeks == index + 1 }
+            try #require(fixture.transport.seekTargets.last == starts[index],
+                         "Held Down repeated a prior turn at index \(index)")
+            let actual = CMTime(seconds: starts[index], preferredTimescale: 600).seconds
+            fixture.transport.onEvent?(.position(actual))
+            #expect(current.playbackState == state)
+        }
+        #expect(fixture.transport.seekTargets == starts)
+    }
+
+    @Test(arguments: [0.1001, 0.1009])
+    func heldTurnArrowKeepsEqualTimestampOrderWhileAudioAdvances(offset: Double) async throws {
+        let fixture = try KeyboardFixture(seekDelay: .milliseconds(10))
+        defer { fixture.close() }
+        try await fixture.ready()
+        let starts = (0..<80).map { Double($0 / 2) * 0.25 + offset }
+        try await fixture.loadPlayableRecording(turnStarts: starts)
+        let current = try #require(fixture.model.workspace.current)
+        let window = fixture.delegate.window!
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        current.togglePlayback()
+        for index in starts.indices {
+            _ = window.performKeyEquivalent(with: fixture.key("", code: 125, repeatKey: index > 0))
+            try await fixture.settle { fixture.transport.completedSeeks == index + 1 }
+            try #require(fixture.transport.seekTargets.last == starts[index],
+                         "Held Down skipped equal-timestamp turn \(index)")
+            fixture.transport.onEvent?(.position(CMTime(seconds: starts[index], preferredTimescale: 600).seconds + 0.02))
+            #expect(current.highlightedTurnID == current.rows[index].id)
+        }
+    }
+
+    @Test(arguments: [0.1, 2.0])
+    func arrowReleaseRestoresAutomaticPlaybackFocus(duration: Double) async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        try await fixture.loadPlayableRecording(turnStarts: [1, 1.25, 1.5], turnDuration: duration)
+        let current = try #require(fixture.model.workspace.current)
+        let window = fixture.delegate.window!
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        current.togglePlayback()
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
+        try await fixture.settle { current.playbackPosition == 1 }
+        fixture.transport.onEvent?(.position(1.02))
+        #expect(current.highlightedTurnID == current.rows[0].id)
+        window.sendEvent(fixture.key("", code: 125, type: .keyUp))
+        try await fixture.settle("Real keyUp returns navigation ownership to playback") { current.turnNavigation == nil }
+        fixture.transport.onEvent?(.position(min(1 + duration, 1.25)))
+        #expect(current.turnNavigation == nil)
+        #expect(current.highlightedTurnID == (duration < 0.25 ? nil : current.rows[1].id))
+        #expect(current.follow.isFollowing && current.playbackState == .playing)
+    }
+
+    @Test func heldTurnArrowCanVisitZeroLengthTurnsAndReturnToFollow() async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        let starts = [1.0009, 1.0009, 2.0009]
+        try await fixture.loadPlayableRecording(turnStarts: starts, turnDuration: 0)
+        let current = try #require(fixture.model.workspace.current)
+        let window = fixture.delegate.window!
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        current.togglePlayback()
+        for index in starts.indices {
+            _ = window.performKeyEquivalent(with: fixture.key("", code: 125, repeatKey: index > 0))
+            try await fixture.settle { fixture.transport.seekTargets.count == index + 1 }
+            fixture.transport.onEvent?(.position(CMTime(seconds: starts[index], preferredTimescale: 600).seconds))
+            #expect(current.highlightedTurnID == current.rows[index].id)
+        }
+        fixture.transport.onEvent?(.ended)
+        window.sendEvent(fixture.key("", code: 125, type: .keyUp))
+        #expect(current.playbackState == .ready && current.playbackPosition == current.playbackDuration)
+        current.returnToPlayback()
+        #expect(current.turnNavigation == nil && current.highlightedTurnID == nil)
+    }
+
+    @Test func loadingTextTurnDoesNotBlockFollowWhenAudioBecomesReady() async throws {
+        let fixture = try KeyboardFixture(holdPreparation: true)
+        defer { fixture.transport.releasePreparation(); fixture.close() }
+        try await fixture.ready()
+        let window = fixture.delegate.window!
+        window.setContentSize(NSSize(width: 1100, height: 700))
+        let loading = Task { try await fixture.loadPlayableRecording(longText: true, turnStarts: [1, 5, 10]) }
+        defer { loading.cancel() }
+        try await fixture.settle {
+            !fixture.model.workspace.loading && fixture.model.workspace.current?.playbackState == .loading
+                && fixture.navigation("transcript")?.acceptsFirstResponder == true
+        }
+        let current = try #require(fixture.model.workspace.current)
+        let surface = try #require(fixture.navigation("transcript"))
+        let clip = try #require(surface.enclosingScrollView?.contentView)
+        #expect(window.makeFirstResponder(surface))
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
+        try await fixture.settle { clip.bounds.origin.y > 100 }
+        let before = clip.bounds.origin.y
+        #expect(current.highlightedTurnID == current.rows[0].id && fixture.transport.seekTargets.isEmpty)
+        window.sendEvent(fixture.key("", code: 125, type: .keyUp))
+        fixture.transport.releasePreparation()
+        try await loading.value
+        #expect(window.makeFirstResponder(surface))
+        _ = window.performKeyEquivalent(with: fixture.key(" ", code: 49))
+        fixture.transport.onEvent?(.position(5.1))
+        #expect(current.follow.targetID == current.rows[1].id && current.playbackState == .playing)
+        #expect(current.turnNavigation == nil && current.highlightedTurnID == current.rows[1].id)
+        try await fixture.settle("Ready playback resumes actual turn reveal after loading text navigation") {
+            clip.bounds.origin.y > before + 100
+        }
+        #expect(fixture.transport.seekTargets.isEmpty)
+    }
+
+    @Test func quantizedCloseStartsRemainAdjacentAfterPausedTap() async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        try await fixture.loadPlayableRecording(turnStarts: [1.0009, 1.0010, 1.5])
+        let current = try #require(fixture.model.workspace.current)
+        let window = fixture.delegate.window!
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        let first = try #require(current.requestTurnNavigation(by: 1))
+        await current.performTurnNavigation(first)
+        #expect(current.playbackPosition == 1.0009)
+        window.sendEvent(fixture.key("", code: 125, type: .keyUp))
+        fixture.transport.onEvent?(.position(CMTime(seconds: 1.0009, preferredTimescale: 600).seconds))
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
+        try await fixture.settle { fixture.transport.completedSeeks == 2 }
+        #expect(fixture.transport.seekTargets.last == 1.0010 && current.highlightedTurnID == current.rows[1].id)
+    }
+
+    @Test func heldLoadingNavigationKeepsAnchorWhenAudioBecomesReady() async throws {
+        let fixture = try KeyboardFixture(holdPreparation: true)
+        defer { fixture.transport.releasePreparation(); fixture.close() }
+        try await fixture.ready()
+        let window = fixture.delegate.window!
+        window.setContentSize(NSSize(width: 1100, height: 700))
+        let loading = Task { try await fixture.loadPlayableRecording(turnStarts: [1, 5, 10]) }
+        defer { loading.cancel() }
+        try await fixture.settle {
+            !fixture.model.workspace.loading && fixture.model.workspace.current?.playbackState == .loading
+                && fixture.navigation("transcript")?.acceptsFirstResponder == true
+        }
+        let current = try #require(fixture.model.workspace.current)
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125, repeatKey: true))
+        #expect(current.highlightedTurnID == current.rows[1].id && fixture.transport.seekTargets.isEmpty)
+        fixture.transport.releasePreparation()
+        try await loading.value
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125, repeatKey: true))
+        try await fixture.settle { fixture.transport.completedSeeks == 1 }
+        #expect(fixture.transport.seekTargets == [10] && current.highlightedTurnID == current.rows[2].id)
+    }
+
+    @Test func readinessAndFirstHeldDownInSameActorTurnKeepTextOnlyAnchor() async throws {
+        let fixture = try KeyboardFixture(holdPreparation: true)
+        defer { fixture.transport.releasePreparation(); fixture.close() }
+        try await fixture.ready()
+        let window = fixture.delegate.window!
+        window.setContentSize(NSSize(width: 1100, height: 700))
+        let loading = Task { try await fixture.loadPlayableRecording(turnStarts: [1, 5, 10]) }
+        defer { loading.cancel() }
+        try await fixture.settle {
+            !fixture.model.workspace.loading && fixture.model.workspace.current?.playbackState == .loading
+                && fixture.navigation("transcript")?.acceptsFirstResponder == true
+        }
+        let current = try #require(fixture.model.workspace.current)
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        fixture.transport.releasePreparation()
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
+        #expect(current.highlightedTurnID == current.rows[0].id && fixture.transport.seekTargets.isEmpty)
+        try await loading.value
+        #expect(current.playbackState == .ready && fixture.transport.seekTargets.isEmpty)
+        #expect(current.highlightedTurnID == current.rows[0].id)
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125, repeatKey: true))
+        try await fixture.settle { fixture.transport.completedSeeks == 1 }
+        #expect(fixture.transport.seekTargets == [5] && current.highlightedTurnID == current.rows[1].id)
+    }
+
+    @Test(arguments: ["keyUp", "control", "inactive", "settings", "editor"])
+    func heldTurnCursorReturnsOwnershipAtNativeInputBoundary(boundary: String) async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        try await fixture.loadPlayableRecording(turnStarts: [1, 5, 10])
+        let current = try #require(fixture.model.workspace.current)
+        let window = fixture.delegate.window!
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        current.togglePlayback()
+        _ = window.performKeyEquivalent(with: fixture.key("", code: 125))
+        try await fixture.settle { current.playbackPosition == 1 }
+        fixture.transport.onEvent?(.position(5.1))
+        #expect(current.highlightedTurnID == current.rows[0].id)
+        switch boundary {
+        case "keyUp": window.sendEvent(fixture.key("", code: 125, type: .keyUp))
+        case "control": fixture.searchField?.selectText(nil)
+        case "inactive": window.resignKey()
+        case "settings": #expect(fixture.model.presentSettings())
+        default: current.openTextEditing(for: current.rows[0].id)
+        }
+        try await fixture.settle { current.turnNavigation == nil && current.highlightedTurnID == current.rows[1].id }
+        #expect(fixture.transport.seekTargets == [1])
+    }
+
+    @Test func heldUpVisitsEveryTurnDespiteForwardPositionCallbacks() async throws {
+        let fixture = try KeyboardFixture(seekDelay: .milliseconds(10))
+        defer { fixture.close() }
+        try await fixture.ready()
+        let starts = (0..<40).map { Double($0) * 0.25 + 0.1009 }
+        try await fixture.loadPlayableRecording(turnStarts: starts)
+        let current = try #require(fixture.model.workspace.current)
+        let window = try #require(fixture.delegate.window as? WorkspaceWindow)
+        #expect(window.makeFirstResponder(fixture.navigation("transcript")))
+        window.navigateTranscriptTurn(to: current.rows.last!.id)
+        try await fixture.settle { current.playbackPosition == starts.last }
+        current.togglePlayback()
+        for (offset, index) in starts.indices.dropLast().reversed().enumerated() {
+            _ = window.performKeyEquivalent(with: fixture.key("", code: 126, repeatKey: offset > 0))
+            try await fixture.settle { fixture.transport.completedSeeks == offset + 2 }
+            fixture.transport.onEvent?(.position(CMTime(seconds: starts[index], preferredTimescale: 600).seconds + 0.02))
+            try #require(fixture.transport.seekTargets.last == starts[index] && current.highlightedTurnID == current.rows[index].id)
+        }
     }
 
     @Test func playbackCallbacksCannotDiscardQueuedTurnNavigation() async throws {
@@ -1278,12 +1517,21 @@ private actor KeyboardOpenGate {
     var playCount = 0, pauseCount = 0, completedSeeks = 0
     var seekTargets: [Double] = []
     var seekSuccess = true
+    private var holdPreparation: Bool
+    private var preparation: CheckedContinuation<Void, Never>?
     private var pendingStart = false
-    init(seekDelay: Duration = .zero, bufferedStart: Bool = false) {
-        self.seekDelay = seekDelay; self.bufferedStart = bufferedStart
+    init(seekDelay: Duration = .zero, bufferedStart: Bool = false, holdPreparation: Bool = false) {
+        self.seekDelay = seekDelay; self.bufferedStart = bufferedStart; self.holdPreparation = holdPreparation
     }
     var onEvent: (@MainActor @Sendable (TranscriptPlaybackEvent) -> Void)?
-    func prepare(url: URL) async throws -> Double { 30 }
+    func prepare(url: URL) async throws -> Double {
+        if holdPreparation { await withCheckedContinuation { preparation = $0 } }
+        return 30
+    }
+    func releasePreparation() {
+        holdPreparation = false
+        preparation?.resume(); preparation = nil
+    }
     func play() { playCount += 1; pendingStart = true; if !bufferedStart { releaseBuffer() } }
     func pause() { pauseCount += 1; pendingStart = false; onEvent?(.playing(false)) }
     func releaseBuffer() { if pendingStart { pendingStart = false; onEvent?(.playing(true)) } }
@@ -1303,11 +1551,11 @@ private actor KeyboardOpenGate {
     let model: RecorderViewModel
     let delegate: RecorderAppDelegate
     let transport: KeyboardTransport
-    init(seekDelay: Duration = .zero, bufferedStart: Bool = false,
+    init(seekDelay: Duration = .zero, bufferedStart: Bool = false, holdPreparation: Bool = false,
          isProcessing: @escaping @Sendable (URL) async -> Bool = { _ in false }) throws {
         _ = NSApplication.shared
         defaults = try #require(UserDefaults(suiteName: suite))
-        let transport = KeyboardTransport(seekDelay: seekDelay, bufferedStart: bufferedStart)
+        let transport = KeyboardTransport(seekDelay: seekDelay, bufferedStart: bufferedStart, holdPreparation: holdPreparation)
         self.transport = transport
         model = isolatedRecorderModel(workspace: TranscriptReviewWindowManager(isProcessing: isProcessing, transportFactory: { transport }), defaults: defaults)
         model.setAttachedForTesting(session: true, processing: true)
@@ -1324,8 +1572,8 @@ private actor KeyboardOpenGate {
         delegate.window.becomeKey() // Drive the production host entrypoint without activating the CLI runner.
         try #require(model.canStartRecording)
     }
-    func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], repeatKey: Bool = false) -> NSEvent {
-        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+    func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], repeatKey: Bool = false, type: NSEvent.EventType = .keyDown) -> NSEvent {
+        NSEvent.keyEvent(with: type, location: .zero, modifierFlags: modifiers,
             timestamp: 0, windowNumber: delegate.window.windowNumber, context: nil,
             characters: characters, charactersIgnoringModifiers: characters, isARepeat: repeatKey, keyCode: code)!
     }
@@ -1377,7 +1625,7 @@ private actor KeyboardOpenGate {
         }
         return urls
     }
-    func loadPlayableRecording(playback: String = "ready", resultID: String = "res_valid_parakeet_off", longText: Bool = false, turnStarts: [Double]? = nil) async throws {
+    func loadPlayableRecording(playback: String = "ready", resultID: String = "res_valid_parakeet_off", longText: Bool = false, turnStarts: [Double]? = nil, turnDuration: Double = 0.4) async throws {
         let root = model.outputDirectory.appendingPathComponent("meeting_keyboard")
         let result = root.appendingPathComponent("raw/transcripts/" + resultID)
         try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
@@ -1392,12 +1640,12 @@ private actor KeyboardOpenGate {
             var words: [[String: Any]] = [], baseline: [[String: Any]] = [], turns: [[String: Any]] = []
             for (index, start) in turnStarts.enumerated() {
                 var word = originalWords[index.isMultiple(of: 2) ? 0 : 2]
-                word["id"] = "w_\(index)"; word["start"] = start; word["end"] = start + 0.4
+                word["id"] = "w_\(index)"; word["start"] = start; word["end"] = start + turnDuration
                 word["text"] = "Synthetic turn \(index)"
                 words.append(word)
                 word["id"] = "bw_\(index)"; baseline.append(word)
                 var turn = originalTurns[index % 2]
-                turn["id"] = "turn_\(index)"; turn["start"] = start; turn["end"] = start + 0.4
+                turn["id"] = "turn_\(index)"; turn["start"] = start; turn["end"] = start + turnDuration
                 turn["wordIDs"] = ["w_\(index)"]
                 turns.append(turn)
             }

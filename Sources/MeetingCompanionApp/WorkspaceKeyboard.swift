@@ -106,7 +106,10 @@ final class WorkspaceWindow: NSWindow {
     }
 
     func navigateTranscriptTurn(by direction: Int) {
-        navigateTranscriptTurn { $0.requestTurnNavigation(by: direction) }
+        navigateTranscriptTurn {
+            $0.beginTurnNavigationGesture()
+            return $0.requestTurnNavigation(by: direction)
+        }
     }
 
     func navigateTranscriptTurn(to turnID: String) {
@@ -239,6 +242,11 @@ final class WorkspaceWindow: NSWindow {
         if !didSetInitialFocus { focusAvailableNavigation() }
         else { recoverNavigationFocus() }
     }
+
+    override func resignKey() {
+        model.workspace.current?.endTurnNavigationGesture()
+        super.resignKey()
+    }
 }
 
 @MainActor
@@ -271,6 +279,18 @@ final class WorkspaceNavigationView: NSView, ObservableObject {
         guard super.becomeFirstResponder() else { return false }
         (window as? WorkspaceWindow)?.didFocusNavigation(self)
         return true
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted, pane == .transcript { owner?.model.workspace.current?.endTurnNavigationGesture() }
+        return accepted
+    }
+    override func keyUp(with event: NSEvent) {
+        if pane == .transcript, event.keyCode == 125 || event.keyCode == 126 {
+            owner?.model.workspace.current?.endTurnNavigationGesture()
+            return
+        }
+        super.keyUp(with: event)
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

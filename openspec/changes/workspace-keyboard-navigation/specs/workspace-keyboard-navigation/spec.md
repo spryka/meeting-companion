@@ -121,6 +121,19 @@
 - **THEN** структурированный текст листается по репликам без запуска audio; legacy TXT сохраняет обычную прокрутку и приостановку follow
 - **AND** данные не записываются; ручная прокрутка мышью сохраняет прежний scroll/follow route
 
+#### Scenario: K06.5 Hold through fractional timestamps
+- **GIVEN** много реплик с дробными или одинаковыми таймкодами, audio callbacks имеют точность transport
+- **WHEN** пользователь удерживает `↑` или `↓`, а seek completion и position callbacks чередуются с повторными keyDown
+- **THEN** выбираются соседние реплики по отображаемому порядку без застревания на прежнем target или пропуска одинаковых таймкодов
+- **AND** округлённый playback timestamp сам по себе не отменяет навигационный выбор; после отпускания стрелки играющий плеер возвращается к обычному reading focus/follow, при паузе навигационный выбор сохраняется
+
+#### Scenario: K06.6 Audio becomes ready after text navigation
+- **GIVEN** пользователь выбрал реплику, пока audio находилось в loading
+- **WHEN** audio становится ready и пользователь запускает playback
+- **THEN** после отпускания стрелки сохранённый text-only cursor не блокирует текущие reading focus/follow/reveal
+- **AND** отложенный seek к прежнему text-only выбору автоматически не запускается
+- **AND** пока стрелка удерживается, готовность audio сохраняет row anchor жеста; следующий repeat выбирает соседнюю реплику, после отпускания действует обычный playback handoff
+
 ### Requirement: K07 Input and modal protection
 
 Текстовые поля, редакторы и нативные popup/menu/контролы SHALL сохранять принадлежащие им клавиши. Новые команды SHALL NOT действовать на скрытый workspace под Settings, формой записи, rename или editor modal. Admission SHALL повторно проверяться при исполнении, включая поздние callbacks. Существующие Enter/Escape/Save/Cancel и защита unsaved draft SHALL сохраняться.

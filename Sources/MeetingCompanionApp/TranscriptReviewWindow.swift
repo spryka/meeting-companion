@@ -330,6 +330,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         guard !inputBlocked() else { return }
         switch phase {
         case .tracking, .interacting, .decelerating:
+            endTurnNavigationGesture()
             if let target = turnNavigation { cancelTurnNavigation(target) }
             follow.manualScroll()
         case .idle, .animating: break
@@ -346,6 +347,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func setFollow(_ follow: Bool) {
         guard !isClosed else { return }
         if follow {
+            endTurnNavigationGesture()
             if let target = turnNavigation { cancelTurnNavigation(target) }
             self.follow.returnToPlayback()
         } else {
@@ -370,11 +372,25 @@ final class TranscriptReviewWindowModel: ObservableObject {
     struct TurnNavigation {
         let id: UUID
         let turnID: String
-        let position: Double
+        let seek: PlaybackSeekRequest?
     }
     @Published private(set) var turnNavigation: TurnNavigation?
     private var turnNavigationSettled = false
+    private var turnNavigationKeyHeld = false
     var highlightedTurnID: String? { turnNavigation?.turnID ?? activeTurnIDs.first }
+
+    func beginTurnNavigationGesture() { turnNavigationKeyHeld = true }
+
+    func endTurnNavigationGesture() {
+        turnNavigationKeyHeld = false
+        releaseTurnNavigationToPlayback()
+    }
+
+    private func releaseTurnNavigationToPlayback() {
+        if !turnNavigationKeyHeld, turnNavigationSettled, pendingPlaybackSeek == nil, playbackState == .playing {
+            turnNavigation = nil
+        }
+    }
 
     func requestTurnNavigation(by direction: Int) -> TurnNavigation? {
         let anchor = turnNavigation.flatMap { target in rows.firstIndex { $0.id == target.turnID } }
@@ -388,7 +404,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
         guard !isClosed, !state.isClosed, !inputBlocked(), currentDraftIdentity == nil,
               let row = rows.first(where: { $0.id == turnID }) else { return nil }
         let seek = playbackEnabled ? requestPlaybackSeek(to: row.start) : nil
-        let target = TurnNavigation(id: seek?.id ?? UUID(), turnID: row.id, position: seek?.position ?? row.start)
+        let target = TurnNavigation(id: seek?.id ?? UUID(), turnID: row.id, seek: seek)
         turnNavigationSettled = false
         turnNavigation = target
         return target
@@ -396,17 +412,24 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     func cancelTurnNavigation(_ target: TurnNavigation) {
         if turnNavigation?.id == target.id { turnNavigation = nil }
-        cancelPlaybackSeek(PlaybackSeekRequest(id: target.id, position: target.position))
+        if let seek = target.seek { cancelPlaybackSeek(seek) }
     }
 
     func performTurnNavigation(_ target: TurnNavigation) async {
         guard turnNavigation?.id == target.id, !isClosed, !state.isClosed,
               !inputBlocked(), currentDraftIdentity == nil else { cancelTurnNavigation(target); return }
-        guard playbackEnabled else { return }
-        await performPlaybackSeek(PlaybackSeekRequest(id: target.id, position: target.position))
+        guard let seek = target.seek else {
+            turnNavigationSettled = true
+            releaseTurnNavigationToPlayback()
+            return
+        }
+        let succeeded = await performPlaybackSeek(seek)
         guard turnNavigation?.id == target.id else { return }
-        if playbackPosition != target.position { cancelTurnNavigation(target) }
-        else { turnNavigationSettled = true }
+        if !succeeded { cancelTurnNavigation(target) }
+        else {
+            turnNavigationSettled = true
+            releaseTurnNavigationToPlayback()
+        }
     }
 
     func togglePlayback() {
@@ -433,6 +456,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     }
 
     func invalidateQueuedPlaybackSeek() {
+        endTurnNavigationGesture()
         if let request = pendingPlaybackSeek, executingPlaybackSeek != request.id {
             pendingPlaybackSeek = nil
             if turnNavigation?.id == request.id { turnNavigation = nil }
@@ -442,16 +466,18 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
-    func performPlaybackSeek(_ request: PlaybackSeekRequest) async {
+    @discardableResult
+    func performPlaybackSeek(_ request: PlaybackSeekRequest) async -> Bool {
         guard !isClosed, !state.isClosed, !inputBlocked(), currentDraftIdentity == nil,
               playbackEnabled, pendingPlaybackSeek?.id == request.id,
-              executingPlaybackSeek != request.id else { cancelPlaybackSeek(request); return }
+              executingPlaybackSeek != request.id else { cancelPlaybackSeek(request); return false }
         executingPlaybackSeek = request.id
         defer {
             if pendingPlaybackSeek?.id == request.id { pendingPlaybackSeek = nil }
             if executingPlaybackSeek == request.id { executingPlaybackSeek = nil }
         }
         await playback.seek(to: request.position)
+        return !isClosed && playbackEnabled
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -463,6 +489,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func close() {
         guard !isClosed else { return }
         isClosed = true
+        turnNavigationKeyHeld = false
         turnNavigation = nil
         pendingPlaybackSeek = nil
         preparation?.cancel()
@@ -481,6 +508,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     private func preparePlayback(resultID: String) {
         guard !isClosed, !state.isClosed else { return }
+        turnNavigationKeyHeld = false
         turnNavigation = nil
         pendingPlaybackSeek = nil
         preparation?.cancel()
@@ -524,12 +552,13 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     private func refreshPlayback() {
         guard !isClosed, playback.resultID == currentResultID else { return }
+        let wasPlayable = playbackEnabled
         playbackState = playback.state
         playbackPosition = playback.position
         playbackDuration = playback.duration
         playbackRate = playback.playbackRate
-        if let target = turnNavigation, turnNavigationSettled, pendingPlaybackSeek == nil, playbackEnabled,
-           target.position != playback.position { turnNavigation = nil }
+        if !wasPlayable, playbackEnabled, pendingPlaybackSeek == nil, !turnNavigationKeyHeld { turnNavigation = nil }
+        releaseTurnNavigationToPlayback()
         switch playback.state {
         case .unavailable:
             playbackMessage = "Аудио текущего результата не подготовлено. Текст и сохранённые правки доступны; другая дорожка не подставляется."
