@@ -449,17 +449,13 @@ struct SettingsShell: View {
                     Spacer()
                     Button("Готово") { model.dismissSettings() }
                         .buttonStyle(ODButtonStyle(primary: true))
+                        .keyboardShortcut(.cancelAction)
                 }.padding(.horizontal, 24).padding(.vertical, 16)
             }
             .foregroundStyle(ODColors.ink).background(ODColors.surface)
         }
         .focusSection()
         .onAppear { closeFocused = true }
-        .onKeyPress(.escape) {
-            guard NSApp.keyWindow?.attachedSheet == nil, NSApp.modalWindow == nil else { return .ignored }
-            model.dismissSettings()
-            return .handled
-        }
     }
 }
 

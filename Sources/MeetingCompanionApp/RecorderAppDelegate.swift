@@ -44,6 +44,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpPresentation()
+        installWorkspaceCommands()
         busyObserver = model.$isBusy.dropFirst().filter { !$0 }.sink { [weak self] _ in
             Task { @MainActor in self?.model.calendar.recheckReminders() }
         }
@@ -69,6 +70,13 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         updater.isCheckBusy = { [weak self] in self?.model.preventsSettingsOperation ?? true }
     }
 
+    func installWorkspaceCommands() {
+        guard let menu = NSApp.mainMenu, let workspace = window as? WorkspaceWindow else { return }
+        let item = NSMenuItem(title: "Запись", action: nil, keyEquivalent: "")
+        item.submenu = workspace.makeCommandMenu()
+        menu.addItem(item)
+    }
+
     func setUpPresentation() {
         guard window == nil else { return }
         workspacePresenter = nil
@@ -80,9 +88,14 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
                 DispatchQueue.main.async { [weak self] in
                     guard let self, !self.model.settingsPresented, let host = self.settingsFocusWindow,
                           host.isVisible, !host.isMiniaturized else { return }
-                    if let target = self.settingsReturnFocus as? NSView, target.window === host {
-                        host.makeFirstResponder(target)
-                    } else { host.makeFirstResponder(host.contentView) }
+                    let restored = (self.settingsReturnFocus as? NSView).map { target in
+                        target.window === host && !target.isHiddenOrHasHiddenAncestor && target.acceptsFirstResponder
+                            && host.makeFirstResponder(target) && host.firstResponder === target
+                    } ?? false
+                    if !restored {
+                        if let workspace = host as? WorkspaceWindow { workspace.focusAvailableNavigation() }
+                        else { host.makeFirstResponder(host.contentView) }
+                    }
                     self.settingsReturnFocus = nil
                 }
             }
@@ -95,8 +108,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         NSApp.appearance = model.appearance.value
         NSApp.setActivationPolicy(.accessory)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window = WorkspaceWindow(model: model)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentMinSize = AppWindowState.workspaceMinimumSize
@@ -202,6 +214,16 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         }
         updatePreviewVisibility()
         return false
+    }
+
+    func windowWillBeginSheet(_ notification: Notification) {
+        guard let host = notification.object as? WorkspaceWindow, host === window else { return }
+        host.model.workspace.current?.invalidateQueuedPlaybackSeek()
+    }
+
+    func windowDidEndSheet(_ notification: Notification) {
+        guard let host = notification.object as? WorkspaceWindow, host === window else { return }
+        DispatchQueue.main.async { [weak host] in host?.recoverNavigationFocus() }
     }
 
     private func updatePreviewVisibility() {

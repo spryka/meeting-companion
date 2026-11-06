@@ -13,6 +13,7 @@ struct MeetingCompanionApp: App {
     var body: some Scene {
         Settings { EmptyView() }
             .commands {
+                CommandGroup(replacing: .newItem) { }
                 CommandGroup(replacing: .appSettings) {
                     Button("Настройки…") { delegate.showSettings() }
                         .keyboardShortcut(",", modifiers: .command)
@@ -99,6 +100,7 @@ final class RecorderViewModel: ObservableObject {
         if settingsPresented { return true }
         guard workspace.admitNavigation() else { return false }
         if mainPage == .recording { formAudioCheckNeedsExplicitStart = true }
+        workspace.current?.invalidateQueuedPlaybackSeek()
         settingsPresented = true
         onSettingsVisibilityChange?()
         return true
@@ -119,6 +121,7 @@ final class RecorderViewModel: ObservableObject {
         get { pageSelection }
         set {
             guard newValue != pageSelection, workspace.admitNavigation() else { return }
+            if newValue == .recording { workspace.current?.invalidateQueuedPlaybackSeek() }
             pageSelection = newValue
             if newValue != .recording { formAudioCheckNeedsExplicitStart = false }
         }
@@ -163,6 +166,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     @Published private var workspaceListVisible = true
+    @Published var workspaceSearchRequest: UUID?
     var workspaceShowsList: Bool {
         get { workspaceListVisible }
         set { guard workspace.admitNavigation() else { return }; workspaceListVisible = newValue }
@@ -419,7 +423,7 @@ final class RecorderViewModel: ObservableObject {
     @Published var isCapsuleVisible = false { didSet { updateLevelVisibility() } }
     var isAttached: Bool { sessionAttached && processingAttached }
     var canStartRecording: Bool {
-        isAttached && !isRecording && !sessionStarting && !sessionStopping && !isBusy && !diagnosticRunning && workspace.admitNavigation()
+        isAttached && !isRecording && !sessionStarting && !sessionStopping && !isBusy && !diagnosticRunning && !workspace.hasInput
     }
 
     func setAttachedForTesting(session: Bool, processing: Bool) {

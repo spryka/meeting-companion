@@ -66,6 +66,44 @@ import Testing
         #expect(fake.urls == [root.appendingPathComponent("raw/transcripts/v1/mix.m4a")])
         #expect(fake.plays == 0)
     }
+    @Test(arguments: ["buffered", "waiting", "seek-through-end"])
+    func toggleCancelsRequestedPlaybackWithoutInferringEnd(scenario: String) async throws {
+        let root = try recording(), fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        player.toggle()
+        if scenario == "waiting" {
+            fake.onEvent?(.playing(true)); fake.onEvent?(.playing(false))
+        } else if scenario == "seek-through-end" {
+            await player.seek(to: 10)
+            player.setPlaybackRate(1.5)
+            await player.seek(to: 8)
+        }
+        player.toggle()
+        #expect(fake.plays == 1 && fake.pauses == 1 && player.state == .ready)
+    }
+
+    @Test(arguments: ["pause", "ended", "failed", "select", "close", "seek-failure"])
+    func terminalPlaybackActionsReleaseToggleIntent(event: String) async throws {
+        let root = try recording(), fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        player.toggle()
+        switch event {
+        case "pause": player.pause()
+        case "ended": fake.onEvent?(.ended)
+        case "failed": fake.onEvent?(.failed)
+        case "close": player.close()
+        case "seek-failure": fake.seekSuccess = false; await player.seek(to: 2)
+        default: break
+        }
+        if event == "failed" || event == "seek-failure" || event == "select" {
+            await player.select(resultID: "v1", recordingDirectory: root)
+        }
+        let pauses = fake.pauses
+        player.toggle()
+        #expect(fake.plays == (event == "close" ? 1 : 2) && fake.pauses == pauses)
+    }
     @Test func unavailableNeverPreparesFallback() async throws {
         let root = try recording(status: "unavailable"); let fake = PlaybackFake(); let p = TranscriptPlaybackController(transport: fake)
         await p.select(resultID: "v1", recordingDirectory: root); p.play()
