@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import os
 import AppKit
 import Testing
@@ -645,6 +646,35 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
     func releaseBuffer() { if pendingPlay { onEvent?(.playing(true)) } }
 }
 @Suite @MainActor struct ProductionCompositionTests {
+    @Test func recordingEligibilityUnderSettingsDoesNotPublishOrMutateCurrent() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try published("res_valid_parakeet_off", in: root)
+        let suite = "keyboard-eligibility-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        let workspace = TranscriptReviewWindowManager(transportFactory: { BufferingPresentationTransport() })
+        let model = isolatedRecorderModel(workspace: workspace, defaults: defaults)
+        defer { model.dismissSettings(); workspace.closeCurrent() }
+        model.setAttachedForTesting(session: true, processing: true)
+        let recording = root.appendingPathComponent("meeting.m4a")
+        await model.history.put(RecordingEntry.load(recording: recording), persist: false)
+        let request = try #require(model.showTranscript(recording))
+        #expect(await model.loadWorkspace(request))
+        let current = try #require(workspace.current)
+        model.mainPage = .recording
+        #expect(model.canStartRecording)
+        #expect(model.presentSettings())
+        let error = current.error, notice = workspace.commandNotice
+        var publications = 0
+        let observer = model.objectWillChange.sink { publications += 1 }
+        defer { observer.cancel() }
+        for _ in 0..<4 { #expect(!model.canStartRecording) }
+        #expect(publications == 0)
+        #expect(current.error == error && workspace.commandNotice == notice)
+    }
+
     @Test func settings29UnderlayCallbacksAndDraftAdmission() async throws {
         let root = try fixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }

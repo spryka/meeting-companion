@@ -14,7 +14,9 @@ final class TranscriptReviewWindowManager: ObservableObject {
     @Published private(set) var current: TranscriptReviewWindowModel?
     @Published private(set) var loading = false
     @Published private(set) var failure: String?
-    @Published var externalModal = false
+    @Published var externalModal = false {
+        didSet { if externalModal { current?.invalidateQueuedPlaybackSeek() } }
+    }
     var settingsInput: @MainActor () -> Bool = { false }
     @Published var savedRevision = 0
     @Published private(set) var commandNotice: String?
@@ -327,20 +329,24 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func userScrollPhaseChanged(_ phase: ScrollPhase) {
         guard !inputBlocked() else { return }
         switch phase {
-        case .tracking, .interacting, .decelerating: follow.manualScroll()
+        case .tracking, .interacting, .decelerating:
+            if let target = turnNavigation { cancelTurnNavigation(target) }
+            follow.manualScroll()
         case .idle, .animating: break
         @unknown default: break
         }
     }
 
     func beginEditing() {
+        invalidateQueuedPlaybackSeek()
         follow.beginEditing()
         playback.pause()
     }
-    func returnToPlayback() { if !inputBlocked() { follow.returnToPlayback() } }
+    func returnToPlayback() { if !inputBlocked() { setFollow(true) } }
     func setFollow(_ follow: Bool) {
         guard !isClosed else { return }
         if follow {
+            if let target = turnNavigation { cancelTurnNavigation(target) }
             self.follow.returnToPlayback()
         } else {
             self.follow.manualScroll()
@@ -354,16 +360,98 @@ final class TranscriptReviewWindowModel: ObservableObject {
     private var waveformTask: Task<Void, Never>?
     private var index: TranscriptIntervalIndex?
     private var isClosed = false
+    struct PlaybackSeekRequest {
+        let id: UUID
+        let position: Double
+    }
+    private var pendingPlaybackSeek: PlaybackSeekRequest?
+    private var executingPlaybackSeek: UUID?
+    var playbackSeekPosition: Double { pendingPlaybackSeek?.position ?? playbackPosition }
+    struct TurnNavigation {
+        let id: UUID
+        let turnID: String
+        let position: Double
+    }
+    @Published private(set) var turnNavigation: TurnNavigation?
+    private var turnNavigationSettled = false
+    var highlightedTurnID: String? { turnNavigation?.turnID ?? activeTurnIDs.first }
+
+    func requestTurnNavigation(by direction: Int) -> TurnNavigation? {
+        let anchor = turnNavigation.flatMap { target in rows.firstIndex { $0.id == target.turnID } }
+            ?? rows.lastIndex { $0.start <= playbackSeekPosition }
+        let next = anchor.map { $0 + direction } ?? 0
+        guard rows.indices.contains(next) else { return nil }
+        return requestTurnNavigation(to: rows[next].id)
+    }
+
+    func requestTurnNavigation(to turnID: String) -> TurnNavigation? {
+        guard !isClosed, !state.isClosed, !inputBlocked(), currentDraftIdentity == nil,
+              let row = rows.first(where: { $0.id == turnID }) else { return nil }
+        let seek = playbackEnabled ? requestPlaybackSeek(to: row.start) : nil
+        let target = TurnNavigation(id: seek?.id ?? UUID(), turnID: row.id, position: seek?.position ?? row.start)
+        turnNavigationSettled = false
+        turnNavigation = target
+        return target
+    }
+
+    func cancelTurnNavigation(_ target: TurnNavigation) {
+        if turnNavigation?.id == target.id { turnNavigation = nil }
+        cancelPlaybackSeek(PlaybackSeekRequest(id: target.id, position: target.position))
+    }
+
+    func performTurnNavigation(_ target: TurnNavigation) async {
+        guard turnNavigation?.id == target.id, !isClosed, !state.isClosed,
+              !inputBlocked(), currentDraftIdentity == nil else { cancelTurnNavigation(target); return }
+        guard playbackEnabled else { return }
+        await performPlaybackSeek(PlaybackSeekRequest(id: target.id, position: target.position))
+        guard turnNavigation?.id == target.id else { return }
+        if playbackPosition != target.position { cancelTurnNavigation(target) }
+        else { turnNavigationSettled = true }
+    }
 
     func togglePlayback() {
         guard !isClosed, !inputBlocked() else { return }
-        if playback.state == .playing { playback.pause() }
-        else { playback.play() }
+        playback.toggle()
     }
 
     func seekPlayback(to seconds: Double) async {
-        guard !isClosed, !inputBlocked() else { return }
-        await playback.seek(to: seconds)
+        guard let request = requestPlaybackSeek(to: seconds) else { return }
+        await performPlaybackSeek(request)
+    }
+
+    func requestPlaybackSeek(to seconds: Double) -> PlaybackSeekRequest? {
+        guard !isClosed, !state.isClosed, !inputBlocked(), currentDraftIdentity == nil,
+              playbackEnabled, seconds.isFinite else { return nil }
+        let request = PlaybackSeekRequest(id: UUID(), position: min(playbackDuration, max(0, seconds)))
+        turnNavigation = nil
+        pendingPlaybackSeek = request
+        return request
+    }
+
+    func cancelPlaybackSeek(_ request: PlaybackSeekRequest) {
+        if pendingPlaybackSeek?.id == request.id, executingPlaybackSeek != request.id { pendingPlaybackSeek = nil }
+    }
+
+    func invalidateQueuedPlaybackSeek() {
+        if let request = pendingPlaybackSeek, executingPlaybackSeek != request.id {
+            pendingPlaybackSeek = nil
+            if turnNavigation?.id == request.id { turnNavigation = nil }
+        }
+        if let target = turnNavigation, !turnNavigationSettled, executingPlaybackSeek != target.id {
+            turnNavigation = nil
+        }
+    }
+
+    func performPlaybackSeek(_ request: PlaybackSeekRequest) async {
+        guard !isClosed, !state.isClosed, !inputBlocked(), currentDraftIdentity == nil,
+              playbackEnabled, pendingPlaybackSeek?.id == request.id,
+              executingPlaybackSeek != request.id else { cancelPlaybackSeek(request); return }
+        executingPlaybackSeek = request.id
+        defer {
+            if pendingPlaybackSeek?.id == request.id { pendingPlaybackSeek = nil }
+            if executingPlaybackSeek == request.id { executingPlaybackSeek = nil }
+        }
+        await playback.seek(to: request.position)
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -375,6 +463,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func close() {
         guard !isClosed else { return }
         isClosed = true
+        turnNavigation = nil
+        pendingPlaybackSeek = nil
         preparation?.cancel()
         preparation = nil
         waveformTask?.cancel()
@@ -391,6 +481,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     private func preparePlayback(resultID: String) {
         guard !isClosed, !state.isClosed else { return }
+        turnNavigation = nil
+        pendingPlaybackSeek = nil
         preparation?.cancel()
         waveformTask?.cancel()
         waveform = nil
@@ -436,6 +528,8 @@ final class TranscriptReviewWindowModel: ObservableObject {
         playbackPosition = playback.position
         playbackDuration = playback.duration
         playbackRate = playback.playbackRate
+        if let target = turnNavigation, turnNavigationSettled, pendingPlaybackSeek == nil, playbackEnabled,
+           target.position != playback.position { turnNavigation = nil }
         switch playback.state {
         case .unavailable:
             playbackMessage = "Аудио текущего результата не подготовлено. Текст и сохранённые правки доступны; другая дорожка не подставляется."
@@ -1124,9 +1218,13 @@ struct TranscriptReviewWindowView: View {
     var entryDate: Date? = nil
     var entryDuration: Double? = nil
     var workspaceWidth: CGFloat = 1392
+    var keyboardNavigationVisible = true
     private var narrow: Bool { workspaceWidth <= 767 }
     private var compact: Bool { workspaceWidth <= 1023 }
     @State private var scrollPosition: String?
+#if !TRANSCRIPT_WINDOW_HARNESS
+    @StateObject private var transcriptNavigation = WorkspaceNavigationView(.transcript)
+#endif
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1166,12 +1264,37 @@ struct TranscriptReviewWindowView: View {
                     .padding(.bottom, compact ? (narrow ? 28 : 32) : 48)
                     .frame(maxWidth: 840)
                     .frame(maxWidth: .infinity, alignment: .top)
+#if !TRANSCRIPT_WINDOW_HARNESS
+                    .background(WorkspaceNavigationFocus(surface: transcriptNavigation, visible: keyboardNavigationVisible, onVerticalKey: { direction in
+                        if model.legacyText == nil {
+                            (transcriptNavigation.window as? WorkspaceWindow)?.navigateTranscriptTurn(by: direction)
+                            return
+                        }
+                        guard let scroll = transcriptNavigation.enclosingScrollView else { return }
+                        model.userScrollPhaseChanged(.interacting)
+                        let clip = scroll.contentView
+                        let step = CGFloat(direction) * scroll.verticalLineScroll * (scroll.documentView?.isFlipped == true ? 1 : -1)
+                        clip.scroll(to: clip.constrainBoundsRect(clip.bounds.offsetBy(dx: 0, dy: step)).origin)
+                        scroll.reflectScrolledClipView(clip)
+                    }))
+#endif
                 }
                 .scrollPosition(id: $scrollPosition, anchor: .top)
+#if !TRANSCRIPT_WINDOW_HARNESS
+                .contentShape(Rectangle())
+                .onTapGesture { transcriptNavigation.focus() }
+#endif
                 .onScrollPhaseChange { _, phase in model.userScrollPhaseChanged(phase) }
                 .onChange(of: model.follow.request) { _, _ in
-                    guard model.follow.isFollowing, let target = model.follow.targetID else { return }
+                    guard model.turnNavigation == nil, model.follow.isFollowing, let target = model.follow.targetID else { return }
                     proxy.scrollTo(target, anchor: .center)
+                }
+                .onChange(of: model.turnNavigation?.id) { _, _ in
+                    if let target = model.turnNavigation?.turnID {
+                        proxy.scrollTo(target, anchor: .center)
+                    } else if model.follow.isFollowing, let target = model.follow.targetID {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
                 }
             }
 
@@ -1323,11 +1446,20 @@ struct TranscriptReviewWindowView: View {
         LazyVStack(alignment: .leading, spacing: 8) {
             ForEach(model.rows) { row in
                 HStack(alignment: .top, spacing: narrow ? 8 : 16) {
-                    Button(action: { Task { await model.seekPlayback(to: row.start) } }) {
+                    Button(action: {
+#if TRANSCRIPT_WINDOW_HARNESS
+                        if let target = model.requestTurnNavigation(to: row.id) {
+                            Task { await model.performTurnNavigation(target) }
+                        }
+#else
+                        transcriptNavigation.focus()
+                        (transcriptNavigation.window as? WorkspaceWindow)?.navigateTranscriptTurn(to: row.id)
+#endif
+                    }) {
                         Text(Self.clock(seconds: row.start))
                             .font(.system(size: 12)).monospacedDigit()
                             .odLineBox(size: 12, height: 15.6)
-                            .foregroundColor(model.activeTurnIDs.contains(row.id) ? ODColors.accent : ODColors.muted)
+                            .foregroundColor(model.highlightedTurnID == row.id ? ODColors.accent : ODColors.muted)
                             .frame(width: narrow ? 44 : 48, alignment: .leading)
                             .padding(.vertical, 4)
                     }
@@ -1391,7 +1523,7 @@ struct TranscriptReviewWindowView: View {
                 .padding(.horizontal, narrow ? 8 : 12)
                 .padding(.vertical, narrow ? 12 : 16)
                 .background(
-                    model.activeTurnIDs.contains(row.id)
+                    model.highlightedTurnID == row.id
                         ? ODColors.surface.mix(with: ODColors.selected, by: 0.65)
                         : Color.clear,
                     in: RoundedRectangle(cornerRadius: 10)
@@ -1454,7 +1586,11 @@ struct TranscriptReviewWindowView: View {
     private var waveformScrubber: some View {
         WaveformScrubberView(waveform: model.waveform, position: model.playbackPosition,
             duration: model.playbackDuration, isEnabled: model.playbackEnabled,
-            onSeek: { target in Task { await model.seekPlayback(to: target) } })
+            onSeek: { target in
+                if let request = model.requestPlaybackSeek(to: target) {
+                    Task { await model.performPlaybackSeek(request) }
+                }
+            })
     }
 
     private var timeReadout: some View {

@@ -21,4 +21,8 @@ ADR review completed for this change. Прочитаны все семь root AD
 
 ## New Durable ADRs Created
 
+Дополнение Esc (K09), план утверждён владельцем 2026-11-06 ответом «да»: закрытие через существующие App cancel routes соответствует ADR0006/0007 и сохраняет admission/защиту edits ADR0004. Новых root ADR, modal manager, global monitors или изменений Core/transport для этого дополнения не требуется.
+
+Уточнение 2026-11-06 после R2, явно согласованное владельцем: transient play intent и toggle переносятся из App в существующий Core playback controller, получающий typed transport events. Это исправляет ownership внутри уже существующего controller; focus/visibility остаются App, transport protocol и наблюдаемые states сохраняются. ADR0001–0007 не меняются, новое долговременное архитектурное решение не требуется.
+
 None — no major durable architectural decisions were introduced; новых repository-level ADR нет. Перед задачами проверка архитектурных решений завершена. Продуктовый контракт ожидает согласования; реализация и UAT не выполнены.

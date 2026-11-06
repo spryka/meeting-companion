@@ -35,6 +35,7 @@ public final class TranscriptPlaybackController {
     private let transport: any TranscriptPlaybackTransport
     private var generation: UInt64 = 0
     private var seekGeneration: UInt64 = 0
+    private var wantsPlay = false
 
     public init(transport: any TranscriptPlaybackTransport) { self.transport = transport }
 
@@ -49,6 +50,7 @@ public final class TranscriptPlaybackController {
         guard state != .closed else { return }
         generation &+= 1
         let ticket = generation
+        wantsPlay = false
         transport.onEvent = nil
         transport.stop()
         self.resultID = resultID
@@ -105,13 +107,20 @@ public final class TranscriptPlaybackController {
         }
     }
 
+    public func toggle() {
+        if wantsPlay || state == .playing { pause() }
+        else { play() }
+    }
+
     public func play() {
         guard state == .ready else { return }
+        wantsPlay = true
         transport.setRate(playbackRate)
         transport.play()
     }
 
     public func pause() {
+        wantsPlay = false
         guard state == .playing || state == .ready else { return }
         transport.pause()
         state = .ready
@@ -127,13 +136,14 @@ public final class TranscriptPlaybackController {
         let success = await transport.seek(to: target)
         guard generation == ticket, seekGeneration == seekTicket, state == .ready || state == .playing else { return }
         if success { position = target }
-        else { transport.pause(); state = .failed }
+        else { wantsPlay = false; transport.pause(); state = .failed }
         onChange?()
     }
 
     public func close() {
         guard state != .closed else { return }
         generation &+= 1
+        wantsPlay = false
         transport.onEvent = nil
         transport.stop()
         mixURL = nil
@@ -148,8 +158,8 @@ public final class TranscriptPlaybackController {
             guard seconds.isFinite else { return }
             position = min(duration, max(0, seconds))
         case .playing(let playing): state = playing ? .playing : .ready
-        case .ended: transport.pause(); position = duration; state = .ready
-        case .failed: transport.pause(); state = .failed
+        case .ended: wantsPlay = false; transport.pause(); position = duration; state = .ready
+        case .failed: wantsPlay = false; transport.pause(); state = .failed
         }
         onChange?()
     }

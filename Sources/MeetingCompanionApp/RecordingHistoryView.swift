@@ -28,7 +28,7 @@ struct RecordingHistoryView: View {
     @ObservedObject var workspace: TranscriptReviewWindowManager
     let showSettings: () -> Void
 
-    @StateObject private var search = RecordingSearch()
+    @StateObject private var search: RecordingSearch
     @StateObject private var windowState = AppWindowState()
     @State private var query = ""
     @State private var renameTarget: RecordingEntry?
@@ -36,6 +36,16 @@ struct RecordingHistoryView: View {
     @State private var renameError: String?
     @State private var renameSaving = false
     @State private var moreHovered = false
+    @StateObject private var libraryNavigation = WorkspaceNavigationView(.library)
+
+    init(model: RecorderViewModel, history: RecordingHistory, workspace: TranscriptReviewWindowManager,
+         showSettings: @escaping () -> Void, search: RecordingSearch = RecordingSearch()) {
+        self.model = model
+        self.history = history
+        self.workspace = workspace
+        self.showSettings = showSettings
+        _search = StateObject(wrappedValue: search)
+    }
 
     var body: some View {
         let loadRequest = model.workspaceLoadRequest
@@ -73,7 +83,8 @@ struct RecordingHistoryView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else if let current = workspace.current, current.state.id == entry.id, !entry.phase.isWorking,
                                   current.currentResultID != nil || current.legacyText != nil {
-                            TranscriptReviewWindowView(model: current, title: entry.effectiveTitle, entryDate: entry.date, entryDuration: entry.duration, workspaceWidth: geometry.size.width)
+                            TranscriptReviewWindowView(model: current, title: entry.effectiveTitle, entryDate: entry.date, entryDuration: entry.duration, workspaceWidth: geometry.size.width,
+                                keyboardNavigationVisible: !narrow || !model.workspaceShowsList)
                         } else if entry.phase.isWorking {
                             VStack(alignment: .leading, spacing: 16) {
                                 entryHeading(entry)
@@ -237,9 +248,7 @@ struct RecordingHistoryView: View {
             // Search input (font 14)
             HStack(spacing: 8) {
                 ODIconView(.search, size: 16, color: ODColors.muted)
-                TextField("Поиск по встречам и тексту", text: Binding(get: { query }, set: { if !workspace.hasInput { query = $0 } }))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
+                WorkspaceSearchField(text: Binding(get: { query }, set: { if !workspace.hasInput { query = $0 } }), model: model)
                     .odLineBox(size: 14, height: 21.7)
             }
             .padding(.horizontal, 12)
@@ -261,6 +270,7 @@ struct RecordingHistoryView: View {
     }
 
     private var sidebarContent: some View {
+        ScrollViewReader { proxy in
         Group {
             if !history.initialLoadComplete {
                 ProgressView("Загружаем записи…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -283,7 +293,7 @@ struct RecordingHistoryView: View {
                                 .padding(.bottom, 8)
 
                             ForEach(group.entries) { entry in
-                                recordCard(entry)
+                                recordCard(entry).id(entry.id)
                             }
                         }
                     }
@@ -292,6 +302,19 @@ struct RecordingHistoryView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(WorkspaceNavigationFocus(surface: libraryNavigation, onVerticalKey: { direction in
+            let entries = groupedEntries.flatMap(\.entries)
+            guard !entries.isEmpty else { return }
+            let next = model.selectedHistoryURL.flatMap { selected in entries.firstIndex { $0.id == selected } }
+                .map { $0 + direction } ?? 0
+            guard entries.indices.contains(next) else { return }
+            model.selectedHistoryURL = entries[next].id
+            proxy.scrollTo(entries[next].id)
+            libraryNavigation.focus()
+        }))
+        .contentShape(Rectangle())
+        .onTapGesture { libraryNavigation.focus() }
+        }
     }
 
     private func recordCard(_ entry: RecordingEntry) -> some View {
@@ -300,6 +323,7 @@ struct RecordingHistoryView: View {
             guard !workspace.hasInput else { return }
             model.selectedHistoryURL = entry.id
             model.workspaceShowsList = false
+            libraryNavigation.focus()
         }) {
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.effectiveTitle)
