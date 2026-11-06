@@ -1,4 +1,3 @@
-import ServiceManagement
 import AppKit
 import SwiftUI
 import MeetingCompanionCore
@@ -8,7 +7,8 @@ struct RecorderSettingsView: View {
     let page: Page
     var onCheckForUpdates: (() -> Void)? = nil
     @AppStorage("receiveBetaUpdates") private var receiveBetaUpdates = false
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    private let loginItem = AppLoginItem()
+    @State private var launchAtLogin = AppLoginItem().isEnabled
     @State private var autostartError: String?
 
     enum Page: String, CaseIterable {
@@ -88,19 +88,15 @@ struct RecorderSettingsView: View {
                     get: { launchAtLogin },
                     set: { enabled in
                         do {
-                            if enabled {
-                                try SMAppService.mainApp.register()
-                            } else {
-                                try SMAppService.mainApp.unregister()
-                            }
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                            try loginItem.setEnabled(enabled)
+                            launchAtLogin = loginItem.isEnabled
                             autostartError = nil
                         } catch {
                             autostartError = "Автозапуск: " + error.localizedDescription
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                            launchAtLogin = loginItem.isEnabled
                         }
                     }
-                ))
+                )).disabled(!loginItem.isSupported)
                 if let error = autostartError {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }

@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import ServiceManagement
 import SwiftUI
 import MeetingCompanionCore
 import MeetingCompanionApplication
@@ -49,12 +48,8 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             Task { @MainActor in self?.model.calendar.recheckReminders() }
         }
         model.calendar.onMeeting = { [weak self] meeting in self?.showReminder(meeting) }
-        if !UserDefaults.standard.bool(forKey: "loginItemConfigured") {
-            do {
-                if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
-                UserDefaults.standard.set(true, forKey: "loginItemConfigured")
-            } catch { model.errorMessage = "Автозапуск: " + error.localizedDescription }
-        }
+        do { try AppLoginItem().configureIfNeeded(defaults: model.defaults) }
+        catch { model.errorMessage = "Автозапуск: " + error.localizedDescription }
         showWindow()
         Task { await model.calendar.start() }
         configureUpdatePolicy(appUpdater)
