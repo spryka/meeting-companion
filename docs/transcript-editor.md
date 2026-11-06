@@ -95,5 +95,5 @@ resultID. Сохранение атомарно, конфликт проверя
 Автоматические проверки хранилища и команд на синтетических данных не доказывают
 реальный pointer, фокус, VoiceOver, drag, системный диалог, аудиокачество и
 многочасовое воспроизведение. Непроведённые сценарии остаются открытыми в
-[матрице требований](../openspec/changes/refresh-macos-interface/requirements-matrix.md)
-и [проверке workspace](../openspec/changes/refresh-macos-interface/verification-workspace.md).
+[матрице требований](../openspec/changes/archive/2026-11-06-refresh-macos-interface/requirements-matrix.md)
+и [проверке workspace](../openspec/changes/archive/2026-11-06-refresh-macos-interface/verification-workspace.md).

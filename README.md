@@ -210,7 +210,7 @@ bash scripts/check-python-free.sh
 bash scripts/check-module-boundaries.sh
 swift skills/local-audio-transcriber/scripts/find-recording.swift --self-test
 ./scripts/check-bundle.sh "dist/Meeting Companion.app"
-openspec validate refresh-macos-interface --strict
+openspec validate --all --strict
 ~~~
 
 Полная suite содержит аудио, модели, процессы и нативный UI: перед запуском
@@ -225,7 +225,7 @@ Platform — захват, playback и subprocess; App/CLI собирают эт
 meeting-companion --help; для обработки он использует worker и модели установленного приложения.
 
 Процесс изменений — [CONTRIBUTING.md](CONTRIBUTING.md), ограничения — [AGENTS.md](AGENTS.md),
-архитектура — [adr/](adr/), история версий — [CHANGELOG.md](CHANGELOG.md).
+архитектура — [adr/](adr), история версий — [CHANGELOG.md](CHANGELOG.md).
 Версия/build хранятся в Resources/Info.plist и показываются внизу настроек.
 Не коммить записи, календарные данные, ключи, кэши и машинные пути.
 

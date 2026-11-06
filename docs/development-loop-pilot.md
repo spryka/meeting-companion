@@ -125,7 +125,7 @@ snapshot, не выводить из него начальный контекс�
 
 ## Первый запуск: хронологический транскрипт
 
-Разобран @thread:thr_sdh5mu224h и четыре дочерних reviewer. [Проверка продукта](../openspec/changes/chronological-transcript-turns/verification.md).
+Разобран @thread:thr_sdh5mu224h и четыре дочерних reviewer. [Проверка продукта](../openspec/changes/archive/2026-11-06-chronological-transcript-turns/verification.md).
 
 Первый частичный PNG: 9 мин 25 с; GREEN синтетических сценариев: 11 мин;
 итоговый PNG: 20 мин 56 с; код и ревью: 28 мин; отчёт об установке: около 39 мин.
