@@ -4,7 +4,7 @@
 
 Команды status menu на фактическом состоянии capture, обработки и модального ввода.
 
-Принятый контракт beta.30; снятые проверки и исследовательский scope зафиксированы в [итоговой приёмке](../../../docs/beta30-acceptance.md).
+Базовая приёмка beta.30; снятые проверки и исследовательский scope зафиксированы в [итоговой приёмке](../../../docs/beta30-acceptance.md).
 
 ## Requirements
 
@@ -78,7 +78,7 @@
 
 ### Requirement: M04 Stable utility commands
 
-После основных команд система SHALL показывать разделитель, Настройки с Cmd+comma, существующую проверку обновлений и Выйти с Cmd+Q. Автозапуск SHALL находиться в Основных, диагностика в настройках. Защита выхода SHALL сохраняться.
+После основных команд система SHALL показывать разделитель, Настройки с Cmd+comma, проверку обновлений через Sparkle независимо от способа установки публичной сборки и Выйти с Cmd+Q. Автозапуск SHALL находиться в Основных, диагностика в настройках. Защита выхода SHALL сохраняться.
 
 #### Scenario: M04.1 Open settings and update
 
@@ -99,11 +99,17 @@
 
 - **GIVEN** есть capture, starting/stopping/saving, admitting/queued/processing, preparation/check/diagnostic/reset либо ещё не присоединены authoritative snapshots
 - **WHEN** пользователь вызывает проверку/установку обновления или quit через меню, Cmd+Q либо программно
-- **THEN** прежняя Sparkle/AppUpdatePolicy busy policy и termination guard предотвращают прерывание работы или установку поверх неё; причина понятна, jobs продолжаются
+- **THEN** прежняя Sparkle busy policy и termination guard предотвращают прерывание работы или установку поверх неё; причина понятна, jobs продолжаются
 - **AND** оставшийся modal input дополнительно блокирует уход/перезапуск по W04/R08 до явного Save/Cancel; disabled UI не заменяет проверку при действии
 
 #### Scenario: M04.4 Idle utility commands
 
 - **GIVEN** snapshots присоединены, работы и modal input нет
 - **WHEN** выбраны update или quit
-- **THEN** используется прежний доступный для данной установки Sparkle/Homebrew/disabled-build flow либо приложение завершается без лишнего busy prompt; новых способов установки нет
+- **THEN** update-enabled публичная .app использует Sparkle, disabled local build сообщает об отключённых обновлениях либо приложение завершается без лишнего busy prompt; Homebrew не выбирает другой updater
+
+#### Scenario: M04.5 Installation source does not select updater
+- **GIVEN** свободная публичная .app с MCEnableUpdates=true, включая установку с Homebrew receipt
+- **WHEN** updater запускается и пользователь проверяет обновления
+- **THEN** применяются те же Sparkle flow и beta opt-in, без поиска Caskroom, brew-команд или требования обновляться через терминал
+- **AND** ни тип установки, ни наличие receipt не отменяют guards текущей работы и проверки подписи обновления

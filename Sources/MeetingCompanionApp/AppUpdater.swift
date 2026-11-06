@@ -29,8 +29,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
 
     func start() throws {
         guard Bundle.main.bundleURL.pathExtension == "app",
-              Bundle.main.object(forInfoDictionaryKey: "MCEnableUpdates") as? Bool == true,
-              !AppUpdatePolicy.isHomebrewManaged(Bundle.main.bundleURL) else { return }
+              Bundle.main.object(forInfoDictionaryKey: "MCEnableUpdates") as? Bool == true else { return }
         let driver = SPUStandardUserDriver(hostBundle: .main, delegate: nil)
         userDriver = driver
         let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: self)
@@ -39,9 +38,7 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     }
 
     func check() {
-        if AppUpdatePolicy.isHomebrewManaged(Bundle.main.bundleURL) {
-            message("Обновление через Homebrew", "После завершения записи выйди из приложения и выполни:\nbrew update\nbrew upgrade --cask meeting-companion")
-        } else if pendingVersion != nil {
+        if pendingVersion != nil {
             showReadyMessage()
         } else if let updater {
             guard updater.canCheckForUpdates else {
@@ -57,11 +54,11 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     }
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
-        try validateCheckAdmission(homebrewManaged: AppUpdatePolicy.isHomebrewManaged(Bundle.main.bundleURL))
+        try validateCheckAdmission()
     }
 
-    func validateCheckAdmission(homebrewManaged: Bool) throws {
-        if (isCheckBusy?() ?? isBusy()) || homebrewManaged {
+    func validateCheckAdmission() throws {
+        if isCheckBusy?() ?? isBusy() {
             throw NSError(domain: "MeetingCompanion.Updates", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Проверка обновлений доступна после завершения записи и обработки."])
         }

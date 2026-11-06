@@ -9,6 +9,20 @@ import Testing
 
 @MainActor
 struct SettingsPresentationTests {
+    @Test(arguments: [false, true])
+    func updateCheckFollowsWorkState(workBusy: Bool) throws {
+        let (defaults, suite) = createTestDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let updater = AppUpdater(defaults: defaults)
+        updater.isBusy = { workBusy }
+        if workBusy {
+            #expect(throws: (any Error).self) { try updater.validateCheckAdmission() }
+        } else {
+            do { try updater.validateCheckAdmission() }
+            catch { Issue.record("Idle update check rejected: \(error)") }
+        }
+    }
+
     @Test(arguments: ["unattached", "stopping", "admitting", "jobs", "diagnostic", "busy"])
     func settings30WorkStillBlocksOwnOperations(work: String) async throws {
         let (defaults, suite) = createTestDefaults()
@@ -29,7 +43,7 @@ struct SettingsPresentationTests {
         let delegate = RecorderAppDelegate(model: model), updater = AppUpdater(defaults: defaults)
         delegate.configureUpdatePolicy(updater)
         #expect(model.preventsTermination && !model.canResetCache && updater.isBusy())
-        #expect(throws: (any Error).self) { try updater.validateCheckAdmission(homebrewManaged: false) }
+        #expect(throws: (any Error).self) { try updater.validateCheckAdmission() }
         model.dismissSettings()
     }
 
@@ -52,13 +66,13 @@ struct SettingsPresentationTests {
         let delegate = RecorderAppDelegate(model: model)
         let updater = AppUpdater(defaults: defaults)
         delegate.configureUpdatePolicy(updater)
-        do { try updater.validateCheckAdmission(homebrewManaged: false) }
+        do { try updater.validateCheckAdmission() }
         catch { Issue.record("Own Settings check rejected: \(error)") }
         #expect(updater.isBusy() && model.preventsTermination)
         #expect(!updater.installPreparedUpdate())
         model.workspace.externalModal = true
         #expect(!model.canResetCache)
-        #expect(throws: (any Error).self) { try updater.validateCheckAdmission(homebrewManaged: false) }
+        #expect(throws: (any Error).self) { try updater.validateCheckAdmission() }
         var rejectedConfirmation = false
         await model.performCacheReset(in: appData, resetOperation: { _, _ in resets.withLock { $0 += 1 } }, confirmation: { _ in
             rejectedConfirmation = true; return true
@@ -67,7 +81,7 @@ struct SettingsPresentationTests {
         model.workspace.externalModal = false
         model.setSessionStartingForTesting(true)
         #expect(!model.canResetCache)
-        #expect(throws: (any Error).self) { try updater.validateCheckAdmission(homebrewManaged: false) }
+        #expect(throws: (any Error).self) { try updater.validateCheckAdmission() }
         model.setSessionStartingForTesting(false)
         model.dismissSettings()
     }
