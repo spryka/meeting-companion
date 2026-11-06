@@ -327,8 +327,8 @@ merge слов до paragraph grouping и существующий контра�
 #### Scenario: Current paragraph boundaries
 - **GIVEN** одна дорожка с непрерывной речью одного голоса и абсолютными word timestamps
 - **WHEN** native producer формирует turns
-- **THEN** используются текущие pause < 2 s, max turn 30 s и завершение по конечной пунктуации после 15 s из `transcribe.group_turns`
-- **AND** сохранены разбиение по началам реплик другой дорожки и перекрытия; прежний общий лимит 15 s из PoC не подменяет текущий контракт
+- **THEN** по согласованному `chronological-transcript-turns` слова объединяются до grouping по start → host перед remote → source ordinal; пауза от 1,5 s начинает абзац, сохраняются max turn 30 s и завершение по конечной пунктуации после 15 s, включая closing quotes/brackets
+- **AND** чужой speakerID, включая голос на той же дорожке, разделяет абзац; каждый wordID входит ровно один раз, turn.end охватывает все слова и реальные перекрытия
 
 #### Scenario: Native result opens in the existing editor
 - **GIVEN** native worker создал `raw/transcripts/<resultID>/result.json` с `schemaVersion: 1`

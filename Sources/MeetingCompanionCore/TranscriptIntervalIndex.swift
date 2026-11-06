@@ -13,6 +13,7 @@ public struct TranscriptIntervalIndex: Sendable {
 
     private let turnTree: [IntervalNode]
     private let wordTree: [IntervalNode]
+    private let readingOrder: [Int]
 
     public init(document: TranscriptDocument) {
         self.init(turns: document.turns, words: document.words)
@@ -21,6 +22,11 @@ public struct TranscriptIntervalIndex: Sendable {
     public init(turns: [TranscriptDocument.Turn], words: [TranscriptDocument.Word] = []) {
         self.turns = turns
         self.words = words
+        self.readingOrder = turns.indices.filter {
+            turns[$0].start.isFinite && turns[$0].end.isFinite && turns[$0].start < turns[$0].end
+        }.sorted {
+            turns[$0].start == turns[$1].start ? $0 < $1 : turns[$0].start < turns[$1].start
+        }
 
         let turnItems = turns.enumerated().map { (displayIndex: $0.offset, start: $0.element.start, end: $0.element.end) }
         self.turnTree = Self.buildTree(items: turnItems)
@@ -30,6 +36,21 @@ public struct TranscriptIntervalIndex: Sendable {
     }
 
     // MARK: - Query Turns
+
+    /// Latest started nonempty turn, expiring at its own end without returning to older overlaps.
+    public func readingFocusTurnID(at timestamp: Double) -> String? {
+        guard timestamp.isFinite, timestamp >= 0 else { return nil }
+        var low = 0
+        var high = readingOrder.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if turns[readingOrder[middle]].start <= timestamp { low = middle + 1 }
+            else { high = middle }
+        }
+        guard low > 0 else { return nil }
+        let turn = turns[readingOrder[low - 1]]
+        return timestamp < turn.end ? turn.id : nil
+    }
 
     /// Returns all turns active at `timestamp`, preserving their original display order.
     public func activeTurns(at timestamp: Double) -> [TranscriptDocument.Turn] {

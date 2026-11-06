@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "resultID": "res_chronological",
+  "createdAt": "2026-10-29T12:00:00+03:00",
+  "sources": [
+    {
+      "id": "host",
+      "originalAudioPath": "raw/meeting.host_record.wav",
+      "recognitionAudioPath": "raw/meeting.host_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    },
+    {
+      "id": "remote",
+      "originalAudioPath": "raw/meeting.remote_record.wav",
+      "recognitionAudioPath": "raw/meeting.remote_record.wav",
+      "diarizationStatus": "completed",
+      "detectedVoiceCount": 1,
+      "correctionStatus": "disabled"
+    }
+  ],
+  "speakers": [
+    {
+      "id": "spk_h1",
+      "sourceID": "host",
+      "localID": 1,
+      "displayNumber": 1
+    },
+    {
+      "id": "spk_r1",
+      "sourceID": "remote",
+      "localID": 1,
+      "displayNumber": 2
+    }
+  ],
+  "words": [
+    {
+      "id": "a1",
+      "speakerID": "spk_h1",
+      "start": 10,
+      "end": 12,
+      "text": "Обсудим"
+    },
+    {
+      "id": "b1",
+      "speakerID": "spk_r1",
+      "start": 11,
+      "end": 11.5,
+      "text": "Да"
+    },
+    {
+      "id": "a2",
+      "speakerID": "spk_h1",
+      "start": 12.2,
+      "end": 13,
+      "text": "релиз"
+    }
+  ],
+  "turns": [
+    {
+      "id": "t0",
+      "speakerID": "spk_h1",
+      "start": 10,
+      "end": 12,
+      "wordIDs": [
+        "a1"
+      ]
+    },
+    {
+      "id": "t1",
+      "speakerID": "spk_r1",
+      "start": 11,
+      "end": 11.5,
+      "wordIDs": [
+        "b1"
+      ]
+    },
+    {
+      "id": "t2",
+      "speakerID": "spk_h1",
+      "start": 12.2,
+      "end": 13,
+      "wordIDs": [
+        "a2"
+      ]
+    }
+  ],
+  "baselineWords": [
+    {
+      "id": "a1",
+      "speakerID": "spk_h1",
+      "start": 10,
+      "end": 12,
+      "text": "Обсудим"
+    },
+    {
+      "id": "b1",
+      "speakerID": "spk_r1",
+      "start": 11,
+      "end": 11.5,
+      "text": "Да"
+    },
+    {
+      "id": "a2",
+      "speakerID": "spk_h1",
+      "start": 12.2,
+      "end": 13,
+      "text": "релиз"
+    }
+  ],
+  "aec": {
+    "requested": false,
+    "outcome": "disabled"
+  },
+  "playback": {
+    "status": "unavailable",
+    "mixPath": null
+  },
+  "warnings": [
+    {
+      "code": "playback_mix_failed",
+      "message": "Synthetic text-only fixture",
+      "sourceID": null
+    }
+  ],
+  "context": null
+}

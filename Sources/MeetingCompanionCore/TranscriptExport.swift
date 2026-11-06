@@ -143,7 +143,7 @@ public struct TranscriptExportFormatter: Sendable {
         }
 
         // 3. Turns
-        let words = Dictionary(uniqueKeysWithValues: document.words.map { ($0.id, $0.text) })
+        let presentation = TranscriptTextPresentation(document: document, overrides: edits.overrides)
         let speakers = Dictionary(uniqueKeysWithValues: document.speakers.map { ($0.id, $0) })
 
         var turnBlocks: [String] = []
@@ -160,12 +160,7 @@ public struct TranscriptExportFormatter: Sendable {
                 speakerName = "Speaker \(displayNumber)"
             }
 
-            let turnText: String
-            if let overrideText = edits.overrides[turn.id]?.text {
-                turnText = overrideText
-            } else {
-                turnText = turn.wordIDs.compactMap { words[$0] }.joined(separator: " ")
-            }
+            let turnText = presentation.readingText[turn.id] ?? ""
 
             turnBlocks.append("[\(timestamp)] \(speakerName):\n\(turnText)")
         }

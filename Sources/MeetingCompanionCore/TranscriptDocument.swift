@@ -283,7 +283,7 @@ public struct TranscriptDocument: Codable, Sendable {
             }
             if let path = document.playback.mixPath { try validatePath(path, in: recordingDirectory) }
             try document.validateAudioConsistency(in: recordingDirectory)
-            return document
+            return try document.includingSavedContext(in: recordingDirectory)
         } catch let error as LoadError {
             throw error
         } catch let error as DecodingError {
@@ -299,6 +299,39 @@ public struct TranscriptDocument: Codable, Sendable {
         } catch {
             throw LoadError.malformed("не удалось прочитать JSON: \(error.localizedDescription)")
         }
+    }
+
+    private struct SavedContext: Decodable {
+        let summary: String
+        let start: String?
+        let timezone: String?
+        let agenda: String?
+        let attendees: [String]?
+    }
+
+    /// Older results omitted the saved meeting; enrich in memory without changing recognition files.
+    public func includingSavedContext(in recordingDirectory: URL) throws -> Self {
+        guard context == nil else { return self }
+        let root = recordingDirectory.resolvingSymlinksInPath().standardizedFileURL
+        let name = root.lastPathComponent + ".context.json"
+        var savedContext: Context?
+        var savedWarnings = warnings
+        do {
+            try Self.validatePath(name, in: root)
+            let saved = try JSONDecoder().decode(SavedContext.self, from: Data(contentsOf: root.appendingPathComponent(name)))
+            if let start = saved.start { try Self.validateDate(start) }
+            savedContext = Context(title: saved.summary, startAt: saved.start, timeZone: saved.timezone,
+                                   agenda: saved.agenda, attendees: saved.attendees)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return self
+        } catch {
+            let warning = Warning(code: "context_warning",
+                message: "Не удалось прочитать сохранённый контекст встречи: " + error.localizedDescription)
+            if !savedWarnings.contains(warning) { savedWarnings.append(warning) }
+        }
+        return try Self(schemaVersion: schemaVersion, resultID: resultID, createdAt: createdAt,
+            sources: sources, speakers: speakers, words: words, turns: turns, baselineWords: baselineWords,
+            aec: aec, playback: playback, warnings: savedWarnings, context: savedContext)
     }
 
     private enum CodingKeys: String, CodingKey {

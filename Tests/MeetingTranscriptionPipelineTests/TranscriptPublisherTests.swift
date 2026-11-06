@@ -8,6 +8,42 @@ import CryptoKit
 @Suite("TranscriptPublisher Tests")
 struct TranscriptPublisherTests {
 
+    @Test func newPublicationIncludesSavedCalendarSnapshot() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let sidecar = root.appendingPathComponent("meeting.context.json")
+        let saved = Data(#"{"summary":"CX (CC) Standup","start":"2026-11-06T08:30:00Z","end":"2026-11-06T09:00:00Z","timezone":"Europe/Moscow","agenda":"Планы команды","attendees":["Алиса Иванова","Борис Петров"],"links":[]}"#.utf8)
+        try saved.write(to: sidecar)
+        let result = try TranscriptPublisher(recordingDirectory: root).publish(
+            document: makeValidDocument(), audioMixData: Data([1]), recordingStem: "meeting")
+        // Decode the bytes directly: load() could hide a missing publication snapshot.
+        let document = try JSONDecoder().decode(TranscriptDocument.self, from: Data(contentsOf: result))
+        #expect(document.context?.title == "CX (CC) Standup")
+        #expect(document.context?.startAt == "2026-11-06T08:30:00Z")
+        #expect(document.context?.timeZone == "Europe/Moscow")
+        #expect(document.context?.agenda == "Планы команды")
+        #expect(document.context?.attendees == ["Алиса Иванова", "Борис Петров"])
+        #expect(try Data(contentsOf: sidecar) == saved)
+        try FileManager.default.removeItem(at: sidecar)
+        let reopened = try TranscriptDocument.load(from: result, recordingDirectory: root)
+        #expect(reopened.context?.attendees == ["Алиса Иванова", "Борис Петров"])
+    }
+
+    @Test func invalidSavedCalendarDateDoesNotBlockPublication() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try Data(#"{"summary":"Standup","start":"not-a-date","attendees":["Алиса"]}"#.utf8)
+            .write(to: root.appendingPathComponent("meeting.context.json"))
+        let result = try TranscriptPublisher(recordingDirectory: root).publish(
+            document: makeValidDocument(), audioMixData: Data([1]), recordingStem: "meeting")
+        let document = try JSONDecoder().decode(TranscriptDocument.self, from: Data(contentsOf: result))
+        #expect(document.words.first?.text == "Тест")
+        #expect(document.context == nil)
+        #expect(document.warnings.contains { $0.code == "context_warning" })
+        let reopened = try TranscriptDocument.load(from: result, recordingDirectory: root)
+        #expect(reopened.warnings.filter { $0.code == "context_warning" }.count == 1)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("publisher-test-\(UUID().uuidString)").appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -151,6 +187,10 @@ struct TranscriptPublisherTests {
         let publisher = TranscriptPublisher(recordingDirectory: root)
         let prior = try publisher.publish(document: makeValidDocument(resultID: "A"), audioMixData: Data([1]), recordingStem: "meeting")
         let before = try Data(contentsOf: prior)
+        let editsURL = prior.deletingLastPathComponent().appendingPathComponent("edits.json")
+        let edits = try JSONEncoder().encode(TranscriptEdits(resultID: "A", revision: 1,
+            overrides: ["turn_1": .init(text: "Сохранённая правка")]))
+        try edits.write(to: editsURL)
         let rootText = try Data(contentsOf: root.appendingPathComponent("meeting.sources.transcript.txt"))
         let originals = ["host", "remote"].map { root.appendingPathComponent("raw/meeting." + $0 + "_record.wav") }
         for source in originals { try Data([1, 2, 3]).write(to: source) }
@@ -163,6 +203,7 @@ struct TranscriptPublisherTests {
         }
         #expect(try TranscriptResultStorage(recordingDirectory: root).currentDocument()?.resultID == "A")
         #expect(try Data(contentsOf: prior) == before)
+        #expect(try Data(contentsOf: editsURL) == edits)
         #expect(try Data(contentsOf: root.appendingPathComponent("meeting.sources.transcript.txt")) == rootText)
         #expect(try originals.map { SHA256.hash(data: try Data(contentsOf: $0)) } == hashes)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("raw/transcripts").path) == ["A"])
@@ -175,6 +216,10 @@ struct TranscriptPublisherTests {
         let recording = root.appendingPathComponent("meeting.m4a")
         let publisher = TranscriptPublisher(recordingDirectory: root)
         _ = try publisher.publish(document: makeValidDocument(resultID: "A"), audioMixData: Data([1]), recordingStem: "meeting")
+        let editsURL = root.appendingPathComponent("raw/transcripts/A/edits.json")
+        let edits = try JSONEncoder().encode(TranscriptEdits(resultID: "A", revision: 1,
+            overrides: ["turn_1": .init(text: "Сохранённая правка")]))
+        try edits.write(to: editsURL)
         try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: root.appendingPathComponent("raw/transcripts/A").path)
         let originals = ["host", "remote"].map { root.appendingPathComponent("raw/meeting." + $0 + "_record.wav") }
         for source in originals { try Data([1, 2, 3]).write(to: source) }
@@ -207,6 +252,8 @@ struct TranscriptPublisherTests {
         #expect(text.path.hasSuffix("raw/transcripts/B/transcript.txt"))
         #expect(try String(contentsOf: text, encoding: .utf8).contains("Тест"))
         #expect(try TranscriptResultStorage(recordingURL: recording).currentDocument()?.resultID == "B")
+        #expect(try Data(contentsOf: editsURL) == edits)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("raw/transcripts/B/edits.json").path))
         #expect(repo.entry(recording)?.phase == .completed)
         #expect(await service.totalJobCount == 0)
         #expect((warning != nil) == (kind != "success"))

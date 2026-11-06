@@ -1,4 +1,5 @@
 import Foundation
+import MeetingCompanionCore
 
 public enum PipelineLogic {
     public static func assemble(
@@ -239,7 +240,7 @@ public enum PipelineLogic {
             guard !current.isEmpty else { return }
             let text = current.map(\.text).joined(separator: " ")
             let start = current[0].start
-            let end = current.last!.end
+            let end = current.map(\.end).max()!
             let speaker = current[0].speaker
             result.append(PipelineWord(start: start, end: end, text: text, speaker: speaker))
             current.removeAll()
@@ -252,14 +253,13 @@ public enum PipelineLogic {
             }
             let prev = current.last!
             let speakerChanged = (word.speaker != prev.speaker)
-            let pause = word.start - prev.end
-            let pauseCut = pause >= 2.0
-            let duration = word.end - current[0].start
-            let durationExceeded = duration > 30.0
-            let punctuationCut = duration >= 15.0 && [".", "!", "?", "…"].contains { prev.text.hasSuffix($0) }
+            let boundaryCut = TranscriptParagraphs.shouldBreak(
+                start: current[0].start, previousEnd: prev.end, previousText: prev.text,
+                nextStart: word.start, nextEnd: word.end
+            )
             let externalCut = externalBreaks.contains { $0 > current[0].start && $0 <= word.start }
 
-            if speakerChanged || pauseCut || durationExceeded || punctuationCut || externalCut {
+            if speakerChanged || boundaryCut || externalCut {
                 flush()
             }
             current.append(word)
@@ -281,13 +281,12 @@ public enum PipelineLogic {
             let prevIdx = current.last!
             let prev = words[prevIdx]
             let speakerChanged = (word.speaker != prev.speaker)
-            let pause = word.start - prev.end
-            let pauseCut = pause >= 2.0
-            let duration = word.end - words[current[0]].start
-            let durationExceeded = duration > 30.0
-            let punctuationCut = duration >= 15.0 && [".", "!", "?", "…"].contains { prev.text.hasSuffix($0) }
+            let boundaryCut = TranscriptParagraphs.shouldBreak(
+                start: words[current[0]].start, previousEnd: prev.end, previousText: prev.text,
+                nextStart: word.start, nextEnd: word.end
+            )
 
-            if speakerChanged || pauseCut || durationExceeded || punctuationCut {
+            if speakerChanged || boundaryCut {
                 groups.append(current)
                 current = [idx]
             } else {
@@ -314,16 +313,6 @@ public enum PipelineLogic {
             return w
         }.sorted { $0.start < $1.start }
 
-        let breaks = (groupTurns(hostSorted) + groupTurns(remoteOffset)).map(\.start)
-        let hostTurns = groupTurns(hostSorted, breaks)
-        let remoteTurns = groupTurns(remoteOffset, breaks)
-        var combined = hostTurns + remoteTurns
-        combined.sort { a, b in
-            if a.start != b.start {
-                return a.start < b.start
-            }
-            return (a.speaker ?? 1) < (b.speaker ?? 1)
-        }
-        return combined
+        return groupTurns(hostSorted + remoteOffset)
     }
 }
