@@ -112,6 +112,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         window.center()
         capsuleController = RecordingCapsuleController(model: model, defaults: model.defaults)
         model.onRecordingStarted = { [weak self] in
+            guard self?.model.trashOwnsInput != true else { return }
             self?.window.orderOut(nil)
             self?.model.setWindowVisible(false)
             self?.updatePreviewVisibility()

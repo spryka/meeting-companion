@@ -18,12 +18,14 @@ final class TranscriptReviewWindowManager: ObservableObject {
         didSet { if externalModal { current?.invalidateQueuedPlaybackSeek() } }
     }
     var settingsInput: @MainActor () -> Bool = { false }
+    var trashInput: @MainActor () -> Bool = { false }
+    var nativeInput: @MainActor () -> Bool = { false }
     @Published var savedRevision = 0
     @Published private(set) var commandNotice: String?
     private var generation = 0
     private var opening: Task<TranscriptReviewWindowModel, Error>?
     private var openingURL: URL?
-    var hasForeignInput: Bool { externalModal || current?.currentDraftIdentity != nil }
+    var hasForeignInput: Bool { trashInput() || externalModal || current?.currentDraftIdentity != nil }
     var hasInput: Bool { settingsInput() || hasForeignInput }
 
     func admitNavigation() -> Bool {
@@ -55,27 +57,58 @@ final class TranscriptReviewWindowManager: ObservableObject {
 
     @discardableResult
     func open(recordingURL: URL, title: String) async throws -> TranscriptReviewWindowModel {
-        guard admitNavigation() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
+        try await open(recordingURL: recordingURL, title: title, ownTrashModal: { false })
+    }
+
+    func prepareForTrash(_ recording: URL, ownsModal: @MainActor () -> Bool) async -> Bool {
+        guard ownsModal(), !settingsInput(), !nativeInput(), !externalModal, current?.currentDraftIdentity == nil else { return false }
+        generation += 1
+        let expected = generation
+        _ = try? await opening?.value
+        guard expected == generation, ownsModal(), !settingsInput(), !nativeInput(), !externalModal,
+              current?.currentDraftIdentity == nil else { return false }
+        opening = nil; openingURL = nil; loading = false
+        if current?.state.id == RecordingEntry.canonicalURL(recording) { closeLoadedSession() }
+        return true
+    }
+
+    func reopenAfterFailedTrash(recordingURL: URL, title: String, ownsModal: @escaping @MainActor () -> Bool) async throws -> TranscriptReviewWindowModel {
+        try await open(recordingURL: recordingURL, title: title, ownTrashModal: ownsModal)
+    }
+
+    private func open(recordingURL: URL, title: String, ownTrashModal: @escaping @MainActor () -> Bool) async throws -> TranscriptReviewWindowModel {
+        func admitted() -> Bool {
+            if ownTrashModal(), trashInput(), !settingsInput(), !nativeInput(), !externalModal, current?.currentDraftIdentity == nil { return true }
+            return admitNavigation()
+        }
+        guard admitted() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
         let key = RecordingEntry.canonicalURL(recordingURL)
         if openingURL == key, let opening { return try await opening.value }
         generation += 1
         let expected = generation
+        loading = true
+        defer {
+            if expected == generation { loading = false; opening = nil; openingURL = nil }
+        }
         guard !(await isProcessing(key)) else { throw TranscriptWindowError.readOnlyLegacy("Идёт обработка; откройте текст после её завершения.") }
         guard expected == generation else { throw TranscriptWindowError.closed }
-        guard admitNavigation() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
+        guard admitted() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
         if let current, current.state.id == key, !current.state.isClosed { return current }
         let previous = opening
-        loading = true; failure = nil; openingURL = key
+        failure = nil; openingURL = key
         let task = Task { [self] in
             _ = try? await previous?.value
-            guard expected == generation, !hasInput else { throw TranscriptWindowError.closed }
+            guard expected == generation, admitted() else { throw TranscriptWindowError.closed }
             closeLoadedSession()
             let state = try await coordinator.openWindow(for: key).state
             do {
                 let model = try await TranscriptReviewWindowModel(state: state, transportFactory: transportFactory)
-                model.inputBlocked = { [weak self] in self?.settingsInput() ?? true }
+                model.inputBlocked = { [weak self] in
+                    guard let self else { return true }
+                    return self.settingsInput() || self.trashInput()
+                }
                 let processing = await isProcessing(key)
-                guard expected == generation, !hasInput, !state.isClosed, !processing else {
+                guard expected == generation, admitted(), !state.isClosed, !processing else {
                     model.close(); throw TranscriptWindowError.closed
                 }
                 model.onSaved = { [weak self] in self?.savedRevision += 1 }
@@ -86,10 +119,9 @@ final class TranscriptReviewWindowManager: ObservableObject {
         opening = task
         do {
             let model = try await task.value
-            if expected == generation { loading = false; opening = nil; openingURL = nil }
             return model
         } catch {
-            if expected == generation { loading = false; opening = nil; openingURL = nil; failure = error.localizedDescription }
+            if expected == generation { failure = error.localizedDescription }
             throw error
         }
     }

@@ -752,8 +752,14 @@ struct WorkspaceKeyboardTests {
         window.recalculateKeyViewLoop()
         window.sendEvent(fixture.key("\t", code: 48))
         #expect(window.firstResponder !== library)
-        window.sendEvent(fixture.key("\t", code: 48, modifiers: .shift))
+        // Row actions must remain in the native key-view loop in both directions.
+        let selection = fixture.model.selectedHistoryURL
+        for _ in 0..<12 where window.firstResponder !== library {
+            window.sendEvent(fixture.key("\t", code: 48, modifiers: .shift))
+            await Task.yield()
+        }
         #expect(window.firstResponder === library)
+        #expect(fixture.model.selectedHistoryURL == selection)
         window.makeFirstResponder(transcript)
         fixture.model.workspaceShowsList = true
         window.setContentSize(NSSize(width: 640, height: 560))

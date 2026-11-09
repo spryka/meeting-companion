@@ -15,6 +15,7 @@ HTML-референс и активные предложения объясня�
 | Цвета, spacing, общие кнопки/поля/dialog, векторные иконки | [InterfaceStyle.swift](Sources/MeetingCompanionApp/InterfaceStyle.swift): `InterfaceStyle`, `ODButtonStyle`, `odInput`, `ODDialog`, `ODIconView` |
 | Главное окно, native header, separator, min-size | [RecordingWindowState.swift](Sources/MeetingCompanionApp/RecordingWindowState.swift): `AppWindowState.updateHeader`, `WorkspaceHeaderHostingView` |
 | Библиотека, поиск, footer, toolbar/More | [RecordingHistoryView.swift](Sources/MeetingCompanionApp/RecordingHistoryView.swift): `RecordingHistoryView`, `RecorderWorkspaceView` |
+| Подтверждение переноса в Корзину | [RecordingTrashView.swift](Sources/MeetingCompanionApp/RecordingTrashView.swift): `RecordingTrashOverlay`; admission и outcome — `RecorderViewModel` |
 | Документ, реплики, player, редактирование | [TranscriptReviewWindow.swift](Sources/MeetingCompanionApp/TranscriptReviewWindow.swift): `TranscriptReviewWindowView`, `WaveformScrubberView` |
 | Новая запись, meeting/mic fields, уровни | [RecorderView.swift](Sources/MeetingCompanionApp/RecorderView.swift): `FullRecorderView`, `MeetingPicker`, `FormLevelMetersView` |
 | Settings modal, навигация и настройки | [SettingsView.swift](Sources/MeetingCompanionApp/SettingsView.swift): `WorkspaceSettingsOverlay`, `SettingsShell`, `RecorderSettingsView`, локальные `ODSettings*` |
@@ -235,9 +236,20 @@ native путь, не обещание полностью проверенног
 
 **Меню.** Status item отправляет оба mouse-up в один native menu route;
 `StatusMenu.build` строит NSMenu из текущего состояния. Settings — Cmd+,, quit —
-Cmd+Q; размер строк/типографику определяет macOS. More в toolbar — ровно четыре
-first-level строки: «Повторить обработку», «Переименовать», «Копировать транскрипт»,
-«Настройки». Disabled rows сохраняются; ellipsis icon20 в hit36×36/radius8.
+Cmd+Q; размер строк/типографику определяет macOS. More в toolbar — пять
+first-level строк: «Повторить обработку», «Переименовать», «Копировать транскрипт»,
+«Настройки», затем после разделителя «В Корзину…». Disabled rows сохраняются;
+ellipsis icon20 в hit36×36/radius8. У строки библиотеки нет context menu.
+
+**Корзина.** У выбранной записи справа зарезервирован hit28×28 для `trash`16;
+hover/Tab невыбранной строки не раскрывает эту кнопку. Подтверждение использует
+`ODDialog` внутри workspace и блокирует библиотеку и close/hide до отмены или
+результата. Delete/Backspace открывают его, Enter подтверждает, Escape отменяет;
+pending и повторы не создают вторую операцию. После успеха selection пуста,
+focus у соседней строки; первая ↑/↓ или Space открывает её через прежний
+library route и возвращает focus библиотеке. Поля ввода и чужие modal/sheet
+сохраняют приоритет. Состав папки и возможность восстановления через Finder
+объяснены до подтверждения.
 
 **Напоминание встречи.** Собственная floating panel и `MeetingReminderView`,
 на системной material/glass поверхности. Вариант во время записи объясняет переход

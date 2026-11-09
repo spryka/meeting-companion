@@ -326,6 +326,29 @@ struct ApplicationServiceTests {
         _ = try repo.rename(url, displayTitle: "After admission")
     }
 
+    @Test func trashReservationRejectsCaptureAndEnqueueBeforeSideEffects() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("meeting_trash")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("meeting_trash.m4a")
+        let repo = RecordingHistoryRepository()
+        _ = try repo.putThrowing(RecordingEntry(recording: url, date: Date(), title: "Original", phase: .completed))
+        let target = try repo.prepareTrash(url, root: root), token = try repo.reserveTrash(target)
+        defer { repo.releaseTrash(target, id: token) }
+        let capture = MockAudioCaptureController(outputURL: url)
+        let session = RecordingSessionService(historyRepo: repo)
+        await #expect(throws: Error.self) { try await session.start(controller: capture, outputURL: url) }
+        #expect(!capture.isStarted)
+        let runner = MockTranscriptionRunner(); runner.delayNanoseconds = 0
+        let processing = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter(), historyRepository: repo,
+            retryAdmission: { _ in Issue.record("Trash must exclude retry admission before any await"); return true })
+        _ = await processing.enqueue(recordingURL: url, settings: .init(parakeet: false, echoCancellation: false))
+        #expect(await processing.totalJobCount == 0)
+        #expect(runner.runCallCount == 0)
+        #expect(repo.entry(url)?.phase == .completed)
+    }
+
     @Test func workspaceRenameExcludesPendingCaptureFinalization() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let folder = root.appendingPathComponent("meeting_pending")

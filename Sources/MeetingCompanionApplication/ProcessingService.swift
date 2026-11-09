@@ -214,7 +214,10 @@ public actor ProcessingService {
             return existing
         }
         let job = ProcessingJob(recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
-        historyRepository?.reserveWork(canonical, id: job.id)
+        if let historyRepository, !historyRepository.reserveWork(canonical, id: job.id) {
+            emit(.failed(job, errorDescription: "Дождитесь завершения работы с записью"))
+            return job
+        }
         var enqueued = false
         defer { if !enqueued { historyRepository?.releaseWork(canonical, id: job.id) } }
         if stoppedCapture == nil, let retryAdmission {

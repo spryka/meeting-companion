@@ -11,15 +11,123 @@ struct RecorderWorkspaceView: View {
 
     var body: some View {
         RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: showSettings)
-            .disabled(model.settingsPresented)
-            .allowsHitTesting(!model.settingsPresented)
-            .accessibilityHidden(model.settingsPresented)
+            .disabled(model.settingsPresented || model.trashOwnsInput)
+            .allowsHitTesting(!model.settingsPresented && !model.trashOwnsInput)
+            .accessibilityHidden(model.settingsPresented || model.trashOwnsInput)
             .overlay { if model.settingsPresented && model.mainPage != .recording { WorkspaceSettingsOverlay(model: model) } }
+            .overlay { if model.recordingTrash != nil { RecordingTrashOverlay(model: model) } }
+            .task(id: model.trashCompletion?.id) {
+                guard model.history.notice != nil else { return }
+                try? await Task.sleep(for: .seconds(4))
+                if !Task.isCancelled { model.history.clearNotice() }
+            }
             .sheet(isPresented: Binding(get: { model.mainPage == .recording }, set: { if !$0 { model.mainPage = .history } })) {
                     FullRecorderView(viewModel: model, showSettings: showSettings)
                 .background(ODColors.surface)
             }
             .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+}
+
+// Native tab stops share the workspace's AppKit key-view loop.
+private struct RecordingRowButton: NSViewRepresentable {
+    let label: String
+    let help: String
+    var focusRequest: UUID? = nil
+    let onFocus: (Bool) -> Void
+    var onVerticalKey: ((Int) -> Void)? = nil
+    var onDelete: (@MainActor () async -> Void)? = nil
+    let action: () -> Void
+
+    final class Button: NSButton {
+        var onFocus: ((Bool) -> Void)?
+        var activate: (() -> Void)?
+        var verticalAction: ((Int) -> Void)?
+        var deleteAction: (@MainActor () async -> Void)?
+        var focusRequest: UUID?
+        private var appliedFocusRequest: UUID?
+        override var acceptsFirstResponder: Bool { isEnabled }
+        override var canBecomeKeyView: Bool {
+            isEnabled && !isHiddenOrHasHiddenAncestor && bounds.width > 0 && bounds.height > 0
+        }
+        override func keyDown(with event: NSEvent) {
+            if event.keyCode == 125 || event.keyCode == 126,
+               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                if canBecomeKeyView, let window = window as? WorkspaceWindow,
+                   window.admitsNavigationKeys, window.firstResponder === self {
+                    verticalAction?(event.keyCode == 125 ? 1 : -1)
+                }
+                return
+            }
+            if event.keyCode == 49, event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                if !event.isARepeat, let window = window as? WorkspaceWindow,
+                   window.admitsNavigationKeys, window.firstResponder === self { invoke() }
+                return
+            }
+            if event.keyCode == 51 || event.keyCode == 117,
+               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                if !event.isARepeat {
+                    Task { [weak self] in
+                        guard let self, self.isEnabled, let window = self.window as? WorkspaceWindow,
+                              window.admitsNavigationKeys, window.firstResponder === self else { return }
+                        await self.deleteAction?()
+                    }
+                }
+                return
+            }
+            if event.keyCode == 48, event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
+                if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
+                else { window?.selectNextKeyView(self) }
+                return
+            }
+            super.keyDown(with: event)
+        }
+        override func becomeFirstResponder() -> Bool {
+            guard super.becomeFirstResponder() else { return false }
+            DispatchQueue.main.async { [weak self] in self?.onFocus?(true) }
+            return true
+        }
+        override func resignFirstResponder() -> Bool {
+            let result = super.resignFirstResponder()
+            if result { DispatchQueue.main.async { [weak self] in self?.onFocus?(false) } }
+            return result
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            requestFocus()
+        }
+        func requestFocus() {
+            guard let focusRequest, focusRequest != appliedFocusRequest, window != nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.focusRequest == focusRequest, self.appliedFocusRequest != focusRequest,
+                      self.isEnabled, let window = self.window as? WorkspaceWindow, window.admitsNavigationKeys else { return }
+                if window.makeFirstResponder(self) { self.appliedFocusRequest = focusRequest }
+            }
+        }
+        @objc func invoke() { if isEnabled { activate?() } }
+    }
+
+    func makeNSView(context: Context) -> Button {
+        let button = Button(title: "", target: nil, action: nil)
+        button.target = button
+        button.action = #selector(Button.invoke)
+        button.isBordered = false
+        button.isTransparent = true
+        button.focusRingType = .none
+        return button
+    }
+
+    func updateNSView(_ button: Button, context: Context) {
+        button.isEnabled = context.environment.isEnabled
+        button.setAccessibilityLabel(label)
+        button.setAccessibilityHelp(help)
+        button.toolTip = help
+        button.onFocus = onFocus
+        button.deleteAction = onDelete
+        button.activate = action
+        button.verticalAction = onVerticalKey
+        button.focusRequest = focusRequest
+        button.requestFocus()
     }
 }
 
@@ -38,6 +146,13 @@ struct RecordingHistoryView: View {
     @State private var renameSaving = false
     @State private var moreHovered = false
     @StateObject private var libraryNavigation = WorkspaceNavigationView(.library)
+    private enum RowControl: Hashable { case select(URL), trash(URL) }
+    @State private var rowControl: RowControl?
+    @State private var rowFocusTarget: URL?
+    @State private var rowFocusRequest: UUID?
+    @State private var hoveredTrash: URL?
+    @State private var trashFocusOrder: [URL] = []
+    @State private var focusedTrashCompletion: UUID?
 
     init(model: RecorderViewModel, history: RecordingHistory, workspace: TranscriptReviewWindowManager,
          showSettings: @escaping () -> Void, search: RecordingSearch = RecordingSearch()) {
@@ -70,6 +185,9 @@ struct RecordingHistoryView: View {
                 }
 
                 VStack(spacing: 0) {
+                    if let notice = history.notice {
+                        Text(notice).font(.system(size: 12)).foregroundStyle(ODColors.muted).padding(8)
+                    }
                     if let error = history.error {
                         Text(error)
                             .font(.system(size: 12))
@@ -120,9 +238,9 @@ struct RecordingHistoryView: View {
 
                     } else {
                         ContentUnavailableView(
-                            "Выберите запись",
+                            "Выбери запись",
                             systemImage: "doc.text",
-                            description: Text("Текст и аудио текущего результата откроются здесь.")
+                            description: Text("Выбери встречу в библиотеке")
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -139,7 +257,9 @@ struct RecordingHistoryView: View {
                 windowState.updateHeader(
                     brand: AnyView(WorkspaceBrand(narrow: narrow, compact: !isWide)),
                     actions: AnyView(documentToolbar(narrow: narrow, compact: !isWide)
-                        .disabled(model.settingsPresented).allowsHitTesting(!model.settingsPresented).accessibilityHidden(model.settingsPresented)),
+                        .disabled(model.settingsPresented || model.trashOwnsInput)
+                        .allowsHitTesting(!model.settingsPresented && !model.trashOwnsInput)
+                        .accessibilityHidden(model.settingsPresented || model.trashOwnsInput)),
                     width: geometry.size.width, sidebarWidth: sidebarWidth,
                     narrow: narrow, showsList: model.workspaceShowsList)
             })
@@ -187,7 +307,7 @@ struct RecordingHistoryView: View {
                         renameSaving = true
                         Task {
                             do {
-                                try await history.rename(target.id, displayTitle: renameTitle)
+                                try await model.renameRecording(target.id, displayTitle: renameTitle)
                                 renameTarget = nil
                                 workspace.externalModal = false
                             } catch {
@@ -267,7 +387,7 @@ struct RecordingHistoryView: View {
         Group {
             if !history.initialLoadComplete {
                 ProgressView("Загружаем записи…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if history.entries.isEmpty {
+            } else if history.entries.isEmpty && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 ContentUnavailableView("Записей пока нет", systemImage: "tray", description: Text("Начните новую запись встречи."))
             } else if visibleEntries.isEmpty && !search.loading {
                 ContentUnavailableView("Совпадений нет", systemImage: "magnifyingglass", description: Text(search.result.failures.isEmpty ? "Попробуйте другой запрос." : "Поиск неполный: некоторые файлы недоступны."))
@@ -304,20 +424,59 @@ struct RecordingHistoryView: View {
             model.selectLibraryRecording(entries[next].id)
             proxy.scrollTo(entries[next].id)
             libraryNavigation.focus()
+        }, onDeleteKey: {
+            guard let selected = model.selectedHistoryURL, let entry = history.entry(selected) else { return }
+            await requestTrash(entry)
         }))
         .contentShape(Rectangle())
         .onTapGesture { libraryNavigation.focus() }
+        .onChange(of: model.trashCompletion?.id) { _, _ in focusAfterTrash(proxy) }
+        .onChange(of: model.recordingTrash?.id) { _, _ in focusAfterTrash(proxy) }
         }
+    }
+
+    private func focusAfterTrash(_ proxy: ScrollViewProxy) {
+        guard !model.trashOwnsInput, let completion = model.trashCompletion, focusedTrashCompletion != completion.id else { return }
+        focusedTrashCompletion = completion.id
+        let live = Set(visibleEntries.map(\.id))
+        let index = trashFocusOrder.firstIndex(of: completion.recording) ?? 0
+        let neighbors = Array(trashFocusOrder.dropFirst(index + 1)) + Array(trashFocusOrder.prefix(index).reversed())
+        if let next = (neighbors + visibleEntries.map(\.id)).first(where: { live.contains($0) }) {
+            proxy.scrollTo(next)
+            DispatchQueue.main.async {
+                guard !model.trashOwnsInput, model.trashCompletion?.id == completion.id else { return }
+                rowFocusTarget = next
+                rowFocusRequest = completion.id
+            }
+        } else { model.workspaceSearchRequest = UUID() }
+    }
+
+    private func requestTrash(_ entry: RecordingEntry) async {
+        guard !workspace.hasInput, model.selectedHistoryURL == entry.id else { return }
+        trashFocusOrder = groupedEntries.flatMap(\.entries).map(\.id)
+        _ = await model.requestRecordingTrash(entry.id)
+    }
+
+    private func selectRecording(_ entry: RecordingEntry) {
+        guard !workspace.hasInput else { return }
+        model.selectLibraryRecording(entry.id)
+        model.workspaceShowsList = false
+        libraryNavigation.focus()
+    }
+
+    private func navigateFromRow(_ entry: RecordingEntry, by direction: Int) {
+        guard !workspace.hasInput else { return }
+        if model.selectedHistoryURL == nil {
+            model.selectLibraryRecording(entry.id)
+            libraryNavigation.focus()
+        } else { libraryNavigation.onVerticalKey?(direction) }
     }
 
     private func recordCard(_ entry: RecordingEntry) -> some View {
         let isSelected = entry.id == model.selectedHistoryURL
-        return Button(action: {
-            guard !workspace.hasInput else { return }
-            model.selectLibraryRecording(entry.id)
-            model.workspaceShowsList = false
-            libraryNavigation.focus()
-        }) {
+        let reason = model.trashUnavailableReason(entry)
+        let trashFocused = rowControl == .trash(entry.id)
+        return HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.effectiveTitle)
                     .font(.system(size: 15, weight: .semibold))
@@ -350,17 +509,37 @@ struct RecordingHistoryView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                isSelected ? ODColors.selected : Color.clear,
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(isSelected ? ODColors.accent.opacity(0.12) : Color.clear, lineWidth: 1)
-            )
             .contentShape(Rectangle())
+            .accessibilityHidden(true)
+            .overlay {
+                RecordingRowButton(label: entry.effectiveTitle, help: "Открыть запись",
+                    focusRequest: rowFocusTarget == entry.id ? rowFocusRequest : nil,
+                    onFocus: { focused in rowControl = focused ? .select(entry.id) : rowControl == .select(entry.id) ? nil : rowControl },
+                    onVerticalKey: { navigateFromRow(entry, by: $0) },
+                    onDelete: { await requestTrash(entry) },
+                    action: { selectRecording(entry) })
+            }
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(rowControl == .select(entry.id) ? ODColors.accent : .clear, lineWidth: 2).allowsHitTesting(false))
+            Image(systemName: "trash").font(.system(size: 16))
+                .foregroundStyle(trashFocused || hoveredTrash == entry.id ? ODColors.red : ODColors.muted)
+                .frame(width: 28, height: 28).contentShape(Rectangle())
+                .accessibilityHidden(true)
+                .overlay {
+                    RecordingRowButton(label: "Переместить запись \(entry.effectiveTitle) в Корзину", help: reason ?? "В Корзину…",
+                        onFocus: { focused in rowControl = focused ? .trash(entry.id) : rowControl == .trash(entry.id) ? nil : rowControl },
+                        onVerticalKey: { navigateFromRow(entry, by: $0) },
+                        onDelete: { await requestTrash(entry) },
+                        action: { Task { await requestTrash(entry) } })
+                }
+        .disabled(!isSelected || reason != nil || workspace.hasInput)
+        .accessibilityHidden(!isSelected)
+        .help(reason ?? "В Корзину…")
+        .onHover { hoveredTrash = $0 ? entry.id : nil }
+        .opacity(isSelected ? 1 : 0)
+        .padding(.trailing, 8)
         }
-        .buttonStyle(.plain)
+        .background(isSelected ? ODColors.selected : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSelected ? ODColors.accent.opacity(0.12) : Color.clear, lineWidth: 1))
         .padding(.horizontal, 12)
         .padding(.bottom, 4)
     }
@@ -434,6 +613,14 @@ struct RecordingHistoryView: View {
                     .disabled(workspace.hasInput || workspace.model(for: entry.id)?.canCopySavedText != true)
 
                     Button(action: showSettings) { Label("Настройки", systemImage: "gearshape") }
+                    Divider()
+                    let reason = model.trashUnavailableReason(entry)
+                    Button(role: .destructive) { Task { await requestTrash(entry) } } label: {
+                        Label("В Корзину…", systemImage: "trash")
+                    }
+                    .disabled(reason != nil || workspace.hasInput)
+                    .help(reason ?? "В Корзину…")
+                    .accessibilityHint(reason ?? "В Корзину…")
                 } label: {
                     ODIconView(.more, size: 20, color: ODColors.muted)
                         .frame(width: 36, height: 36)
@@ -496,7 +683,11 @@ struct RecordingHistoryView: View {
         let entries: [RecordingEntry]
         let savedRevision: Int
     }
-    private var visibleEntries: [RecordingEntry] { query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? history.entries : search.result.matches }
+    private var visibleEntries: [RecordingEntry] {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return history.entries }
+        let live = Set(history.entries.map(\.id))
+        return search.result.matches.filter { live.contains($0.id) }
+    }
 
     private func exportTranscript(_ entry: RecordingEntry) {
         guard !workspace.hasInput, let current = workspace.model(for: entry.id) else { return }
