@@ -52,7 +52,7 @@ final class AppWindowState: NSObject, ObservableObject {
     static let capsuleFrameKey = "recordingCapsuleFrame"
     static let recordingCapsuleSize = NSSize(width: 440, height: 64)
     static let overtimeCapsuleHeight: CGFloat = 64
-    static let processingCapsuleSize = NSSize(width: 440, height: 64)
+    static let processingCapsuleSize = NSSize(width: 420, height: 84)
     static let workspaceMinimumSize = NSSize(width: 480, height: 500)
 
     static func visibleCapsuleFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {

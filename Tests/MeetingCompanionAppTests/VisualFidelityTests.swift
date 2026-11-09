@@ -46,6 +46,165 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
 }
 
 @Suite @MainActor final class VisualFidelityTests {
+    @Test func processingProgressNativeSyntheticRender() async throws {
+        guard let path = ProcessInfo.processInfo.environment["PROCESSING_PROGRESS_NATIVE_ROOT"] else { return }
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
+        NSApp.finishLaunching()
+        let requireAccessibility = ProcessInfo.processInfo.environment["PROCESSING_PROGRESS_REQUIRE_AX"] == "1"
+        let output = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("progress-native-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func settle(_ predicate: @MainActor () -> Bool) async throws {
+            for _ in 0..<500 where !predicate() { try await Task.sleep(for: .milliseconds(5)) }
+            try #require(predicate())
+        }
+        func ax(_ object: Any, depth: Int = 0, pressDetails: Bool = false) -> [[String: String]] {
+            guard depth < 24 else { return [] }
+            let label: String, role: String, frame: String, children: [Any], enabled: Bool
+            let press: () -> Bool
+            if let view = object as? NSView {
+                label = view.accessibilityLabel() ?? ""
+                role = view.accessibilityRole()?.rawValue ?? ""
+                frame = NSStringFromRect(view.accessibilityFrame())
+                children = view.accessibilityChildrenInNavigationOrder() ?? view.accessibilityChildren() ?? []
+                enabled = view.isAccessibilityEnabled()
+                press = { view.accessibilityPerformPress() }
+            } else if let element = object as? NSAccessibilityElement {
+                label = element.accessibilityLabel() ?? ""
+                role = element.accessibilityRole()?.rawValue ?? ""
+                frame = NSStringFromRect(element.accessibilityFrame())
+                children = element.accessibilityChildrenInNavigationOrder() ?? element.accessibilityChildren() ?? []
+                enabled = element.isAccessibilityEnabled()
+                press = { element.accessibilityPerformPress() }
+            } else if let element = object as? any NSAccessibilityProtocol {
+                label = element.accessibilityLabel() ?? ""
+                role = element.accessibilityRole()?.rawValue ?? ""
+                frame = NSStringFromRect(element.accessibilityFrame())
+                children = element.accessibilityChildrenInNavigationOrder() ?? element.accessibilityChildren() ?? []
+                enabled = element.isAccessibilityEnabled()
+                press = { element.accessibilityPerformPress() }
+            } else { return [] }
+            if pressDetails, label == "Подробнее", role == "AXButton" {
+                #expect(enabled && press(), "Actual native Details button must be enabled and pressable")
+            }
+            return [["role": role, "label": label, "frame": frame, "enabled": String(enabled)]] + children.flatMap { ax($0, depth: depth + 1, pressDetails: pressDetails) }
+        }
+        func capture(_ host: NSView, _ name: String) throws {
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(name + ".png"))
+            let tree = ax(host)
+            try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name + "-accessibility.json"))
+            try JSONSerialization.data(withJSONObject: ["bounds": NSStringFromRect(host.bounds), "pixels": [bitmap.pixelsWide, bitmap.pixelsHigh], "scale": host.window?.backingScaleFactor ?? 1], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name + "-geometry.json"))
+        }
+        for optional in [false, true] {
+            let folder = root.appendingPathComponent(optional ? "seven" : "five")
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+            let stem = folder.lastPathComponent, url = folder.appendingPathComponent(folder.lastPathComponent + ".m4a")
+            for name in [stem + ".m4a", "raw/" + stem + ".host_record.wav", "raw/" + stem + ".remote_record.wav"] { try Data().write(to: folder.appendingPathComponent(name)) }
+            let suite = "progress-native-" + UUID().uuidString
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defaults.set(root.path, forKey: "recordingsDirectory")
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let repo = RecordingHistoryRepository(), runner = ProgressNativeRunner()
+            var entry = RecordingEntry.load(recording: url)
+            entry.displayTitle = "Очень длинное название синтетической встречи про обработку, которое должно аккуратно обрезаться в капсуле"
+            entry.duration = 3600
+            repo.put(entry, persist: false)
+            let service = ProcessingService(transcriptionRunner: runner, audioExporter: SyntheticExporter(), historyRepository: repo)
+            let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
+            try await settle { model.isAttached }
+            _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: optional, echoCancellation: optional))
+            for _ in 0..<500 { if await runner.waiting { break }; try await Task.sleep(for: .milliseconds(5)) }
+            if optional { await runner.emit(.init(stage: .echo, channel: "host", completed: 0, total: 0, state: .completed)) }
+            for stage: TranscriptionProgress.Stage in [.diarization, .vad] {
+                for source in ["host", "remote"] { await runner.emit(.init(stage: stage, channel: source, completed: 0, total: 0, state: .completed)) }
+            }
+            await runner.emit(.init(stage: .speakers, channel: "host", completed: 0, total: 0, state: .completed))
+            await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 96, total: 150))
+            try await settle { model.capsuleProgress?.local?.completed == 96 }
+            model.showProcessingDetails()
+            let controller = RecordingCapsuleController(model: model, defaults: defaults)
+            let panel = try #require(controller.panel)
+            defer { controller.hideCapsule() }
+            #expect(panel.standardWindowButton(.closeButton) == nil && !panel.styleMask.contains(.closable))
+            #expect(!controller.windowShouldClose(panel))
+            for state in optional ? ["active", "warning", "failed", "success"] : ["active"] {
+                if state == "warning" {
+                    await runner.emit(.init(stage: .vad, channel: "remote", completed: 0, total: 0, warning: "Синтетическое замечание: VAD пропущен", state: .skipped))
+                    await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 96, total: 150))
+                    try await settle { model.capsuleProgress?.reasons[.vad] != nil && model.capsuleProgress?.current == .recognition }
+                } else if state == "failed" {
+                    await runner.emit(.init(stage: .speakers, channel: "remote", completed: 0, total: 0, state: .completed))
+                    for source in ["host", "remote"] { await runner.emit(.init(stage: .correction, channel: source, completed: 0, total: 0, state: .completed)) }
+                    await runner.emit(.init(stage: .publication, completed: 0, total: 0, warning: "Синтетическая ошибка публикации", state: .started))
+                    await runner.finish(failed: true)
+                    try await settle { model.capsuleProgress?.failure != nil }
+                } else if state == "success" {
+                    _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: true, echoCancellation: true))
+                    for _ in 0..<500 { if await runner.waiting { break }; try await Task.sleep(for: .milliseconds(5)) }
+                    for stage: TranscriptionProgress.Stage in [.echo, .diarization, .vad, .speakers, .correction] {
+                        for source in (stage == .echo ? ["host"] : ["host", "remote"]) { await runner.emit(.init(stage: stage, channel: source, completed: 0, total: 0, state: .completed)) }
+                    }
+                    await runner.emit(.init(stage: .publication, completed: 0, total: 0, state: .started))
+                    await runner.finish(failed: false)
+                    try await settle { model.capsuleProgress?.terminal == true && model.capsuleProgress?.failure == nil }
+                }
+                for dark in [false, true] {
+                    let name = "\(optional ? 7 : 5)-\(state)-\(dark ? "dark" : "light")"
+                    panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                    if let host = panel.contentView as? NSHostingView<RecordingCapsuleHostView> {
+                        host.rootView = RecordingCapsuleHostView(viewModel: model)
+                    }
+                    controller.showCapsule()
+                    try await Task.sleep(for: .milliseconds(120))
+                    #expect(panel.frame.size == AppWindowState.processingCapsuleSize)
+                    let content = try #require(panel.contentView)
+                    let labels = ax(content).compactMap { $0["label"] }
+                    let action = state == "success" ? "Открыть" : "Подробнее"
+                    let hasAction = labels.contains(action)
+                    let verification = ["status": hasAction ? "AX tree available; strict check opt-in" : "UNVERIFIED", "reason": hasAction ? "" : "SwiftUI accessibility children unavailable in this test host", "strictCheck": String(requireAccessibility)]
+                    try JSONSerialization.data(withJSONObject: verification, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("capsule-" + name + "-ax-verification.json"))
+                    if requireAccessibility {
+                        #expect(hasAction)
+                        #expect(!labels.contains("Закрыть") && !labels.contains("Скрыть"))
+                        if state == "active" { _ = ax(content, pressDetails: true) }
+                    } else if !hasAction { print("UNVERIFIED native AX: " + name + " — SwiftUI tree unavailable") }
+                    try capture(content, "capsule-" + name)
+                    let snapshot = try #require(model.capsuleProgress)
+                    let latestEntry = try #require(model.history.entry(url))
+                    for width: CGFloat in state == "active" ? [900, 480] : [600] {
+                        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 850), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+                        window.isReleasedWhenClosed = false
+                        window.appearance = panel.appearance
+                        let host = NSHostingView(rootView: ProcessingDetailsView(snapshot: snapshot, entry: latestEntry, retry: {}).environment(\.colorScheme, dark ? .dark : .light))
+                        host.sizingOptions = []
+                        window.contentView = host
+                        window.setContentSize(NSSize(width: width, height: 850)); window.orderFront(nil)
+                        try await Task.sleep(for: .milliseconds(100))
+                        try capture(host, "details-\(Int(width))-" + name)
+                        window.orderOut(nil); window.contentView = nil; window.close()
+                    }
+                    if optional && state == "active" {
+                        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1392, height: 900), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+                        window.isReleasedWhenClosed = false; window.appearance = panel.appearance
+                        let host = NSHostingView(rootView: RecorderWorkspaceView(model: model, showSettings: {}).defaultAppStorage(defaults).environment(\.colorScheme, dark ? .dark : .light))
+                        host.sizingOptions = []; window.contentView = host
+                        window.setContentSize(NSSize(width: 1392, height: 900)); window.orderFront(nil)
+                        try await Task.sleep(for: .milliseconds(150))
+                        #expect(model.selectedHistoryURL == url)
+                        try capture(host, "workspace-" + name)
+                        window.orderOut(nil); window.contentView = nil; window.close()
+                    }
+                }
+            }
+            if !optional { await runner.finish(failed: false) }
+        }
+    }
+
     @Test func solRepairCancelsActualWaveformWorkerWithoutPartialEnvelope() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -547,5 +706,25 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         )
         let menu = StatusMenu.build(model: model, appUpdater: appUpdater, target: nil)
         #expect(!menu.items.isEmpty)
+    }
+}
+
+private actor ProgressNativeRunner: TranscriptionRunnerProtocol {
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var progress: (@Sendable (TranscriptionProgress) -> Void)?
+    var waiting: Bool { continuation != nil }
+    func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
+        onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) { ("synthetic", true) }
+    func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL {
+        progress = onProgress
+        try await withCheckedThrowingContinuation { continuation = $0 }
+        return recording.appendingPathExtension("txt")
+    }
+    func emit(_ value: TranscriptionProgress) { progress?(value) }
+    func finish(failed: Bool) {
+        if failed { continuation?.resume(throwing: NSError(domain: "SyntheticProgressPublication", code: 1)) }
+        else { continuation?.resume() }
+        continuation = nil
     }
 }

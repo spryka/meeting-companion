@@ -126,6 +126,124 @@ private final class FlatStoppedCapture: StoppedCaptureProtocol, @unchecked Senda
 @Suite("Application Service Tests")
 struct ApplicationServiceTests {
 
+    @Test func queuedProgressWaitsForActualAudioStart() async throws {
+        let runner = QueuedProgressRunner()
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter())
+        let updates = await service.observe()
+        let a = URL(fileURLWithPath: "/synthetic/a/a.m4a"), b = URL(fileURLWithPath: "/synthetic/b/b.m4a")
+        _ = await service.enqueue(recordingURL: a, settings: .init(parakeet: false, echoCancellation: false))
+        for _ in 0..<1000 { if await runner.waiting(a) { break }; try await Task.sleep(for: .milliseconds(1)) }
+        try #require(await runner.waiting(a))
+        let second = await service.enqueue(recordingURL: b, settings: .init(parakeet: true, echoCancellation: true))
+        var iterator = updates.makeAsyncIterator()
+        while let update = await iterator.next() {
+            guard case .snapshot(let value) = update, value.queued.contains(where: { $0.id == second.id }),
+                  let queued = value.routes[b] else { continue }
+            #expect(queued.route.count == 7 && queued.jobID == second.id)
+            #expect(queued.current == nil, "Queued B has no current station before any actual start")
+            #expect(!queued.states.values.contains(.current))
+            #expect(queued.local == nil && queued.localFraction == nil)
+            #expect(queued.countText == "В очереди · 7 этапов", "Capsule/details must report waiting")
+            break
+        }
+        await runner.finish(a)
+        var sawActualStart = false
+        while let update = await iterator.next() {
+            guard case .snapshot(let value) = update, let started = value.routes[b],
+                  started.local?.stage == .audio, started.local?.state == .started else { continue }
+            #expect(value.active?.id == second.id)
+            #expect(started.current == .audio && started.states[.audio] == .current)
+            #expect(started.countText == "Этап 1 из 7")
+            sawActualStart = true
+            break
+        }
+        #expect(sawActualStart)
+        for _ in 0..<1000 { if await runner.waiting(b) { break }; try await Task.sleep(for: .milliseconds(1)) }
+        try #require(await runner.waiting(b))
+        await runner.finish(b)
+    }
+
+    @Test func processingRouteFrozenSourcesAndIdentity() {
+        for (aec, parakeet, count) in [(false, false, 5), (true, false, 6), (false, true, 6), (true, true, 7)] {
+            let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: .init(parakeet: parakeet, echoCancellation: aec))
+            var snapshot = ProcessingProgressSnapshot(job: job)
+            #expect(snapshot.route.count == count)
+            #expect(snapshot.countText == "В очереди · \(count) этапов")
+            snapshot.receive(.init(stage: .merge, completed: 0, total: 0), jobID: UUID())
+            #expect(snapshot.current == nil)
+            snapshot.receive(.init(stage: .diarization, channel: "host", completed: 1, total: 1), jobID: job.id)
+            #expect(snapshot.states[.diarization] != .completed)
+            snapshot.receive(.init(stage: .diarization, channel: "remote", completed: 1, total: 1), jobID: job.id)
+            #expect(snapshot.states[.diarization] == .completed)
+        }
+    }
+
+    @Test func processingLocalTruthAndSavingAcceptance() {
+        let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: .init(parakeet: true, echoCancellation: true))
+        var snapshot = ProcessingProgressSnapshot(job: job)
+        snapshot.receive(.init(stage: .audio, completed: 0, total: 0, state: .completed), jobID: job.id)
+        snapshot.receive(.init(stage: .echo, channel: "host", completed: 80, total: 100), jobID: job.id)
+        #expect(snapshot.localFraction == 0.8)
+        snapshot.receive(.init(stage: .echo, channel: "host", completed: 0, total: 0, state: .completed), jobID: job.id)
+        #expect(snapshot.states[.echo] == .completed, "AEC is common/host-only")
+        snapshot.receive(.init(stage: .diarization, channel: "host", completed: 0, total: 1), jobID: job.id)
+        #expect(snapshot.localFraction == nil, "Start/end sentinel is not measured work")
+        for source in ["host", "remote"] {
+            snapshot.receive(.init(stage: .vad, channel: source, completed: 0, total: 0, warning: "Synthetic VAD unavailable", state: .skipped), jobID: job.id)
+        }
+        #expect(snapshot.states[.vad] == .skipped && snapshot.reasons[.vad] == "Synthetic VAD unavailable")
+        snapshot.receive(.init(stage: .gigaam, channel: "host", completed: 1, total: 1), jobID: job.id)
+        #expect(snapshot.localFraction == 1 && snapshot.states[.recognition] == .current)
+        #expect(snapshot.currentIndex == 4 && snapshot.countText == "Этап 5 из 7")
+        snapshot.receive(.init(stage: .speakers, channel: "host", completed: 0, total: 0, state: .completed), jobID: job.id)
+        #expect(snapshot.states[.recognition] == .current)
+        snapshot.receive(.init(stage: .gigaam, channel: "remote", completed: 0, total: 0), jobID: job.id)
+        #expect(snapshot.localFraction == nil && snapshot.currentIndex == 4)
+        snapshot.receive(.init(stage: .speakers, channel: "remote", completed: 0, total: 0, state: .completed), jobID: job.id)
+        #expect(snapshot.states[.recognition] == .completed)
+        snapshot.receive(.init(stage: .parakeet, channel: "remote", completed: 4, total: 4), jobID: job.id)
+        #expect(snapshot.states[.correction] == .current, "Cascade has not finished")
+        snapshot.receive(.init(stage: .publication, completed: 1, total: 1, state: .completed), jobID: job.id)
+        #expect(snapshot.countText == "Этап 7 из 7")
+        #expect(snapshot.states[.saving] == .current && !snapshot.terminal && snapshot.localFraction == nil)
+        snapshot.finish(success: false, reason: "Synthetic publication rejected")
+        #expect(snapshot.states[.saving] == .failed && snapshot.failure == "Synthetic publication rejected")
+        let terminal = snapshot
+        snapshot.receive(.init(stage: .gigaam, completed: 2, total: 3), jobID: job.id)
+        #expect(snapshot == terminal)
+    }
+
+    @Test func processingServiceDrainsOrderedProgressBeforeAcceptedResult() async throws {
+        let runner = OrderedProgressRunner()
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter())
+        let updates = await service.observe()
+        let url = URL(fileURLWithPath: "/synthetic/a/a.m4a")
+        let job = await service.enqueue(recordingURL: url, settings: .init(parakeet: false, echoCancellation: false))
+        var delivered: [Int] = []
+        var sawHostOnly = false
+        for await update in updates {
+            switch update {
+            case .event(.progress(_, let event)) where event.stage == .gigaam:
+                delivered.append(event.completed)
+            case .snapshot(let value):
+                guard let route = value.routes[url] else { continue }
+                if route.sources[.recognition] == Set(["host"]) {
+                    sawHostOnly = true
+                    #expect(route.states[.recognition] == .current)
+                }
+                if route.terminal {
+                    #expect(route.jobID == job.id && route.route.count == 5)
+                    #expect(route.states[.recognition] == .completed && route.states[.saving] == .warning)
+                    #expect(delivered == Array(0...100), "No callback reordering or terminal loss")
+                    #expect(sawHostOnly && route.warnings.contains("Synthetic committed warning"))
+                    return
+                }
+            default: break
+            }
+        }
+        Issue.record("Service observation ended without accepted terminal snapshot")
+    }
+
     @Test func handoffMissingIdentityCannotMutateSuccessor() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -973,5 +1091,32 @@ struct ApplicationServiceTests {
         let isRecStarted = await session.isRecording
         #expect(isRecStarted, "isRecording must be true once capture starts")
         _ = try await session.stop(expectedSessionID: (await session.currentSnapshot).sessionID)
+    }
+}
+
+private struct OrderedProgressRunner: TranscriptionRunnerProtocol {
+    func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
+        onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) { ("synthetic", true) }
+    func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL {
+        for count in 0...100 { onProgress?(.init(stage: .gigaam, channel: "host", completed: count, total: 100)) }
+        for source in ["host", "remote"] {
+            onProgress?(.init(stage: .speakers, channel: source, completed: 0, total: 0, state: .completed))
+        }
+        onProgress?(.init(stage: .publication, completed: 0, total: 0, warning: "Synthetic committed warning", state: .started))
+        return recording.appendingPathExtension("txt")
+    }
+}
+
+private actor QueuedProgressRunner: TranscriptionRunnerProtocol {
+    private var continuations: [URL: CheckedContinuation<Void, Never>] = [:]
+    func waiting(_ url: URL) -> Bool { continuations[url] != nil }
+    func finish(_ url: URL) { continuations.removeValue(forKey: url)?.resume() }
+    func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
+        onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) { ("synthetic", true) }
+    func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL {
+        await withCheckedContinuation { continuations[recording] = $0 }
+        return recording.appendingPathExtension("txt")
     }
 }

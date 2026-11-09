@@ -18,6 +18,8 @@ final class RecordingCapsuleController: NSObject, NSWindowDelegate {
         setupObservations()
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool { !model.showsProcessingCapsule }
+
     private func setupPanel() {
         let initialSize = AppWindowState.recordingCapsuleSize
         let panel = NSPanel(
@@ -131,7 +133,7 @@ final class RecordingCapsuleController: NSObject, NSWindowDelegate {
             let newFrame = NSRect(x: currentFrame.minX, y: newY, width: targetSize.width, height: targetSize.height)
             let screens = NSScreen.screens.map(\.visibleFrame)
             let clamped = AppWindowState.visibleCapsuleFrame(newFrame, screens: screens)
-            panel.setFrame(clamped, display: true, animate: animated)
+            panel.setFrame(clamped, display: true, animate: animated && !model.showsProcessingCapsule)
         }
     }
 

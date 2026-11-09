@@ -1,5 +1,6 @@
 import SwiftUI
 import MeetingCompanionCore
+import MeetingCompanionApplication
 
 struct CompactRecordingView: View {
     @ObservedObject var viewModel: RecorderViewModel
@@ -216,170 +217,92 @@ struct CompactRecordingView: View {
     }
 }
 
+struct ProcessingStationSymbol: View {
+    let state: ProcessingProgressSnapshot.State
+    let size: CGFloat
+    var body: some View {
+        Group {
+            if state == .skipped || state == .failed || state == .warning {
+                RoundedRectangle(cornerRadius: size > 8 ? 4 : 1)
+                    .fill(ODColors.warning)
+                    .overlay(Text("!").font(.system(size: size > 8 ? 14 : 8, weight: .bold)).foregroundStyle(ODColors.surface))
+            } else if state == .completed {
+                Circle().fill(ODColors.green)
+                    .overlay { if size > 8 { Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(ODColors.surface) } }
+            } else if state == .current {
+                Circle().fill(ODColors.accent)
+                    .overlay(Circle().stroke(ODColors.surface, lineWidth: 2).padding(2))
+                    .overlay(Circle().stroke(ODColors.accent, lineWidth: 1).padding(-2))
+            } else {
+                Circle().stroke(ODColors.muted.opacity(0.5), lineWidth: 1)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 struct ProcessingCapsuleView: View {
     @ObservedObject var viewModel: RecorderViewModel
 
-    static func fraction(for progress: TranscriptionProgress) -> Double? {
-        progress.stage == .warning ? nil : progress.stageFraction
-    }
-
     var body: some View {
+        let snapshot = viewModel.capsuleProgress
+        let title = viewModel.lastRecordingTitle.isEmpty ? "Обработка записи" : viewModel.lastRecordingTitle
         HStack(spacing: 12) {
-            switch viewModel.transcriptionState {
-            case .running(let progress):
-                ODIconView(.wave, color: ODColors.accent, size: 20)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(viewModel.lastRecordingTitle.isEmpty ? "Обработка записи" : viewModel.lastRecordingTitle)
-                        .help(viewModel.lastRecordingTitle.isEmpty ? "Обработка записи" : viewModel.lastRecordingTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(ODColors.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if let progress {
-                        let stepText = progress.step.flatMap { step in progress.steps.map { "Этап \(step) из \($0) · " } } ?? ""
-                        Text("\(stepText)\(progress.text)")
-                            .help("\(stepText)\(progress.text)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ODColors.muted)
-                            .lineLimit(1)
-                        .truncationMode(.tail)
-                        if let fraction = Self.fraction(for: progress) {
-                            GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                    Capsule().fill(ODColors.track).frame(height: 4)
-                                    Capsule().fill(ODColors.accent).frame(width: geo.size.width * fraction, height: 4)
-                                }
-                            }
-                            .frame(height: 4)
-                        }
-                    } else {
-                        Text(viewModel.transcriptionStatus)
-                            .help(viewModel.transcriptionStatus)
-                            .font(.system(size: 11))
-                            .foregroundStyle(ODColors.muted)
-                            .lineLimit(1)
-                        .truncationMode(.tail)
-                    }
-                }
-                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
-
-                Button(action: viewModel.dismissCapsule) {
-                    ZStack {
-                        Circle().fill(ODColors.surface)
-                        Circle().strokeBorder(ODColors.line, lineWidth: 1)
-                        ODIconView(.close, color: ODColors.muted, size: 14)
-                    }
-                    .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
-                .help("Скрыть")
-
-            case .completed:
-                ODIconView(.check, color: ODColors.green, size: 20)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(viewModel.lastRecordingTitle.isEmpty ? "Запись завершена" : viewModel.lastRecordingTitle)
-                        .help(viewModel.lastRecordingTitle.isEmpty ? "Запись завершена" : viewModel.lastRecordingTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(ODColors.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(viewModel.transcriptionWarnings.isEmpty ? "Транскрипт готов" : "Текст готов с замечаниями")
-                        .font(.system(size: 11))
-                        .foregroundStyle(viewModel.transcriptionWarnings.isEmpty ? ODColors.green : ODColors.warning)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
-
-                Button(action: viewModel.openResults) {
-                    Text("Открыть")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(ODColors.primaryButtonForeground)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(ODColors.accent, in: Capsule())
-                }
-                .buttonStyle(.plain)
-
-                Button(action: viewModel.dismissCapsule) {
-                    ZStack {
-                        Circle().fill(ODColors.surface)
-                        Circle().strokeBorder(ODColors.line, lineWidth: 1)
-                        ODIconView(.close, color: ODColors.muted, size: 14)
-                    }
-                    .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
-                .help("Закрыть")
-
-            case .failed(let message):
-                ODIconView(.warning, color: ODColors.red, size: 20)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(viewModel.lastRecordingTitle.isEmpty ? "Ошибка обработки" : viewModel.lastRecordingTitle)
-                        .help(viewModel.lastRecordingTitle.isEmpty ? "Ошибка обработки" : viewModel.lastRecordingTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(ODColors.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(message)
-                        .help(message)
-                        .font(.system(size: 11))
-                        .foregroundStyle(ODColors.red)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .gesture(WindowDragGesture())
-
-                Button(action: viewModel.transcribeLastRecording) {
-                    Text("Повторить")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(ODColors.ink)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(ODColors.hover, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.transcriptionJobs > 0)
-
-                Button(action: viewModel.dismissCapsule) {
-                    ZStack {
-                        Circle().fill(ODColors.surface)
-                        Circle().strokeBorder(ODColors.line, lineWidth: 1)
-                        ODIconView(.close, color: ODColors.muted, size: 14)
-                    }
-                    .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
-
-            case .idle:
-                Text("Запись сохранена")
-                    .font(.system(size: 12))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(ODColors.ink)
+                    .lineLimit(1).truncationMode(.tail)
+                    .help(title).accessibilityLabel(title)
+                Text(status(snapshot))
+                    .font(.system(size: 11))
                     .foregroundStyle(ODColors.muted)
-                Spacer()
-                Button(action: viewModel.dismissCapsule) {
-                    ODIconView(.close, color: ODColors.muted, size: 14)
+                    .lineLimit(1)
+                HStack(spacing: 0) {
+                    if let snapshot {
+                        ForEach(Array(snapshot.route.enumerated()), id: \.element) { index, station in
+                            ProcessingStationSymbol(state: snapshot.states[station] ?? .future, size: 8)
+                            if index < snapshot.route.count - 1 {
+                                Rectangle().fill(ODColors.track).frame(height: 2)
+                            }
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
+                .frame(height: 12)
+                .padding(.top, 6)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(snapshot.map { "\($0.current?.title ?? "В очереди"), \($0.countText). " + $0.warnings.joined(separator: ". ") } ?? "Подготовка обработки")
+            }
+            .frame(minWidth: 44, maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle()).gesture(WindowDragGesture())
+            Button(isCompleted ? "Открыть" : "Подробнее") {
+                if isCompleted { viewModel.openResults() } else { viewModel.showProcessingDetails() }
+            }
+            .font(.system(size: 13))
+            .buttonStyle(.borderless)
+            .foregroundStyle(ODColors.accent)
+            .popover(isPresented: Binding(get: { viewModel.processingNavigationNotice != nil }, set: { if !$0 { viewModel.processingNavigationNotice = nil } })) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(viewModel.processingNavigationNotice ?? "").textSelection(.enabled)
+                    Button("Понятно") { viewModel.processingNavigationNotice = nil }
+                }.padding(16).frame(width: 280)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 24)
-                .fill(ODColors.surface)
-                .gesture(WindowDragGesture())
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24)
-                        .strokeBorder(ODColors.line, lineWidth: 1)
-                )
-        )
+        .padding(.leading, 32).padding(.trailing, 16).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(RoundedRectangle(cornerRadius: 24).fill(ODColors.surface)
+            .gesture(WindowDragGesture())
+            .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(ODColors.line, lineWidth: 1)))
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+    private var isCompleted: Bool { if case .completed = viewModel.transcriptionState { true } else { false } }
+    private func status(_ snapshot: ProcessingProgressSnapshot?) -> String {
+        switch viewModel.transcriptionState {
+        case .completed: viewModel.transcriptionWarnings.isEmpty && snapshot?.warnings.isEmpty != false ? "Готово" : "Готово · есть замечание"
+        case .failed: "Не удалось обработать"
+        default: snapshot?.countText ?? "Подготовка обработки…"
+        }
     }
 }
 

@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="ru" data-theme="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Meeting Companion — встречи</title>
+<style>
+/* OD-LAYOUT-PRIMITIVES v1 — structure only: display, flex/grid, overflow, wrapping, ratio, geometry.
+   Put this @layer first; product CSS outside the layer wins ordinary layout rules.
+   Native hidden and closed-dialog states take precedence over component display rules. */
+@layer od-layout {
+  [hidden]:not([hidden="until-found" i]) { display: none !important; }
+  dialog:not([open]) { display: none !important; }
+
+  :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile) > :where(*) { min-width: 0; }
+
+  /* containers */
+  .od-stack   { display: flex; flex-direction: column; gap: var(--od-gap, 8px); }
+  .od-row     { display: flex; align-items: center; gap: var(--od-gap, 8px); }
+  .od-row-top { display: flex; align-items: flex-start; gap: var(--od-gap, 8px); }
+  .od-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--od-gap, 8px); }
+  .od-fill    { flex: 1 1 0; min-width: 0; }
+  .od-fixed   { flex: none; }
+  .od-grid    { display: grid; gap: var(--od-gap, 12px); grid-template-columns: repeat(var(--od-cols, 3), minmax(0, 1fr)); }
+
+  /* stacked information: each piece is its own line — never sibling inline spans */
+  .od-stat, .od-field, .od-cell { display: grid; gap: var(--od-gap, 2px); }
+  :where(.od-stat,.od-field,.od-cell) > :where(*) { display: block; }
+  .od-tile { display: grid; grid-template-rows: auto 1fr; }
+  :where(.od-tile) > :where(*) { display: block; }
+
+  /* media keeps its intrinsic ratio by default; never a distorted or cropped
+     cover by accident. height:auto lets the ratio win over an <img height="…">
+     attribute. Cropping to a uniform box is an explicit opt-in: set --od-ratio
+     AND add .od-media-cover together (per the core rule, only where a crop is
+     deliberate — tile thumbs, decorative fills — never on full-frame content). */
+  .od-media { display: block; width: 100%; height: auto; aspect-ratio: var(--od-ratio, auto); }
+  .od-media-cover { object-fit: cover; }
+
+  /* functional inline SVG icons opt into bounded geometry; content SVGs keep their own */
+  .od-icon { display: inline-block; inline-size: var(--od-icon-size, 1em); block-size: var(--od-icon-size, 1em); flex: none; }
+
+  /* data text only — authored copy is rewritten to its budget instead */
+  .od-truncate { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .od-clamp-2, .od-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .od-clamp-2 { -webkit-line-clamp: 2; }
+  .od-clamp-3 { -webkit-line-clamp: 3; }
+  .od-lines-2 { min-height: calc(2 * 1.4em); }   /* block-level reservation for a shared baseline */
+  .od-nowrap  { white-space: nowrap; }           /* 数字+单位 · 价格+起 · 日期+星期 */
+  .od-keep    { word-break: keep-all; overflow-wrap: anywhere; } /* CJK labels break at spaces / <wbr> first */
+
+  /* screen skeleton (optional): bars take their own space, the middle scrolls — no padding guessed for chrome */
+  .od-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+  .od-scroll { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+
+  /* horizontal rail: the next item peeks at the edge; trailing room survives overflow */
+  .od-rail { display: flex; gap: var(--od-gap, 8px); overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none;
+             padding-inline: var(--od-rail-pad, 16px); scroll-padding-inline: var(--od-rail-pad, 16px); }
+  .od-rail::-webkit-scrollbar { display: none; }
+  :where(.od-rail) > :where(*) { flex: none; scroll-snap-align: start; }
+  :where(.od-rail) > :where(:last-child) { margin-inline-end: var(--od-rail-pad, 16px); }
+
+  .od-spacer { flex: none; visibility: hidden; pointer-events: none; }
+  .od-touch  { min-width: 44px; min-height: 44px; }
+}
+:root [hidden]:where(:not([hidden="until-found" i])) { display: none; }
+/* /OD-LAYOUT-PRIMITIVES v1 */
+
+:root {
+ --canvas:#e5e9ee; --surface:#ffffff; --sidebar:#f2f4f7; --toolbar:#fafbfc;
+ --ink:#202630; --muted:#626b79; --line:#e3e7ed; --hover:#e6ebf2;
+ --accent:#1762cf; --accent-hover:#1055b8; --selected:#e0ebfc; --selected-ink:#164e9e;
+ --green:#27704b; --green-bg:#edf6f0; --warning:#855309; --warning-bg:#fff6e5;
+ --red:#b82d3d; --red-bg:#fbecef; --track:#dce2eb; --shadow:0 24px 80px #24344a1a,0 2px 8px #24344a0a;
+ --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+ --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px; --s10:40px; --s12:48px;
+ --small:13px; --body:16px; --heading:clamp(24px,2.5vw,32px); --radius:12px; --motion:180ms;
+ color-scheme:light;
+}
+html[data-resolved="dark"] {
+ --canvas:#101319; --surface:#20242b; --sidebar:#191e25; --toolbar:#22272f;
+ --ink:#f0f2f6; --muted:#a4adbc; --line:#353c47; --hover:#303844;
+ --accent:#8ab9ff; --accent-hover:#a6caff; --selected:#233c5c; --selected-ink:#b0d0ff;
+ --green:#93d5b0; --green-bg:#20392d; --warning:#f0c478; --warning-bg:#3b3120;
+ --red:#ff9aa8; --red-bg:#402730; --track:#404b5b; --shadow:0 24px 80px #0005;
+ color-scheme:dark;
+}
+*{box-sizing:border-box} body{margin:0;background:var(--canvas);color:var(--ink);font:var(--body)/1.55 var(--font);padding:24px;}
+button,input,select{font:inherit} button{cursor:pointer} button,input,select{color:var(--ink)} button{border:0;background:none;line-height:1.3} button:disabled{cursor:default;opacity:.48}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+button,input,select{border-radius:8px} h1,h2,h3,p{margin:0} h1{font-size:var(--heading);letter-spacing:-.8px;line-height:1.25;font-weight:650} h2{font-size:20px;line-height:1.35;letter-spacing:-.4px} h3{font-size:16px} svg.od-icon{--od-icon-size:20px;vertical-align:middle;stroke-width:1.7}
+button .od-icon{pointer-events:none} .muted{color:var(--muted)} .small{font-size:var(--small)} .mono{font-variant-numeric:tabular-nums} .nowrap{white-space:nowrap}
+.app{max-width:1440px;height:calc(100dvh - 48px);min-height:640px;margin:auto;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);display:grid;grid-template-columns:304px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto;}
+.sidebar{min-width:0;min-height:0;background:var(--sidebar);border-right:1px solid var(--line);border-radius:16px 0 0 16px;display:grid;grid-template-rows:72px auto minmax(0,1fr) auto;}
+.side-head{padding:0 20px;gap:16px;}
+.traffic{display:flex;gap:8px;flex:none}.traffic i{display:block;width:12px;height:12px;border-radius:50%;background:#ff6059;box-shadow:inset 0 0 0 1px #0001}.traffic i:nth-child(2){background:#ffbd2e}.traffic i:nth-child(3){background:#28c840}
+.brand{font-size:14px;font-weight:650;line-height:1.25;letter-spacing:-.3px}.brand span{display:block}
+.side-tools{padding:12px 16px 20px;display:grid;gap:16px}
+.side-label{font-size:22px;font-weight:650;letter-spacing:-.5px}
+.count{background:var(--hover);border-radius:6px;font-size:12px;min-width:24px;text-align:center;padding:2px 6px;color:var(--muted)}
+.search{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:0 12px;}
+.search .od-icon{color:var(--muted);--od-icon-size:16px}.search input{width:100%;min-width:0;background:transparent;border:0;padding:9px 0;font-size:14px;outline-offset:0}.search:focus-within{outline:2px solid var(--accent);outline-offset:2px}.search input:focus-visible{outline:0}.search input::placeholder{color:var(--muted)}
+.record-list{padding:0 12px 16px;overflow-y:auto;min-height:0}.date-heading{font-size:12px;font-weight:650;color:var(--muted);padding:16px 12px 8px;letter-spacing:.2px}
+.record-item{display:block;width:100%;padding:14px 12px;text-align:left;border-radius:10px;margin-bottom:4px;border:1px solid transparent;}
+.record-item[aria-current="true"]{background:var(--selected);border-color:color-mix(in srgb,var(--accent) 12%,transparent)}
+.record-title{font-size:15px;font-weight:600;line-height:1.4;display:block}.record-meta{margin-top:5px;display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.record-state{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:12px;color:var(--muted)}.record-state .od-icon{--od-icon-size:13px}.record-item[aria-current="true"] .record-title{color:var(--selected-ink)}
+.side-footer{border-top:1px solid var(--line);padding:12px 16px;gap:8px}.side-footer .od-icon{--od-icon-size:16px}.side-footer p{font-size:11px;line-height:1.5;color:var(--muted)}
+.icon-button{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;color:var(--muted);border-radius:8px}.soft{background:var(--hover);color:var(--ink)}
+.workspace{min-width:0;min-height:0;display:grid;grid-template-rows:72px minmax(0,1fr) auto;}
+.toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 24px;border-bottom:1px solid var(--line);background:var(--toolbar);border-radius:0 16px 0 0;}
+.toolbar-label{font-size:13px;color:var(--muted);font-weight:500}.toolbar-actions{display:flex;align-items:center;gap:12px}.separator{width:1px;height:20px;background:var(--line)}
+.btn{display:inline-flex;justify-content:center;align-items:center;gap:8px;min-height:36px;padding:8px 12px;font-size:14px;font-weight:550;white-space:nowrap;background:var(--surface);border:1px solid var(--line);color:var(--ink);transition:background var(--motion),opacity var(--motion);}
+.btn.primary{background:var(--accent);color:var(--surface);border-color:transparent}.btn.primary .od-icon{--od-icon-size:16px}.btn.danger{background:var(--red-bg);color:var(--red);border-color:transparent}.text-button{color:var(--accent);font-weight:550;padding:8px 0;font-size:14px}.mobile-back{display:none}
+.detail{min-height:0;overflow-y:auto;scroll-behavior:smooth;scrollbar-gutter:stable;}
+.document{max-width:840px;padding:40px 48px 48px;margin:auto;}
+.eyebrow{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--green);margin-bottom:16px}.eyebrow .od-icon{--od-icon-size:15px}.metadata{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;margin-top:16px;font-size:13px;color:var(--muted)}.metadata>span{display:flex;align-items:center;gap:6px}.metadata .od-icon{--od-icon-size:15px}
+.demo-note{font-size:11px;letter-spacing:.3px;font-weight:500;color:var(--muted);border:1px solid var(--line);padding:2px 6px;border-radius:5px;margin-left:auto}
+.document-divider{border:0;border-top:1px solid var(--line);margin:28px 0 24px}.transcript-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}.transcript-heading h2{font-size:14px;font-weight:600}.transcript-heading span{font-size:12px;color:var(--muted)}
+.transcript{display:grid;gap:8px}.turn{display:grid;grid-template-columns:48px minmax(0,1fr);gap:16px;border-radius:10px;padding:16px 12px;scroll-margin-top:20px}.turn.active{background:color-mix(in srgb,var(--selected) 65%,var(--surface));}.timestamp{color:var(--muted);font-size:12px;padding:4px 0;align-self:start;min-height:28px;font-variant-numeric:tabular-nums}.turn.active .timestamp{color:var(--accent)}.turn-head{display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:13px;font-weight:650}.speaker-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}.speaker-dot.other{background:var(--muted)}.turn p{font-size:16px;line-height:1.75;overflow-wrap:anywhere;color:var(--ink)}
+.warning{background:var(--warning-bg);border:1px solid color-mix(in srgb,var(--warning) 22%,transparent);padding:12px 16px;border-radius:8px;margin-top:24px;color:var(--warning);font-size:13px}.warning summary{cursor:pointer;font-weight:550}.warning p{padding-top:8px;color:var(--ink);line-height:1.6}
+.player{border-top:1px solid var(--line);padding:16px 28px 12px;background:var(--toolbar);border-radius:0 0 16px 0;}
+.player-main{display:flex;align-items:center;gap:20px}.play-button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--ink);flex:none;}.play-button .od-icon{--od-icon-size:19px}.scrubber{position:relative;flex:1;min-width:0;height:36px;display:flex;align-items:center;}.waveform{width:100%;height:32px;display:block;}.scrubber input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}.scrubber:focus-within{outline:2px solid var(--accent);outline-offset:4px;border-radius:4px}.time-readout{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}.time-readout strong{color:var(--ink);font-weight:500}.player-meta{margin-top:8px;display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--muted);gap:8px}.player-meta button{font-size:11px;padding:4px;color:var(--accent)}.speed{border:1px solid var(--line);background:var(--surface);padding:6px;font-size:12px;max-width:70px}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:340px;padding:32px;text-align:center;gap:12px}.empty>.od-icon{--od-icon-size:40px;color:var(--muted);stroke-width:1.2}.empty p{color:var(--muted);font-size:14px;max-width:320px}.list-empty{padding:24px 12px;font-size:14px;color:var(--muted)}
+.session-dock{grid-column:1/-1;padding:12px 24px;border-top:1px solid var(--line);background:var(--sidebar);border-radius:0 0 16px 16px;}.capsule{display:flex;align-items:center;gap:20px;max-width:650px;margin:auto;padding:12px 20px;border:1px solid var(--line);border-radius:24px;background:var(--surface);box-shadow:0 4px 20px #00000008}.recording-dot{width:8px;height:8px;background:var(--red);border-radius:50%;flex:none}.capsule-time{font-size:24px;font-weight:550;letter-spacing:-.7px;font-variant-numeric:tabular-nums}.capsule-copy{flex:1;min-width:0}.capsule-copy strong{font-size:13px;font-weight:600;display:block}.capsule-copy small{font-size:11px;display:block;color:var(--muted)}.capsule .icon-button{border:1px solid var(--line);color:var(--ink)}.capsule .stop{background:var(--red-bg);color:var(--red);border-color:transparent}.capsule .is-muted{background:var(--warning-bg);color:var(--warning)}.progress{width:100%;height:5px;background:var(--track);border-radius:8px;margin-top:8px}.progress>span{display:block;height:100%;background:var(--accent);border-radius:8px}.processing-title{font-size:16px!important}
+.overlay-menu{position:relative}.menu{position:absolute;right:0;top:44px;z-index:5;padding:6px;min-width:220px;border-radius:12px;border:1px solid var(--line);background:var(--surface);box-shadow:0 12px 32px #0002}.menu button{width:100%;text-align:left;padding:10px 12px;font-size:14px;display:flex;gap:8px;align-items:center}.menu .od-icon{--od-icon-size:16px}
+dialog{border:1px solid var(--line);border-radius:16px;max-width:calc(100vw - 32px);width:480px;padding:0;color:var(--ink);background:var(--surface);box-shadow:0 24px 80px #0003;}dialog::backdrop{background:#101b2d55;backdrop-filter:blur(5px)}.dialog-head{padding:24px 24px 16px;display:flex;align-items:center;gap:16px;justify-content:space-between}.dialog-head h2{font-size:22px}.dialog-body{padding:0 24px 24px;display:grid;gap:20px}.dialog-body>p{font-size:14px;color:var(--muted);line-height:1.6}.field{display:grid;gap:8px}.field label{font-size:13px;font-weight:600}.field input,.field select{width:100%;border:1px solid var(--line);padding:10px 12px;background:var(--toolbar);font-size:15px}.field small{font-size:12px;color:var(--muted)}.dialog-actions{border-top:1px solid var(--line);padding:16px 24px;display:flex;justify-content:flex-end;gap:8px}.sample-sound{display:flex;align-items:center;justify-content:space-between;font-size:13px;padding:12px 0;border-top:1px solid var(--line);gap:16px}.meter{display:flex;gap:3px;align-items:center}.meter i{width:4px;height:12px;background:var(--accent);border-radius:2px}.meter i:nth-child(2n){height:18px}.meter i:nth-child(3n){height:8px}.meter i:nth-child(n+9){background:var(--track)}.error{color:var(--red)!important;font-size:13px}.setting-row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--line);padding-top:16px}.setting-row label{font-size:14px}.setting-row input{accent-color:var(--accent);width:18px;height:18px;flex:none}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);max-width:calc(100% - 32px);z-index:30;background:var(--ink);color:var(--surface);font-size:13px;padding:12px 20px;border-radius:10px;box-shadow:var(--shadow);pointer-events:none;}
+@media(hover:hover){button:not(:disabled):hover{background:var(--hover);color:var(--ink)}.record-item:not([aria-current="true"]):hover{background:var(--hover)}.record-item[aria-current="true"]:hover{background:var(--selected)}.btn.primary:not(:disabled):hover{background:var(--accent-hover);color:var(--surface)}.btn.danger:hover,.capsule .stop:hover{background:var(--red);color:var(--surface)}.text-button:hover{color:var(--accent)}.timestamp:hover{color:var(--accent);background:var(--selected)}.search:hover{border-color:var(--muted)}}
+@media(min-width:1440px){.document{padding-top:48px}.app{max-height:1040px}}
+@media(max-width:1023px){body{padding:16px}.app{height:calc(100dvh - 32px);grid-template-columns:264px minmax(0,1fr)}.document{padding:32px 24px}.toolbar{padding:0 16px;gap:8px}.toolbar-actions{gap:8px}.player{padding:16px}.player-main{gap:12px}.brand{font-size:13px}.side-head{padding:0 16px;gap:12px}}
+@media(max-width:767px){body{padding:0}.app{height:100dvh;min-height:0;border:0;border-radius:0;grid-template-columns:minmax(0,1fr)}.sidebar{border:0;border-radius:0;grid-template-rows:64px auto minmax(0,1fr) auto}.workspace{grid-template-rows:64px minmax(0,1fr) auto}.app[data-view="detail"] .sidebar{display:none}.app[data-view="list"] .workspace{display:none}.mobile-back{display:inline-flex}.toolbar{border-radius:0;padding:0 12px}.toolbar-label,.toolbar .separator{display:none}.toolbar-actions{gap:4px}.toolbar .btn{padding:8px}.toolbar .btn .new-label{font-size:13px}.document{padding:28px 16px}.turn{padding:12px 8px;gap:8px;grid-template-columns:44px minmax(0,1fr)}.metadata{gap:8px 12px}.player{padding:12px;border-radius:0}.player-main{gap:12px;flex-wrap:wrap}.scrubber{min-width:120px}.speed{max-width:62px}.time-readout{font-size:11px}.player-meta{font-size:10px}.capsule{gap:12px;padding:12px;border-radius:16px}.session-dock{padding:8px;border-radius:0}.capsule-time{font-size:20px}.capsule-copy small{font-size:10px}.capsule .icon-button{width:36px;height:36px}.capsule-copy strong{font-size:12px}.traffic{display:none}.brand{display:flex;gap:4px;font-size:16px}.side-label{font-size:28px}.toast{bottom:16px}.dialog-head{padding:20px 20px 16px}.dialog-body{padding:0 20px 20px}.dialog-actions{padding:16px 20px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* Settings reuse the prototype controls and palette. */
+#settingsDialog{width:760px;height:min(740px,calc(100dvh - 48px));max-height:calc(100dvh - 32px);}
+#settingsDialog[open]{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;}
+#settingsDialog .dialog-head{padding:20px 24px 16px;background:var(--toolbar);}
+.settings-caption{font-size:12px;color:var(--muted);margin-top:4px;}
+.settings-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;padding:8px 16px 12px;border-bottom:1px solid var(--line);background:var(--toolbar);}
+.settings-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:12px 4px;font-size:12px;font-weight:550;border:1px solid transparent;border-radius:10px;}
+.settings-tab .od-icon{--od-icon-size:22px;}.settings-tab[aria-selected="true"]{background:var(--selected);color:var(--selected-ink);border-color:color-mix(in srgb,var(--accent) 16%,transparent);}
+.settings-scroll{overflow-y:auto;min-height:0;padding:24px 32px 32px;scrollbar-gutter:stable;}
+.settings-panel{display:grid;gap:24px;}.settings-intro h3{font-size:20px;letter-spacing:-.3px;margin-bottom:4px;}.settings-intro p,.settings-helper{font-size:13px;color:var(--muted);line-height:1.6;}
+.settings-section{display:grid;gap:8px;}.settings-section>h4{font-size:12px;font-weight:600;margin:0 0 0 4px;color:var(--muted);}
+.settings-group{border:1px solid var(--line);border-radius:10px;background:var(--toolbar);padding:0 16px;}
+.settings-line{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 0;}.settings-line+.settings-line{border-top:1px solid var(--line);}
+.settings-line .od-field{gap:4px;}.settings-line label,.settings-line .setting-label{font-size:14px;font-weight:550;}.settings-line small{font-size:12px;color:var(--muted);line-height:1.6;}
+.settings-line select{max-width:232px;min-width:0;border:1px solid var(--line);background:var(--surface);font-size:13px;padding:8px;}.settings-line .btn{font-size:12px;min-height:32px;}
+.settings-line input[type="checkbox"]{appearance:none;flex:none;width:36px;height:22px;margin:0;display:block;border-radius:12px;border:1px solid var(--muted);background:var(--track);cursor:pointer;position:relative;}
+.settings-line input[type="checkbox"]::before{content:"";display:block;width:16px;height:16px;border-radius:50%;background:var(--surface);position:absolute;left:2px;top:2px;box-shadow:0 1px 3px #0003;transition:transform var(--motion);}
+.settings-line input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accent);}.settings-line input[type="checkbox"]:checked::before{transform:translateX(14px);}.settings-line input[type="checkbox"]:disabled{opacity:.45;cursor:default;}
+.settings-status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--green);}.settings-status .od-icon{--od-icon-size:15px;}.settings-status.pending{color:var(--muted);}
+.settings-helper{padding:0 4px;font-size:12px;}.settings-advanced{border-top:1px solid var(--line);padding-top:16px;font-size:13px;}.settings-advanced summary{cursor:pointer;font-weight:550;}.settings-advanced>.settings-group{margin-top:12px;}.settings-advanced>p{margin-top:12px;}
+.settings-log{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,SFMono-Regular,monospace;background:var(--sidebar);border:1px solid var(--line);padding:12px;border-radius:8px;margin:12px 0 0;}
+.settings-result{font-size:12px;line-height:1.6;color:var(--muted);padding:12px 0 16px;border-top:1px solid var(--line);}.settings-bottom{display:flex;align-items:center;gap:16px;justify-content:space-between;}.settings-bottom p{font-size:11px;color:var(--muted);line-height:1.5;}.settings-mobile{display:none;}.settings-folder{font-size:12px!important;overflow-wrap:anywhere;}
+.settings-model-progress{padding-bottom:16px;}.settings-model-progress p{font-size:12px;color:var(--muted);margin-bottom:8px;}.settings-lock{padding:8px 12px;background:var(--warning-bg);color:var(--warning);border-radius:8px;font-size:12px;margin-bottom:16px;}
+@media(hover:hover){.settings-tab[aria-selected="true"]:hover{background:var(--selected);color:var(--selected-ink);}}
+@media(max-width:600px){#settingsDialog{height:calc(100dvh - 32px);}.settings-tabs{display:none;}.settings-mobile{display:block;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--toolbar);}.settings-mobile label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}.settings-mobile select{width:100%;padding:8px;background:var(--surface);border:1px solid var(--line);}.settings-scroll{padding:20px;}.settings-line{flex-wrap:wrap;gap:12px;}.settings-line>.od-field{flex:1 1 180px;}.settings-line select{max-width:100%;}.settings-bottom{align-items:flex-start;}.settings-bottom p{max-width:200px;}}
+
+
+/* Transcript corrections share the existing controls and dialog system. */
+.speaker-button{display:inline-flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;font-size:13px;max-width:100%;text-align:left;overflow-wrap:anywhere}.turn-edit{margin-left:auto;padding:4px 8px;font-size:13px;color:var(--muted);border-radius:8px}.turn-head{flex-wrap:wrap}.transcript-heading{flex-wrap:wrap;gap:8px}.transcript-help{font-size:13px;color:var(--muted);margin-bottom:16px}.correction-dialog{max-height:calc(100dvh - 32px);overflow:auto;width:560px}.correction-dialog textarea{width:100%;min-height:192px;resize:vertical;background:var(--toolbar);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:12px;font:16px/1.6 inherit;font-family:inherit;font-size:16px;line-height:1.6}.speaker-options{display:flex;flex-wrap:wrap;gap:8px}.speaker-options button{border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:14px}.speaker-scope{border:0;display:grid;gap:12px;padding:0}.speaker-scope legend{font-size:14px;font-weight:600;margin-bottom:12px}.speaker-scope label{display:flex;gap:8px;align-items:flex-start;font-size:14px}.speaker-preview{padding:12px;background:var(--toolbar);border:1px solid var(--line);border-radius:8px;font-size:14px;line-height:1.6;overflow-wrap:anywhere}.speaker-preview ul{padding-left:20px;margin:8px 0}.correction-demo{font-size:12px;color:var(--muted)}
+
+
+/* Processing route and its independent compact window. */
+body{padding-bottom:160px}.app{height:calc(100dvh - 228px);min-height:560px}.pipeline-demo{max-width:1440px;margin:0 auto 16px;font-size:13px;color:var(--muted)}.pipeline-demo summary{cursor:pointer;padding:8px 0;width:fit-content}.pipeline-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:8px}.pipeline-controls label{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.pipeline-controls select{background:var(--surface);border:1px solid var(--line);padding:8px;max-width:100%}.pipeline-controls input[type=range]{width:144px;accent-color:var(--accent)}.pipeline-controls p{flex-basis:100%;font-size:12px}.pipeline-controls .btn{font-size:13px}.processing-document{max-width:960px!important}.process-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.process-header .btn{font-size:13px;flex:none}.processing-layout{display:grid;grid-template-columns:216px minmax(0,1fr);gap:40px;margin-top:32px;align-items:start}.station-list{list-style:none;padding:0;margin:0;display:grid}.station{display:grid;grid-template-columns:24px minmax(0,1fr);column-gap:12px;min-height:64px}.station-symbol{display:flex;flex-direction:column;align-items:center;align-self:stretch}.station-dot{display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex:none;border:2px solid var(--track);border-radius:50%;color:var(--muted);font-size:12px;background:var(--surface)}.station-line{width:2px;flex:1;min-height:24px;background:var(--track)}.station:last-child .station-line{display:none}.station-copy{padding-bottom:20px;display:grid;gap:4px;align-content:start}.station-copy strong{font-size:14px;font-weight:550}.station-copy small{font-size:12px;color:var(--muted)}.station.done .station-dot{border-color:var(--green);color:var(--green);background:var(--green-bg)}.station.done .station-line{background:var(--green)}.station.current .station-dot{border-color:var(--accent);background:var(--accent);color:var(--surface)}.station.current .station-copy strong{color:var(--accent);font-weight:650}.station.skipped .station-dot{border-color:var(--warning);background:var(--warning-bg);color:var(--warning)}.station-dot .od-icon{--od-icon-size:14px}.station.future .station-copy{color:var(--muted)}.processing-current{padding-top:0;display:grid;gap:16px;min-width:0}.processing-current h2{font-size:24px}.processing-count{display:flex;justify-content:space-between;gap:12px;align-items:baseline;font-size:14px}.processing-count strong{font-size:24px;font-variant-numeric:tabular-nums}.stage-meter{display:block;width:100%;height:8px;appearance:none;border:0;background:var(--track);border-radius:8px;overflow:hidden}.stage-meter::-webkit-progress-bar{background:var(--track)}.stage-meter::-webkit-progress-value{background:var(--accent);border-radius:8px}.stage-meter::-moz-progress-bar{background:var(--accent)}.stage-meter:not([value]){background:var(--track)}.stage-meter:not([value])::-webkit-progress-value{background:var(--track)}.process-note{font-size:13px;color:var(--muted);line-height:1.6}.process-warning{display:flex;gap:12px;align-items:flex-start;padding:12px;background:var(--warning-bg);color:var(--warning);border-radius:8px;font-size:13px}.process-warning .od-icon{flex:none}.process-summary{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+#sessionDock{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);width:min(600px,calc(100vw - 32px));z-index:12;padding:0;border:0;background:transparent;border-radius:32px;grid-column:auto}#sessionDock .capsule{border-radius:32px;box-shadow:var(--shadow);padding:16px 24px;gap:16px}#sessionDock .capsule-copy strong{font-size:14px}#sessionDock .capsule-copy small{font-size:12px}.processing-capsule{display:grid;grid-template-columns:minmax(0,1fr) auto!important;gap:12px 16px!important}.capsule-route{display:flex;gap:6px;align-items:center;margin-top:8px}.capsule-station{display:flex;align-items:center;gap:6px;flex:1}.capsule-station:after{content:'';height:2px;background:var(--track);flex:1}.capsule-station:last-child{flex:0}.capsule-station:last-child:after{display:none}.capsule-station i{display:block;width:8px;height:8px;border:1px solid var(--muted);border-radius:50%;flex:none}.capsule-station.done i{background:var(--green);border-color:var(--green)}.capsule-station.done:after{background:var(--green)}.capsule-station.current i{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 3px var(--selected)}.capsule-station.skipped i{border-radius:0;background:var(--warning);border-color:var(--warning)}.hidden-library{max-width:720px;min-height:440px;margin:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:32px}.hidden-library p{color:var(--muted);font-size:14px;max-width:40ch}
+@media(max-width:1100px){.processing-layout{grid-template-columns:180px minmax(0,1fr);gap:24px}.process-header{flex-direction:column}}@media(max-width:767px){body{padding-bottom:160px}.pipeline-demo{padding:8px 16px;margin:0}.app{height:calc(100dvh - 208px);min-height:520px}.processing-layout{grid-template-columns:1fr;gap:24px}.processing-current{grid-row:1}.station{min-height:56px}.processing-document{padding:24px 20px!important}#sessionDock{bottom:16px}#sessionDock .capsule{padding:16px;gap:12px}.pipeline-controls{gap:16px}.hidden-library{min-height:360px}}
+
+
+/* Window closure leaves the independent processing capsule running. */
+.close-window{display:inline-flex;align-items:center;justify-content:center;position:relative;width:24px;height:24px;padding:0;flex:none;border-radius:50%;background:transparent!important}.close-window:before{content:"";position:absolute;width:12px;height:12px;border-radius:50%;background:#ff6059;box-shadow:inset 0 0 0 1px #0002}.close-window span{position:relative;font-size:12px;line-height:1;color:#64130f;opacity:0}.close-window:focus-visible span{opacity:1}.traffic{align-items:center}.window-close-compact{display:none}#sessionDock{width:min(480px,calc(100vw - 32px))}.processing-capsule{align-items:center;grid-template-columns:minmax(0,1fr) auto auto!important}.processing-capsule .capsule-route{max-width:260px}.processing-capsule .capsule-copy{grid-column:1;min-width:0}.processing-capsule .btn{font-size:13px}@media(hover:hover){.close-window:hover span{opacity:1}}@media(max-width:767px){.window-close-compact{display:inline-flex}}
+
+</style>
+</head>
+<body>
+
+<details class="pipeline-demo" id="pipelineDemoPanel"><summary>Демонстрация обработки · изменить сценарий</summary><div class="pipeline-controls">
+<label><input type="checkbox" id="demoAEC" checked>AEC</label><label><input type="checkbox" id="demoParakeet" checked>Parakeet</label>
+<label for="demoStage">Этап <select id="demoStage"></select></label><label for="demoSource">Дорожка <select id="demoSource"><option value="host">Микрофон · 1 из 2</option><option value="remote" selected>Системный звук · 2 из 2</option></select></label>
+<label for="demoPercent">Прогресс <input type="range" id="demoPercent" min="0" max="100" step="1" value="64"><output id="demoPercentValue">64%</output></label>
+<label><input id="demoUnknown" type="checkbox">Без точного процента</label><button class="btn" data-action="demo-next">Следующий этап</button><button class="btn" data-action="demo-skip">Пропустить с предупреждением</button><button class="btn" data-action="demo-restart">Начать заново</button>
+<p>Управление только макетом. Этапы не переключаются сами: можно спокойно рассмотреть экран и капсулу. Аудио не обрабатывается.</p></div></details>
+
+<div class="app" id="app" data-view="detail">
+ <aside class="sidebar" aria-label="Библиотека записей">
+  <div class="side-head od-row"><div class="traffic"><button class="close-window" data-action="close-window" aria-label="Закрыть основное окно" title="Закрыть окно"><span aria-hidden="true">×</span></button><i aria-hidden="true"></i><i aria-hidden="true"></i></div><div class="brand"><span>Meeting</span><span>Companion</span></div></div>
+  <div class="side-tools">
+   <div class="od-row"><h2 class="side-label od-fill">Записи</h2><span class="count" id="recordCount">6</span><button class="icon-button soft" data-action="new" title="Новая запись" aria-label="Новая запись" data-icon="plus"></button></div>
+   <label class="search"><span data-icon="search" aria-hidden="true"></span><input id="search" type="search" placeholder="Поиск по встречам и тексту" aria-label="Поиск по встречам и транскриптам" autocomplete="off"></label>
+  </div>
+  <nav id="recordList" class="record-list" aria-label="Записи встреч"></nav>
+  <footer class="side-footer od-row"><span data-icon="shield" class="muted" aria-hidden="true"></span><div class="od-fill"><p>Демонстрационные записи</p><p>Аудио не записывается</p></div><button class="icon-button" data-action="settings" title="Настройки" aria-label="Настройки" data-icon="settings"></button></footer>
+ </aside>
+ <main class="workspace">
+  <header class="toolbar">
+   <div class="od-row"><button class="icon-button mobile-back" data-action="back" aria-label="Все записи" data-icon="back"></button><button class="close-window window-close-compact" data-action="close-window" aria-label="Закрыть основное окно" title="Закрыть окно"><span aria-hidden="true">×</span></button><span class="toolbar-label">Транскрипт</span></div>
+   <div class="toolbar-actions">
+    <button class="icon-button" id="exportButton" data-action="export" title="Экспортировать текст" aria-label="Экспортировать текст" data-icon="export"></button>
+    <div class="overlay-menu"><button class="icon-button" id="menuButton" data-action="menu" aria-label="Действия с записью" aria-expanded="false" aria-controls="recordMenu" data-icon="more"></button><div id="recordMenu" class="menu" hidden><button data-action="rename"><span data-icon="edit"></span>Переименовать</button><button data-action="copy"><span data-icon="copy"></span>Копировать транскрипт</button><button data-action="settings"><span data-icon="settings"></span>Настройки</button></div></div>
+    <span class="separator" aria-hidden="true"></span><button class="btn primary" data-action="new"><span data-icon="record"></span><span class="new-label">Новая запись</span></button>
+   </div>
+  </header>
+  <section class="detail" id="detail" aria-label="Выбранная встреча"></section>
+  <footer class="player" id="player">
+   <div class="player-main"><button class="play-button" id="playButton" data-action="play" aria-label="Воспроизвести демо" data-icon="play"></button><div class="scrubber"><svg class="waveform" id="waveform" viewBox="0 0 600 32" preserveAspectRatio="none" aria-hidden="true"></svg><input id="seek" type="range" min="0" max="1458" value="204" aria-label="Позиция воспроизведения"></div><div class="time-readout"><strong id="elapsed">03:24</strong> <span>/</span> <span id="duration">24:18</span></div><select id="speed" class="speed" aria-label="Скорость воспроизведения"><option value="1">1×</option><option value="1.25">1,25×</option><option value="1.5">1,5×</option><option value="2">2×</option></select></div>
+   <div class="player-meta"><span>Демо плеера · без звука</span><button id="followButton" data-action="follow" aria-pressed="true">Следовать за текстом</button></div>
+  </footer>
+ </main>
+
+</div>
+<section class="hidden-library" id="hiddenLibrary" hidden><h2>Основное окно закрыто</h2><p>Обработка продолжается. Капсула остаётся доступна, а библиотеку можно открыть в любой момент.</p><button class="btn" data-action="show-library">Открыть библиотеку</button></section>
+<section class="session-dock" id="sessionDock" aria-label="Плавающая капсула записи и обработки" hidden></section>
+<dialog id="newDialog" aria-labelledby="newTitle">
+ <header class="dialog-head"><h2 id="newTitle">Новая запись</h2><button class="icon-button" data-close="newDialog" aria-label="Закрыть" data-icon="close"></button></header>
+ <div class="dialog-body"><p>Выбери встречу и источник звука. После остановки запись появится в библиотеке.</p>
+ <div class="field"><label for="meeting">Встреча</label><select id="meeting"><option value="Обсуждение интерфейса">Обсуждение интерфейса</option><option value="Продукт–тех синк">Продукт–тех синк</option><option value="">Без встречи</option></select></div>
+ <div class="field"><label for="recordName">Название записи</label><input id="recordName" value="Обсуждение интерфейса" maxlength="120" autocomplete="off"><p class="error" id="nameError" hidden>Введи название записи.</p></div>
+ <div class="field"><label for="microphone">Микрофон</label><select id="microphone"><option>Микрофон MacBook Pro</option><option>Системный по умолчанию</option></select><small>Устройства показаны для примера. Доступ к микрофону не нужен.</small></div>
+ <div><div class="sample-sound"><span>Микрофон</span><span class="meter" aria-label="Пример уровня микрофона"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="sample-sound"><span>Системный звук</span><span class="muted small">Будет включён</span></div></div></div>
+ <footer class="dialog-actions"><button class="btn" data-close="newDialog">Отмена</button><button class="btn primary" id="startButton" data-action="start"><span data-icon="record"></span>Начать запись</button></footer>
+</dialog>
+<dialog id="settingsDialog" aria-labelledby="settingsTitle">
+ <header class="dialog-head"><div><h2 id="settingsTitle">Настройки</h2><p class="settings-caption">Meeting Companion</p></div><button class="icon-button" data-close="settingsDialog" aria-label="Закрыть настройки" data-icon="close"></button></header>
+ <div>
+  <nav class="settings-tabs" role="tablist" aria-label="Разделы настроек">
+   <button class="settings-tab" role="tab" id="settings-tab-general" data-settings-tab="general" aria-controls="settings-general" aria-selected="true" tabindex="0"><span data-icon="settings"></span><span>Основные</span></button>
+   <button class="settings-tab" role="tab" id="settings-tab-recording" data-settings-tab="recording" aria-controls="settings-recording" aria-selected="false" tabindex="-1"><span data-icon="mic"></span><span>Запись</span></button>
+   <button class="settings-tab" role="tab" id="settings-tab-transcription" data-settings-tab="transcription" aria-controls="settings-transcription" aria-selected="false" tabindex="-1"><span data-icon="wave"></span><span>Транскрибация</span></button>
+   <button class="settings-tab" role="tab" id="settings-tab-calendar" data-settings-tab="calendar" aria-controls="settings-calendar" aria-selected="false" tabindex="-1"><span data-icon="calendar"></span><span>Календарь</span></button>
+   <button class="settings-tab" role="tab" id="settings-tab-diagnostics" data-settings-tab="diagnostics" aria-controls="settings-diagnostics" aria-selected="false" tabindex="-1"><span data-icon="shield"></span><span>Диагностика</span></button>
+  </nav>
+  <div class="settings-mobile"><label for="settingsSection">Раздел настроек</label><select id="settingsSection"><option value="general">Основные</option><option value="recording">Запись</option><option value="transcription">Транскрибация</option><option value="calendar">Календарь</option><option value="diagnostics">Диагностика</option></select></div>
+ </div>
+ <div class="settings-scroll" id="settingsScroll">
+  <p class="settings-lock" id="settingsLock" hidden>Параметры записи и обработки доступны после завершения текущей операции.</p>
+  <section class="settings-panel" id="settings-general" role="tabpanel" aria-labelledby="settings-tab-general">
+   <div class="settings-intro"><h3>Основные</h3><p>Оформление и поведение приложения.</p></div>
+   <div class="settings-section"><h4>Оформление</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="theme">Тема приложения</label><small>Системная тема меняется вместе с macOS.</small></div><select id="theme"><option value="system">Как в системе</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></div></div></div>
+   <div class="settings-section"><h4>Поведение</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="launchAtLogin">Запускать при входе</label><small>Чтобы запись была под рукой в строке меню.</small></div><input type="checkbox" role="switch" id="launchAtLogin" checked></div><div class="settings-line"><div class="od-field od-fill"><label for="autoFollow">Следовать за текстом</label><small>Прокручивать транскрипт при воспроизведении.</small></div><input id="autoFollow" type="checkbox" role="switch" checked></div></div></div>
+   <div class="settings-section"><h4>Обновления</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Проверка обновлений</span><small>В макете сервер обновлений не подключён.</small></div><button class="btn" data-action="check-updates">Проверить</button></div><div class="settings-line"><div class="od-field od-fill"><label for="betaUpdates">Получать бета-версии</label><small>Экспериментальные версии могут содержать ошибки.</small></div><input type="checkbox" role="switch" id="betaUpdates"></div><p class="settings-result" id="updatesResult" role="status" hidden></p></div><p class="settings-helper">Отключение бета-версий не откатывает установленную версию.</p></div>
+  </section>
+  <section class="settings-panel" id="settings-recording" role="tabpanel" aria-labelledby="settings-tab-recording" hidden>
+   <div class="settings-intro"><h3>Запись</h3><p>Источники звука и сохранение встреч.</p></div>
+   <div class="settings-section"><h4>Источники звука</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="settingsMicrophone">Микрофон</label><small>Можно изменить и перед началом записи.</small></div><select id="settingsMicrophone" data-settings-lock><option>Микрофон MacBook Pro</option><option>Системный по умолчанию</option></select></div><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Уровень микрофона</span><small>Проверка показывает пример, без доступа к устройствам.</small></div><button class="btn" data-action="test-audio" data-settings-lock>Проверить звук</button></div><p class="settings-result" id="recordAudioResult" role="status" hidden></p></div></div>
+   <div class="settings-section"><h4>Обработка после записи</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="echoCancel">Эхоподавление микрофона</label><small>При разговоре через динамики. С наушниками лучше выключить.</small></div><input id="echoCancel" type="checkbox" role="switch" data-settings-lock></div></div><p class="settings-helper">Перед распознаванием обрабатывается копия микрофона. Возможна потеря частей слов; исходное аудио сохраняется.</p></div>
+   <div class="settings-section"><h4>Сохранение</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Папка записей</span><small class="settings-folder" id="outputFolder">Meeting Companion / Записи</small></div><button class="btn" data-action="choose-folder" data-settings-lock>Выбрать…</button></div></div><p class="settings-helper">Пример пути. Выбор в макете не перемещает и не создаёт файлы.</p></div>
+   <details class="settings-advanced"><summary>Дополнительно</summary><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="captureBackend">Захват системного звука</label><small>ScreenCaptureKit — запасной вариант при проблемах.</small></div><select id="captureBackend" data-settings-lock><option value="tap">Core Audio Tap</option><option value="screen">ScreenCaptureKit</option></select></div></div><p class="settings-helper">В обоих случаях записывается только звук, без видео.</p></details>
+  </section>
+  <section class="settings-panel" id="settings-transcription" role="tabpanel" aria-labelledby="settings-tab-transcription" hidden>
+   <div class="settings-intro"><h3>Транскрибация</h3><p>Локальное распознавание и подготовка моделей.</p></div>
+   <div class="settings-section"><h4>Распознавание</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="improveTerms">Улучшать технические термины</label><small>Дополнительная модель Parakeet, около 740 МБ.</small></div><input id="improveTerms" type="checkbox" role="switch" data-settings-lock></div></div><p class="settings-helper">Возможны неверные замены. Исходный текст GigaAM сохраняется отдельно.</p></div>
+   <div class="settings-section"><h4>Модели и окружение</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Состояние моделей</span><small>Демонстрационный статус, без проверки файлов.</small></div><span class="settings-status" id="modelsStatus"><span data-icon="check"></span>Готовы к работе</span></div><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Подготовка транскрибации</span><small>Проверить окружение или скачать компоненты.</small></div><div class="od-cluster"><button class="btn" data-action="check-models" data-settings-lock>Проверить</button><button class="btn" id="downloadModels" data-action="download-models" data-settings-lock>Скачать</button></div></div><div class="settings-model-progress" id="modelsProgress" role="status" hidden><p id="modelsProgressText">Подготовка окружения…</p><div class="progress"><span id="modelsProgressBar" style="width:0%"></span></div></div><p class="settings-result" id="modelsResult" role="status" hidden></p></div><p class="settings-helper">В приложении загрузка требует интернета, затем транскрибация работает офлайн. Макет ничего не скачивает.</p></div>
+   <details class="settings-advanced"><summary>Технические подробности</summary><pre class="settings-log" id="modelsLog">Демонстрация состояния
+GigaAM — распознавание речи
+Nemotron — разделение голосов
+Silero VAD — поиск речевых фрагментов
+Фактическое окружение не проверялось.</pre></details>
+   <div class="settings-section"><h4>Обслуживание</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Сбросить кэш моделей</span><small>Модели и окружение потребуется скачать снова.</small></div><button class="btn danger" id="resetModels" data-action="reset-models" data-settings-lock>Сбросить…</button></div></div><p class="settings-helper">Записи и транскрипты сохраняются. В макете меняется только демонстрационный статус.</p></div>
+  </section>
+  <section class="settings-panel" id="settings-calendar" role="tabpanel" aria-labelledby="settings-tab-calendar" hidden>
+   <div class="settings-intro"><h3>Календарь</h3><p>Встречи для выбора перед записью и напоминаний.</p></div>
+   <div class="settings-section"><h4>Календари встреч</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="workCalendar">Рабочий календарь</label><small>Пример подключённого календаря</small></div><input id="workCalendar" type="checkbox" role="switch" checked></div><div class="settings-line"><div class="od-field od-fill"><label for="personalCalendar">Личный календарь</label><small>Пример подключённого календаря</small></div><input id="personalCalendar" type="checkbox" role="switch"></div></div><p class="settings-helper">В приложении здесь отображаются календари, доступные в системном «Календаре» macOS.</p></div>
+   <div class="settings-section"><h4>Напоминания</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><label for="callLinksOnly">Только встречи со ссылкой на созвон</label><small>Ссылка ищется в адресе, месте и описании встречи.</small></div><input id="callLinksOnly" type="checkbox" role="switch" checked></div></div><p class="settings-helper">Для очных встреч отключи фильтр. Начать запись без встречи можно всегда.</p></div>
+   <details class="settings-advanced"><summary>Не видны рабочие встречи?</summary><p class="settings-helper">Проверь, что рабочий аккаунт подключён в приложении «Календарь» на Mac и встречи там отображаются. После этого выбери нужные календари здесь. В этом макете подключение не выполняется.</p></details>
+  </section>
+  <section class="settings-panel" id="settings-diagnostics" role="tabpanel" aria-labelledby="settings-tab-diagnostics" hidden>
+   <div class="settings-intro"><h3>Диагностика</h3><p>Разрешения и проверки, если что-то работает не так.</p></div>
+   <div class="settings-section"><h4>Разрешения macOS · примеры статусов</h4><div class="settings-group"><div class="settings-line"><span class="setting-label">Микрофон</span><span class="settings-status"><span data-icon="check"></span>Разрешён</span></div><div class="settings-line"><span class="setting-label">Системный звук</span><span class="settings-status"><span data-icon="check"></span>Разрешён</span></div><div class="settings-line"><span class="setting-label">Календарь</span><span class="settings-status"><span data-icon="check"></span>Разрешён</span></div><div class="settings-line"><span class="settings-helper">Реальные разрешения не проверяются.</span><button class="btn" data-action="permissions">Разрешения macOS…</button></div></div></div>
+   <div class="settings-section"><h4>Проверки</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Источники звука</span><small>Пример результата проверки двух каналов.</small></div><button class="btn" data-action="diagnostic-audio" data-settings-lock>Проверить звук</button></div><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Транскрибация</span><small>Показать состояние демонстрационного окружения.</small></div><button class="btn" data-action="diagnostic-models" data-settings-lock>Проверить</button></div><p class="settings-result" id="diagnosticsResult" role="status" hidden></p></div></div>
+   <details class="settings-advanced"><summary>Журнал диагностики</summary><pre class="settings-log" id="diagnosticsLog">Демонстрационный журнал
+Проверки ещё не запускались.
+Доступ к устройствам и файлам не запрашивается.</pre></details>
+  </section>
+ </div>
+ <footer class="dialog-actions settings-bottom"><p>Интерактивный макет · изменения до перезагрузки</p><button class="btn primary" data-close="settingsDialog">Готово</button></footer>
+</dialog>
+<dialog id="resetModelsDialog" aria-labelledby="resetModelsTitle"><header class="dialog-head"><h2 id="resetModelsTitle">Сбросить кэш моделей?</h2><button class="icon-button" data-close="resetModelsDialog" aria-label="Отмена сброса" data-icon="close"></button></header><div class="dialog-body"><p>В приложении удаляются только модели и Python-окружение. Записи и транскрипты сохраняются.</p><p>Здесь изменится только статус в макете. Файлы на компьютере не затрагиваются.</p></div><footer class="dialog-actions"><button class="btn" data-close="resetModelsDialog">Отмена</button><button class="btn danger" data-action="confirm-reset-models">Сбросить кэш</button></footer></dialog>
+<dialog id="folderDialog" aria-labelledby="folderTitle"><header class="dialog-head"><h2 id="folderTitle">Папка записей</h2><button class="icon-button" data-close="folderDialog" aria-label="Закрыть выбор папки" data-icon="close"></button></header><div class="dialog-body"><p>В macOS здесь откроется системный выбор папки. Для макета можно изменить отображаемый путь.</p><div class="field"><label for="folderInput">Путь в макете</label><input id="folderInput" value="Meeting Companion / Записи" maxlength="240"><p id="folderError" class="error" hidden>Укажи папку для отображения.</p></div></div><footer class="dialog-actions"><button class="btn" data-close="folderDialog">Отмена</button><button class="btn primary" data-action="save-folder">Выбрать</button></footer></dialog>
+<dialog id="renameDialog" aria-labelledby="renameTitle"><header class="dialog-head"><h2 id="renameTitle">Название встречи</h2><button class="icon-button" data-close="renameDialog" aria-label="Закрыть" data-icon="close"></button></header><div class="dialog-body"><div class="field"><label for="renameInput">Название</label><input id="renameInput" maxlength="120" autocomplete="off"><p class="error" id="renameError" hidden>Название не должно быть пустым.</p></div></div><footer class="dialog-actions"><button class="btn" data-close="renameDialog">Отмена</button><button class="btn primary" data-action="save-name">Сохранить</button></footer></dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<dialog id="textEditDialog" class="correction-dialog" aria-labelledby="textEditTitle">
+ <div class="dialog-head"><h2 id="textEditTitle">Исправить реплику</h2><button class="icon-button" data-close="textEditDialog" aria-label="Отменить редактирование" data-icon="close"></button></div>
+ <div class="dialog-body"><p id="textEditContext"></p><div class="field"><label for="turnText">Текст реплики</label><textarea id="turnText" aria-describedby="textEditNote"></textarea><small id="textEditNote">До сохранения можно отменить ввод. После сохранения текст можно исправить повторно.</small><p id="turnTextError" class="error" hidden>Введи текст реплики.</p></div><p class="correction-demo">Демо: правки хранятся до перезагрузки страницы.</p></div>
+ <div class="dialog-actions"><button class="btn" data-close="textEditDialog">Отменить</button><button class="btn primary" data-action="save-turn-text">Сохранить</button></div>
+</dialog>
+<dialog id="speakerDialog" class="correction-dialog" aria-labelledby="speakerTitle">
+ <div class="dialog-head"><h2 id="speakerTitle">Сменить спикера</h2><button class="icon-button" data-close="speakerDialog" aria-label="Отменить смену спикера" data-icon="close"></button></div>
+ <div class="dialog-body"><p id="speakerContext"></p><div><p id="calendarNamesNote" class="transcript-help"></p><div id="speakerSuggestions" class="speaker-options" aria-label="Подсказки имён"></div></div>
+ <div class="field"><label for="speakerName">Имя спикера</label><input id="speakerName" autocomplete="off" maxlength="120" placeholder="Введи имя" aria-describedby="speakerNameNote"><small id="speakerNameNote">Можно выбрать подсказку или вписать своё имя. Календарь не определяет, кому принадлежит голос.</small><p id="speakerNameError" class="error" hidden>Введи имя спикера.</p></div>
+ <fieldset class="speaker-scope"><legend>Какие реплики изменить?</legend><label><input type="radio" name="speakerScope" value="one" checked>Только эта реплика</label><label><input type="radio" name="speakerScope" value="remaining">Реплики этого спикера отсюда до конца</label></fieldset>
+ <div id="speakerPreview" class="speaker-preview" aria-live="polite"></div><p class="correction-demo">Демо: участники вымышленные, реальный календарь не подключён. Правки сохраняются до перезагрузки.</p></div>
+ <div class="dialog-actions"><button class="btn" data-close="speakerDialog">Отменить</button><button class="btn primary" id="applySpeaker" data-action="apply-speaker">Подтвердить замену</button></div>
+</dialog>
+
+<script>
+'use strict';
+const paths={
+ plus:'<path d="M12 5v14M5 12h14"/>',search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
+ settings:'<path d="m9 4 1-2h4l1 2 2 1 2-.2 2 3-1.2 1.7v3L21 14l-2 3-2-.2-2 1-1 2h-4l-1-2-2-1-2 .2-2-3 1.2-1.5v-3L3 7.8l2-3 2 .2z"/><circle cx="12" cy="11" r="3"/>',
+ shield:'<path d="m12 3 8 3v5c0 5-8 10-8 10S4 16 4 11V6z"/><path d="m8.5 11.5 2.5 2.5 4.5-5"/>',
+ record:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
+ play:'<path d="m9 5 11 7-11 7z" fill="currentColor" stroke="none"/>',pause:'<path d="M8 5v14M16 5v14" stroke-width="4"/>',
+ more:'<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>',
+ export:'<path d="M12 15V3m-4 4 4-4 4 4M5 12v8h14v-8"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>',
+ check:'<circle cx="12" cy="12" r="8"/><path d="m8 12 3 3 5-6"/>',clock:'<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+ calendar:'<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4m8-4v4M4 10h16"/>',people:'<circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m1-15a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 5"/>',
+ back:'<path d="m14 5-7 7 7 7"/>',edit:'<path d="m4 16 12-12 4 4L8 20H4zm9-9 4 4"/>',copy:'<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v12h5"/>',
+ mic:'<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 10v2a6 6 0 0 0 12 0v-2M12 18v3m-3 0h6"/>',mute:'<path d="m3 3 18 18M9 9v3a3 3 0 0 0 5 2M9 5a3 3 0 0 1 6 0v6M6 10v2a6 6 0 0 0 11 3M12 18v3m-3 0h6"/>',
+ stop:'<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',wave:'<path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4"/>',warning:'<path d="m12 3 10 17H2zM12 9v5m0 3v.1"/>',retry:'<path d="M4 10a8 8 0 1 1 0 5M4 4v6h6"/>'
+};
+const icon=name=>`<svg class="od-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]||paths.wave}</svg>`;
+const $=id=>document.getElementById(id);
+const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clock=value=>`${String(Math.floor(value/60)).padStart(2,'0')}:${String(Math.floor(value%60)).padStart(2,'0')}`;
+const row=(t,s,text)=>({t,s,text});
+const productRows=[
+ row(0,0,'Давайте начнём с того, что изменилось за неделю. Хочется сегодня договориться о приоритетах и понять, что берём в следующую итерацию.'),
+ row(68,1,'По основному сценарию мы закончили подготовку. Осталось разобраться с состояниями, когда обработка ещё идёт или завершилась с предупреждением.'),
+ row(204,0,'Мне кажется, результат встречи должен быть доступен сразу. Открываешь запись — видишь текст и можешь перейти к нужному моменту, не разбираясь в файлах.'),
+ row(326,1,'Да, и важно отделить предупреждение от самого результата. Если текст готов, он должен оставаться читаемым. А подробности о проблеме можно раскрыть отдельно.'),
+ row(489,0,'Тогда оставляем один основной путь: выбрать встречу, открыть транскрипт, при необходимости послушать фрагмент. Экспорт и технические детали убираем в дополнительные действия.'),
+ row(731,1,'Согласен. Ещё предлагаю сохранить компактную панель во время записи. В ней достаточно таймера, микрофона и кнопки остановки — ничего лишнего.'),
+ row(1054,0,'Договорились. Сначала посмотрим весь сценарий на макете, включая пустую библиотеку, обработку и ошибку. После этого можно переносить решения в приложение.'),
+ row(1328,1,'Хорошо. По следующей итерации зафиксировали: библиотека, транскрипт и состояния записи. На этом можем закончить.')
+];
+let records=[
+ {id:'design',title:'Обсуждение интерфейса',day:'Сегодня',date:'1 ноября 2026',time:'11:32',duration:812,status:'ready',rows:[row(0,0,'Хочу, чтобы приложение ощущалось спокойным и удобным. Главное — быстро начать запись, а потом вернуться к нужному фрагменту разговора.'),row(112,1,'Предлагаю объединить историю и транскрипт. Слева оставим встречи, справа — содержимое выбранной записи.'),row(308,0,'Да, и давайте сразу посмотрим, как будет выглядеть маленькая панель во время созвона.'),row(606,1,'В макете можно пройти весь сценарий без настоящей записи. После остановки в библиотеке появится демонстрационный транскрипт.')]},
+ {id:'product',title:'Продукт–тех синк',day:'30 октября',date:'30 октября 2026',time:'12:00',duration:1458,status:'ready',rows:productRows},
+ {id:'weekly',title:'Weekly tech sync',day:'29 октября',date:'29 октября 2026',time:'17:31',duration:1865,status:'ready',warning:'В одном фрагменте не удалось уверенно разделить голоса. Проверь имя говорящего по аудио; сам текст доступен.',rows:[row(0,0,'Начнём с текущих технических вопросов. Сегодня нужно выбрать самый короткий путь к рабочему результату.'),row(210,1,'Основная часть готова. Есть один фрагмент, где система не смогла уверенно определить говорящего.'),row(545,0,'Оставим это явным предупреждением. Пользователь должен понимать, что стоит проверить, и при этом продолжать работать с текстом.')]},
+ {id:'one',title:'1:1 · разговор о задачах',day:'29 октября',date:'29 октября 2026',time:'16:00',duration:2240,status:'ready',rows:[row(0,0,'Как прошла неделя? Давай обсудим, что получилось и где нужна помощь.'),row(184,1,'Удалось закончить основную задачу. Хочу отдельно обсудить приоритеты на следующую неделю.'),row(534,0,'Давай выберем один главный результат и заранее договоримся, что пока отложим.')]},
+ {id:'standup',title:'Командный стендап',day:'29 октября',date:'29 октября 2026',time:'11:30',duration:937,status:'ready',rows:[row(0,0,'Всем привет. Коротко пройдёмся по текущим задачам и блокерам.'),row(172,1,'Сегодня завершаю проверку и подготовлю изменения к обсуждению.'),row(390,0,'Хорошо. Если появятся блокеры, вернёмся к ним отдельно после стендапа.')]},
+ {id:'error',title:'Планирование итерации',day:'Ранее',date:'28 октября 2026',time:'15:00',duration:1180,status:'failed',rows:productRows.filter(r=>r.t<1180)}
+];
+const state={selected:'product',position:204,playing:false,speed:1,follow:true,query:'',session:null};
+const selected=()=>records.find(r=>r.id===state.selected);
+const currentTurn=(rows,position)=>{let result=-1;rows.forEach((r,i)=>{if(r.t<=position)result=i});return result;};
+function makeExport(record){return `${record.title}\n${record.date}, ${record.time}\nДемонстрационные данные\n\n`+record.rows.map(r=>`[${clock(r.t)}] ${escExportSpeaker(r)}\n${r.text}`).join('\n\n');}
+// Small invariant checks stay with the editable prototype.
+console.assert(clock(204)==='03:24'&&currentTurn(productRows,325)===2&&currentTurn(productRows,326)===3,'Transcript time mapping');
+console.assert(makeExport(records[1]).includes('[03:24] Вы\n'),'Export retains timestamps and speakers');
+console.assert(records.every(r=>r.rows.every((v,i)=>v.t<r.duration&&(i===0||v.t>r.rows[i-1].t))),'Transcript timeline');
+function hydrate(root=document){root.querySelectorAll('[data-icon]').forEach(el=>{el.innerHTML=icon(el.dataset.icon);});}
+function renderList(){
+ const filtered=records.filter(r=>(r.title+' '+r.rows.map(t=>t.text).join(' ')).toLocaleLowerCase('ru').includes(state.query.toLocaleLowerCase('ru')));
+ $('recordCount').textContent=filtered.length;
+ let day='';let html='';
+ for(const r of filtered){if(r.day!==day){day=r.day;html+=`<div class="date-heading">${esc(day)}</div>`;}
+ const status=r.status==='failed'?'Не удалось обработать':r.status==='processing'?'Обрабатывается':r.warning?'Готово · есть замечание':'Транскрипт готов';
+ html+=`<button class="record-item" data-record="${esc(r.id)}" aria-current="${r.id===state.selected}"><span class="record-title od-clamp-2">${esc(r.title)}</span><span class="record-meta"><span>${esc(r.time)}</span><span>${clock(r.duration)}</span></span><span class="record-state">${icon(r.status==='failed'?'warning':r.status==='processing'?'clock':'check')}<span>${status}</span></span></button>`;}
+ $('recordList').innerHTML=html||'<p class="list-empty">Ничего не найдено. Попробуй другое название или фразу из разговора.</p>';
+}
+function renderDetail(){
+ const r=selected();
+ $('exportButton').disabled=!r||r.status!=='ready';$('menuButton').disabled=!r||r.status!=='ready';
+ $('player').hidden=!r||r.status!=='ready';
+ if(!r){$('detail').innerHTML=`<div class="empty">${icon('wave')}<h2>Выбери встречу</h2><p>Здесь появятся транскрипт и проигрыватель записи.</p></div>`;return;}
+ if(r.status==='failed'){$('detail').innerHTML=`<div class="document"><div class="eyebrow" style="color:var(--red)">${icon('warning')}Обработка не завершена</div><h1>${esc(r.title)}</h1><div class="metadata">${esc(r.date)} · ${esc(r.time)}</div><div class="empty">${icon('wave')}<h2>Аудио сохранено</h2><p>Распознавание было прервано. Можно повторить обработку без новой записи.</p><button class="btn primary" data-action="retry">${icon('retry')}Повторить обработку</button><span class="small muted">Демонстрация состояния ошибки</span></div></div>`;return;}
+ if(r.status==='processing'){$('detail').innerHTML=processingDocument(r);return;}
+ const active=currentTurn(r.rows,state.position);
+ $('detail').innerHTML=`<article class="document"><div class="eyebrow">${icon('check')}Транскрипт готов<span class="demo-note">ДЕМО</span></div><h1>${esc(r.title)}</h1><div class="metadata"><span>${icon('calendar')}${esc(r.date)} · ${esc(r.time)}</span><span>${icon('clock')}${clock(r.duration)}</span><span>${icon('people')}${new Set(r.rows.map(speakerLabel)).size} говорящих</span></div>${r.warning?`<details class="warning"><summary>Есть замечание к разделению голосов</summary><p>${esc(r.warning)}</p></details>`:''}<hr class="document-divider"><div class="transcript-heading"><h2>Транскрипт</h2></div><p class="transcript-help">Нажми на имя, чтобы сменить спикера, или «Редактировать», чтобы исправить текст.</p><div class="transcript">${r.rows.map((v,i)=>`<section class="turn ${i===active?'active':''}" data-turn="${i}" aria-label="Реплика ${i+1}"><button class="timestamp" data-seek="${v.t}" aria-label="Перейти к ${clock(v.t)}">${clock(v.t)}</button><div><div class="turn-head"><span class="speaker-dot ${v.s?'other':''}" aria-hidden="true"></span><button class="speaker-button" data-speaker-turn="${i}" aria-label="Сменить спикера: ${esc(speakerLabel(v))}">${esc(speakerLabel(v))} ▾</button><button class="turn-edit" data-edit-turn="${i}" aria-label="Исправить текст реплики ${i+1}">Редактировать</button></div><p>${esc(v.text)}</p></div></section>`).join('')}</div></article>`;
+ $('seek').max=r.duration;updatePlayer();
+}
+function selectRecord(id){if(!records.some(r=>r.id===id))return;state.selected=id;state.position=0;state.playing=false;renderList();renderDetail();$('detail').scrollTop=0;$('app').dataset.view='detail';$('detail').setAttribute('tabindex','-1');$('detail').focus({preventScroll:true});}
+function updatePlayer(){
+ const r=selected();if(!r||r.status!=='ready')return;
+ $('playButton').innerHTML=icon(state.playing?'pause':'play');$('playButton').setAttribute('aria-label',state.playing?'Приостановить демо':'Воспроизвести демо');
+ $('elapsed').textContent=clock(state.position);$('duration').textContent=clock(r.duration);$('seek').value=state.position;$('seek').setAttribute('aria-valuetext',`${clock(state.position)} из ${clock(r.duration)}`);
+ const fraction=state.position/r.duration;
+ $('waveform').innerHTML=Array.from({length:120},(_,i)=>{const h=4+Math.abs(Math.sin(i*1.71)*Math.cos(i*.29))*24;return `<rect x="${i*5}" y="${(32-h)/2}" width="2.5" height="${h}" rx="1.25" fill="${i/120<=fraction?'var(--accent)':'var(--track)'}"/>`;}).join('');
+ const active=currentTurn(r.rows,state.position);let changed=false;
+ $('detail').querySelectorAll('[data-turn]').forEach(el=>{const on=Number(el.dataset.turn)===active;if(on&&!el.classList.contains('active'))changed=true;el.classList.toggle('active',on);});
+ if(changed&&state.follow&&state.playing){const turn=$('detail').querySelector('.turn.active');if(turn)$('detail').scrollTo({top:Math.max(0,turn.offsetTop-$('detail').offsetTop-80),behavior:'smooth'});}
+ $('followButton').setAttribute('aria-pressed',state.follow);$('followButton').textContent=state.follow?'Следовать за текстом':'Следование выключено';
+}
+let toastTimer;function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,3200);}
+const dialogOpeners=new WeakMap();function openDialog(id){closeMenu();dialogOpeners.set($(id),document.activeElement);if(id==='settingsDialog')refreshSettingsLocks();$(id).showModal();if(id==='newDialog'){$('nameError').hidden=true;$('recordName').focus();}if(id==='renameDialog'){$('renameError').hidden=true;$('renameInput').focus();$('renameInput').select();}if(id==='folderDialog'){$('folderError').hidden=true;$('folderInput').value=$('outputFolder').textContent;$('folderInput').focus();}}
+function closeDialog(id){$(id).close();}
+for(const d of document.querySelectorAll('dialog'))d.addEventListener('close',()=>{const opener=dialogOpeners.get(d);if(opener?.isConnected&&opener.getClientRects().length)opener.focus();else document.querySelector('[data-action="new"]').focus();});
+function closeMenu(){$('recordMenu').hidden=true;$('menuButton').setAttribute('aria-expanded','false');}
+function applyTheme(value){document.documentElement.dataset.theme=value;document.documentElement.dataset.resolved=value==='system'?(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'):value;}
+function setFollow(value){state.follow=value;$('autoFollow').checked=value;updatePlayer();}
+function startRecording(){
+ const title=$('recordName').value.trim();if(!title){$('nameError').hidden=false;$('recordName').focus();return;}
+ if(state.session){toast('Сначала заверши текущую запись или обработку.');return;}
+ state.session={phase:'recording',title,started:Date.now(),muted:false};state.playing=false;updatePlayer();closeDialog('newDialog');renderSession();toast('Демонстрация записи началась. Микрофон не используется.');
+}
+function renderSession(){
+ refreshSettingsLocks();
+ const session=state.session;$('sessionDock').hidden=!session;
+ document.querySelectorAll('[data-action="new"]').forEach(b=>b.disabled=!!session);
+ if(!session){$('sessionDock').innerHTML='';return;}
+ if(session.phase==='recording'){
+ $('sessionDock').innerHTML=`<div class="capsule"><span class="recording-dot" aria-hidden="true"></span><span class="capsule-time" id="captureClock">${clock((Date.now()-session.started)/1000)}</span><div class="capsule-copy"><strong class="od-truncate">${esc(session.title)}</strong><small id="captureHint">${session.muted?'Микрофон выключен · демо':'Идёт запись · демо'}</small></div><button class="icon-button ${session.muted?'is-muted':''}" data-action="mute" aria-label="${session.muted?'Включить':'Отключить'} микрофон" aria-pressed="${session.muted}">${icon(session.muted?'mute':'mic')}</button><button class="icon-button stop" data-action="stop" aria-label="Остановить запись">${icon('stop')}</button></div>`;return;}
+ $('sessionDock').innerHTML=`<div class="capsule"><span style="color:var(--accent)">${icon(session.phase==='done'?'check':'wave')}</span><div class="capsule-copy"><strong class="od-truncate">${esc(session.title)}</strong><small id="processLabel">${session.phase==='done'?'Транскрипт готов':'Подготовка аудио · этап 1 из 3'}</small>${session.phase==='processing'?'<div class="progress" role="progressbar" aria-label="Обработка записи" aria-valuemin="0" aria-valuemax="100" aria-valuenow="10" id="processProgress"><span style="width:10%"></span></div>':''}</div>${session.phase==='done'?`<button class="btn primary" data-action="open-result">Открыть</button><button class="icon-button" data-action="dismiss-session" aria-label="Скрыть уведомление">${icon('close')}</button>`:'<span class="small muted">Демо</span>'}</div>`;
+}
+function stopRecording(){
+ const s=state.session;if(!s||s.phase!=='recording')return;
+ const seconds=Math.max(1,Math.floor((Date.now()-s.started)/1000));
+ const now=new Date();const id='new-'+Date.now();
+ records.unshift({id,title:s.title,day:'Сегодня',date:now.toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'}),time:now.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}),duration:seconds,status:'processing',rows:[row(0,0,'Это демонстрационный транскрипт новой записи. В настоящем приложении здесь появится распознанный разговор.')]});
+ state.selected=id;state.position=0;state.playing=false;beginProcessing(id,s.title);renderList();renderDetail();$('detail').scrollTop=0;
+}
+function beginProcessing(id,title){
+ state.session={phase:'processing',id,title,stageKey:'audio',percent:0,source:'host',unknown:false,skipped:{},route:activeProcessingRoute()};
+ renderProcessingViews();
+}
+async function copyTranscript(){const r=selected();if(!r||r.status!=='ready')return;try{if(!navigator.clipboard)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(makeExport(r));toast('Транскрипт скопирован.');}catch{toast('Буфер обмена недоступен. Используй экспорт текста.');}}
+function exportTranscript(){const r=selected();if(!r||r.status!=='ready')return;try{const blob=new Blob([makeExport(r)],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=r.title.replace(/[\\/:*?"<>|]/g,'-')+'.txt';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('Текст подготовлен к скачиванию.');}catch{toast('Экспорт недоступен в этом просмотре. Открой HTML в браузере.');}}
+const actions={
+ new:()=>{if(!state.session)openDialog('newDialog');},settings:()=>openDialog('settingsDialog'),back:()=>{$('app').dataset.view='list';$('search').focus();},
+ menu:()=>{const hidden=$('recordMenu').hidden;$('recordMenu').hidden=!hidden;$('menuButton').setAttribute('aria-expanded',String(hidden));if(hidden)$('recordMenu').querySelector('button').focus();},
+ rename:()=>{const r=selected();if(r){$('renameInput').value=r.title;openDialog('renameDialog');}},
+ 'save-name':()=>{const name=$('renameInput').value.trim();if(!name){$('renameError').hidden=false;$('renameInput').focus();return;}const r=selected();if(r){r.title=name;renderList();renderDetail();closeDialog('renameDialog');toast('Название изменено.');}},
+ export:exportTranscript,copy:copyTranscript,
+ play:()=>{const r=selected();if(!r||r.status!=='ready')return;if(state.position>=r.duration)state.position=0;state.playing=!state.playing;updatePlayer();},follow:()=>setFollow(!state.follow),start:startRecording,
+ mute:()=>{const s=state.session;if(s&&s.phase==='recording'){s.muted=!s.muted;renderSession();$('sessionDock').querySelector('[data-action="mute"]').focus();}},stop:stopRecording,
+ retry:()=>{if(state.session){toast('Дождись завершения текущей записи или обработки.');return;}const r=selected();if(!r||r.status!=='failed')return;r.status='processing';beginProcessing(r.id,r.title);renderList();renderDetail();},
+ 'open-result':()=>{const s=state.session;if(s&&s.phase==='done'){const id=s.id;state.session=null;renderSession();selectRecord(id);}},
+ 'dismiss-session':()=>{if(state.session?.phase==='done'){state.session=null;renderSession();document.querySelector('[data-action="new"]').focus();}}
+};
+document.addEventListener('click',event=>{
+ const target=event.target.closest('button');
+ if(!event.target.closest('.overlay-menu'))closeMenu();if(!target||target.disabled)return;
+ if(target.dataset.close){closeDialog(target.dataset.close);return;}
+ if(target.dataset.editTurn!==undefined){openTextEditor(Number(target.dataset.editTurn));return;}
+ if(target.dataset.speakerTurn!==undefined){openSpeakerEditor(Number(target.dataset.speakerTurn));return;}
+ if(target.dataset.speakerSuggestion!==undefined){$('speakerName').value=target.dataset.speakerSuggestion;updateSpeakerPreview();$('speakerName').focus();return;}
+ if(target.dataset.record){selectRecord(target.dataset.record);return;}
+ if(target.dataset.seek!==undefined){state.position=Number(target.dataset.seek);updatePlayer();toast('Демо плеера: '+clock(state.position));return;}
+ const action=target.dataset.action;if(action!=='menu')closeMenu();if(actions[action])actions[action]();
+});
+document.addEventListener('keydown',event=>{
+ if(event.key==='Escape'&&!$('recordMenu').hidden){closeMenu();$('menuButton').focus();}
+ if(event.key==='Enter'&&event.target===$('recordName')){event.preventDefault();startRecording();}
+ if(event.key==='Enter'&&event.target===$('renameInput')){event.preventDefault();actions['save-name']();}
+ if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'&&!document.querySelector('dialog[open]')){event.preventDefault();$('app').dataset.view='list';$('search').focus();}
+});
+$('search').addEventListener('input',()=>{state.query=$('search').value;renderList();});
+$('seek').addEventListener('input',()=>{state.position=Number($('seek').value);updatePlayer();});
+$('speed').addEventListener('change',()=>state.speed=Number($('speed').value));
+$('theme').addEventListener('change',()=>applyTheme($('theme').value));
+$('autoFollow').addEventListener('change',()=>setFollow($('autoFollow').checked));
+$('meeting').addEventListener('change',()=>{$('recordName').value=$('meeting').value||'Новая встреча';$('nameError').hidden=true;});
+$('recordName').addEventListener('blur',()=>{$('nameError').hidden=!!$('recordName').value.trim();});
+$('renameInput').addEventListener('blur',()=>{$('renameError').hidden=!!$('renameInput').value.trim();});
+matchMedia('(prefers-color-scheme:dark)').addEventListener('change',()=>{if(document.documentElement.dataset.theme==='system')applyTheme('system');});
+let lastTick=performance.now();setInterval(()=>{const now=performance.now();const delta=(now-lastTick)/1000;lastTick=now;if(state.playing){const r=selected();if(r?.status==='ready'){state.position=Math.min(r.duration,state.position+delta*state.speed);if(state.position>=r.duration)state.playing=false;updatePlayer();}}
+ if(state.session?.phase==='recording'&&$('captureClock'))$('captureClock').textContent=clock((Date.now()-state.session.started)/1000);
+},250);
+
+const settingsSections=['general','recording','transcription','calendar','diagnostics'];
+let modelReady=true,modelPreparing=false;
+function settingsTab(section){
+ if(!settingsSections.includes(section))return;
+ for(const name of settingsSections){const active=name===section;$('settings-'+name).hidden=!active;const tab=$('settings-tab-'+name);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;}
+ $('settingsSection').value=section;$('settingsScroll').scrollTop=0;
+}
+function refreshSettingsLocks(){
+ const busy=!!state.session&&state.session.phase!=='done';
+ document.querySelectorAll('[data-settings-lock]').forEach(el=>el.disabled=busy||modelPreparing);
+ $('settingsLock').hidden=!busy;
+}
+function settingsMessage(id,text){$(id).textContent=text;$(id).hidden=false;}
+function showModelStatus(){
+ $('modelsStatus').classList.toggle('pending',!modelReady);
+ $('modelsStatus').innerHTML=icon(modelReady?'check':'clock')+(modelReady?'Готовы к работе':'Требуется загрузка');
+}
+function modelCheck(target){
+ const text=modelReady?'Пример проверки: модели готовы к работе. Файлы на компьютере не проверялись.':'Демо: кэш сброшен. Перейди в «Транскрибация» и нажми «Скачать».';
+ settingsMessage(target,text);
+ $('diagnosticsLog').textContent='Демонстрационный журнал\n'+text;
+}
+function downloadModels(){
+ if(modelPreparing||state.session&&state.session.phase!=='done')return;
+ modelPreparing=true;refreshSettingsLocks();$('modelsProgress').hidden=false;$('modelsResult').hidden=true;
+ $('modelsProgressText').textContent='Демо · подготовка окружения';$('modelsProgressBar').style.width='8%';
+ const stages=['Загрузка моделей','Проверка компонентов','Подготовка завершена'];
+ stages.forEach((text,i)=>setTimeout(()=>{
+  $('modelsProgressText').textContent='Демо · '+text;$('modelsProgressBar').style.width=((i+1)/3*100)+'%';
+  if(i===2){modelPreparing=false;modelReady=true;showModelStatus();refreshSettingsLocks();$('modelsProgress').hidden=true;settingsMessage('modelsResult','Демонстрационная подготовка завершена. Ничего не скачивалось.');$('modelsLog').textContent='Демонстрация подготовки\nОкружение → модели → проверка\nПоказан успешный сценарий. Файлы не создавались.';}
+ },(i+1)*1000));
+}
+Object.assign(actions,{
+ 'check-updates':()=>settingsMessage('updatesResult','Демонстрация: здесь появится результат проверки обновлений. Сервер не подключён.'),
+ 'test-audio':()=>{settingsMessage('recordAudioResult','Пример: микрофон и системный звук поступают. Реальная проверка не выполнялась.');},
+ 'choose-folder':()=>openDialog('folderDialog'),
+ 'save-folder':()=>{const value=$('folderInput').value.trim();if(!value){$('folderError').hidden=false;$('folderInput').focus();return;}$('outputFolder').textContent=value;closeDialog('folderDialog');},
+ 'check-models':()=>modelCheck('modelsResult'),
+ 'download-models':downloadModels,
+ 'reset-models':()=>openDialog('resetModelsDialog'),
+ 'confirm-reset-models':()=>{if(modelPreparing||state.session&&state.session.phase!=='done'){closeDialog('resetModelsDialog');return;}modelReady=false;showModelStatus();$('modelsProgress').hidden=true;settingsMessage('modelsResult','Кэш сброшен в макете. Записи и транскрипты не изменены.');$('modelsLog').textContent='Демонстрация сброса\nМодели: требуется загрузка\nЗаписи и транскрипты сохранены.\nФайлы компьютера не изменялись.';closeDialog('resetModelsDialog');},
+ 'permissions':()=>settingsMessage('diagnosticsResult','В приложении откроются «Системные настройки → Конфиденциальность и безопасность». Макет не изменяет разрешения.'),
+ 'diagnostic-audio':()=>{const text='Пример: оба источника звука доступны. Микрофон не включался; фактическая проверка не выполнялась.';settingsMessage('diagnosticsResult',text);$('diagnosticsLog').textContent='Демонстрационный журнал\n'+text;},
+ 'diagnostic-models':()=>modelCheck('diagnosticsResult')
+});
+document.querySelectorAll('[data-settings-tab]').forEach(tab=>{
+ tab.addEventListener('click',()=>settingsTab(tab.dataset.settingsTab));
+ tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();let i=settingsSections.indexOf(tab.dataset.settingsTab);i=event.key==='Home'?0:event.key==='End'?4:(i+(event.key==='ArrowRight'?1:-1)+5)%5;settingsTab(settingsSections[i]);$('settings-tab-'+settingsSections[i]).focus();});
+});
+$('settingsSection').addEventListener('change',()=>settingsTab($('settingsSection').value));
+$('settingsMicrophone').addEventListener('change',()=>{$('microphone').value=$('settingsMicrophone').value;});
+$('microphone').addEventListener('change',()=>{$('settingsMicrophone').value=$('microphone').value;});
+$('folderInput').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();actions['save-folder']();}});
+// Every settings tab must have exactly one panel; unavailable models require preparation.
+console.assert(settingsSections.every(name=>document.querySelectorAll('#settings-'+name).length===1&&$('settings-tab-'+name).getAttribute('aria-controls')==='settings-'+name),'Settings tab-panel mapping');
+
+
+// Keep the original demo recognition rows; saved edits have no undo history.
+function speakerLabel(turn){return turn.speakerName||(turn.s===0?'Вы':'Участник 2');}
+function escExportSpeaker(turn){return speakerLabel(turn);}
+const correction={recordId:null,index:0};
+const demoCalendarParticipants={'product':['Алексей Смирнов','Мария Волкова'],'design':['Алексей Смирнов']};
+function correctionRecord(){return records.find(r=>r.id===correction.recordId);}
+function beginCorrection(index){
+ const r=selected();if(!r||r.status!=='ready'||!r.rows[index])return false;
+ correction.recordId=r.id;correction.index=index;state.playing=false;setFollow(false);return true;
+}
+function preserveOriginal(r){
+ if(!r.originalRows)r.originalRows=r.rows.map(v=>({...v}));
+}
+function refreshCorrections(){const top=$('detail').scrollTop;renderList();renderDetail();$('detail').scrollTop=top;}
+function openTextEditor(index){
+ if(!beginCorrection(index))return;
+ const v=correctionRecord().rows[index];$('turnText').value=v.text;$('turnTextError').hidden=true;
+ $('textEditContext').textContent=`${clock(v.t)} · ${speakerLabel(v)}`;openDialog('textEditDialog');$('turnText').focus();
+}
+function sameVoice(a,b){return a.s===b.s&&(a.source||'mixed')===(b.source||'mixed');}
+function speakerTargets(rows,index,scope){return rows.map((v,i)=>i).filter(i=>scope==='one'?i===index:i>=index&&sameVoice(rows[i],rows[index]));}
+function selectedSpeakerScope(){return document.querySelector('input[name="speakerScope"]:checked').value;}
+function openSpeakerEditor(index){
+ if(!beginCorrection(index))return;
+ const r=correctionRecord(),v=r.rows[index],participants=demoCalendarParticipants[r.id]||[];
+ $('speakerContext').textContent=`${clock(v.t)} · сейчас: ${speakerLabel(v)}`;
+ $('calendarNamesNote').textContent=participants.length?'Участники календарной встречи · демо':'Участники календаря недоступны. Можно выбрать имя из транскрипта или ввести своё.';
+ const names=[...new Set([...participants,...r.rows.map(speakerLabel)])];
+ $('speakerSuggestions').innerHTML=names.map(name=>`<button data-speaker-suggestion="${esc(name)}">${esc(name)}</button>`).join('');
+ $('speakerName').value=speakerLabel(v);$('speakerNameError').hidden=true;
+ document.querySelector('input[name="speakerScope"][value="one"]').checked=true;
+ updateSpeakerPreview();openDialog('speakerDialog');$('speakerName').focus();$('speakerName').select();
+}
+function updateSpeakerPreview(){
+ const r=correctionRecord();if(!r)return;
+ const indices=speakerTargets(r.rows,correction.index,selectedSpeakerScope()),name=$('speakerName').value.trim();
+ const changed=indices.filter(i=>speakerLabel(r.rows[i])!==name),manual=changed.filter(i=>!!r.rows[i].speakerName).length;
+ $('applySpeaker').disabled=!name||!changed.length;
+ $('speakerPreview').innerHTML=`<strong>${changed.length} реплик → ${esc(name||'укажи имя')}</strong><p>Группа: ${esc(String(r.rows[correction.index].source||'mixed'))} / ${esc(String(r.rows[correction.index].s))}. Другие голоса и предыдущие реплики не изменятся. Ручных назначений будет заменено: ${manual}.</p><ul>${changed.slice(0,3).map(i=>`<li>${clock(r.rows[i].t)} · ${esc(speakerLabel(r.rows[i]))}: ${esc(r.rows[i].text.slice(0,96))}${r.rows[i].text.length>96?'…':''}</li>`).join('')}</ul>${changed.length>3?'<p>И ещё реплик: '+(changed.length-3)+'</p>':''}`;
+}
+Object.assign(actions,{
+ 'save-turn-text':()=>{const r=correctionRecord(),text=$('turnText').value.trim();if(!text){$('turnTextError').hidden=false;$('turnText').focus();return;}if(!r)return;if(r.rows[correction.index].text!==text){preserveOriginal(r);r.rows=r.rows.map((v,i)=>i===correction.index?{...v,text}:v);refreshCorrections();}closeDialog('textEditDialog');toast('Правка сохранена в макете.');},
+ 'apply-speaker':()=>{const r=correctionRecord(),name=$('speakerName').value.trim();if(!r)return;if(!name){$('speakerNameError').hidden=false;return;}const indices=speakerTargets(r.rows,correction.index,selectedSpeakerScope()).filter(i=>speakerLabel(r.rows[i])!==name);if(!indices.length)return;preserveOriginal(r);r.rows=r.rows.map((v,i)=>indices.includes(i)?{...v,speakerName:name}:v);refreshCorrections();closeDialog('speakerDialog');toast(`Имя изменено в ${indices.length} репликах.`);},
+});
+$('speakerName').addEventListener('input',()=>{$('speakerNameError').hidden=true;updateSpeakerPreview();});
+document.querySelectorAll('input[name="speakerScope"]').forEach(el=>el.addEventListener('change',updateSpeakerPreview));
+// A later correction of the same voice must include manually named turns, but not other sources.
+const scopeFixture=[{s:0,source:'mic'},{s:1,source:'mic'},{s:0,source:'mic',speakerName:'Имя'},{s:0,source:'system'}];
+console.assert(JSON.stringify(speakerTargets(scopeFixture,0,'remaining'))==='[0,2]'&&JSON.stringify(speakerTargets(scopeFixture,2,'one'))==='[2]'&&JSON.stringify(speakerTargets(scopeFixture,2,'remaining'))==='[2]','Speaker scope preserves other voices, sources and earlier turns');
+console.assert(speakerLabel({s:1,speakerName:'Мария'})==='Мария','Manual speaker name reaches display and export');
+
+
+const processingStages=[
+ {key:'audio',name:'Сборка аудио',detail:'Подготовка сохранённой записи',channels:false,measured:false},
+ {key:'echo',name:'Подавление эха',detail:'WebRTC AEC · микрофон',channels:false,measured:true,option:'aec'},
+ {key:'voices',name:'Разделение голосов',detail:'Nemotron · определение голосов',channels:true,measured:false},
+ {key:'vad',name:'Поиск речи',detail:'Silero VAD · поиск окон с речью',channels:true,measured:false},
+ {key:'gigaam',name:'Распознавание',detail:'GigaAM · преобразование речи в текст',channels:true,measured:true},
+ {key:'parakeet',name:'Уточнение терминов',detail:'Parakeet · дополнительный проход',channels:true,measured:true,option:'parakeet'},
+ {key:'save',name:'Сохранение',detail:'Аудио для плеера, объединение текста и публикация',channels:false,measured:false}
+];
+function activeProcessingRoute(){return processingStages.filter(v=>!v.option||(v.option==='aec'?$('demoAEC').checked:$('demoParakeet').checked));}
+function processPresentation(s){
+ const index=Math.max(0,s.route.findIndex(v=>v.key===s.stageKey)),stage=s.route[index],done=s.phase==='done';
+ const measured=!done&&stage.measured&&!s.unknown;
+ const source=stage.channels?(s.source==='host'?'Микрофон · дорожка 1 из 2':'Системный звук · дорожка 2 из 2'):stage.key==='echo'?'Микрофон':'Общий результат';
+ return {index,stage,done,measured,source,label:done?'Обработка завершена':`Этап ${index+1} из ${s.route.length} · ${stage.name}`};
+}
+function processMeter(s,p){return `<progress class="stage-meter" max="100" ${p.measured?`value="${s.percent}"`:''} aria-label="${esc(p.stage.name)}: ${p.measured?s.percent+'%':'без точного процента'}"></progress>`;}
+function processWarnings(s){return s.route.filter(v=>s.skipped[v.key]).map(v=>`<div class="process-warning">${icon('warning')}<span>${esc(v.name)}: этап пропущен в демонстрации. Результат требует проверки.</span></div>`).join('');}
+function processingDocument(r){
+ const s=state.session;if(!s||s.id!==r.id)return `<article class="document"><h1>${esc(r.title)}</h1><p>Обработка ожидает запуска.</p></article>`;
+ const p=processPresentation(s);
+ return `<article class="document processing-document"><div class="eyebrow">${icon('wave')}Обработка записи<span class="demo-note">ДЕМО</span></div><div class="process-header"><div><h1>${esc(r.title)}</h1><div class="metadata">${esc(r.date)} · ${clock(r.duration)}</div></div></div><div class="processing-layout"><ol class="station-list" aria-label="Маршрут обработки">${s.route.map((v,i)=>{const status=s.skipped[v.key]?'skipped':i<p.index||p.done?'done':i===p.index?'current':'future';return `<li class="station ${status}" ${status==='current'?'aria-current="step"':''}><div class="station-symbol" aria-hidden="true"><span class="station-dot">${status==='done'?icon('check'):status==='skipped'?'!':i+1}</span><span class="station-line"></span></div><div class="station-copy"><strong>${esc(v.name)}</strong><small>${status==='done'?'Завершено':status==='skipped'?'Пропущено · замечание':status==='current'?'Сейчас':'Далее'}</small></div></li>`;}).join('')}</ol><section class="processing-current" aria-label="Текущий этап"><p class="eyebrow">${esc(p.label)}</p><h2>${esc(p.stage.name)}</h2><p class="process-note">${esc(p.stage.detail)}</p><div class="processing-count"><span>${esc(p.source)}</span><strong>${p.measured?s.percent+'%':'В работе'}</strong></div>${processMeter(s,p)}<p class="process-note">${p.measured?(p.stage.channels?`Обработано ${Math.round(s.percent*1.5)} из 150 окон`:'Обработано '+s.percent+'% аудио'):'Этап не сообщает промежуточный процент. Обновим состояние, когда он завершится.'}</p>${processWarnings(s)}<p class="process-summary">Можно читать другие встречи или закрыть окно. Обработка продолжится, а капсула покажет общий маршрут.<br>Количество этапов не является оценкой оставшегося времени.</p></section></div></article>`;
+}
+const baseRenderSession=renderSession;
+renderSession=function(){
+ const s=state.session;
+ if(!s||s.phase==='recording'){baseRenderSession();return;}
+ refreshSettingsLocks();$('sessionDock').hidden=false;
+ document.querySelectorAll('[data-action="new"]').forEach(b=>b.disabled=true);
+ const p=processPresentation(s),warning=Object.keys(s.skipped).length>0;
+ $('sessionDock').innerHTML=`<div class="capsule processing-capsule"><div class="capsule-copy"><strong class="od-truncate">${esc(s.title)}</strong><small>${p.done?'Обработка завершена':`Этап ${p.index+1} из ${s.route.length} · ${s.route.length-p.index-1?'далее '+(s.route.length-p.index-1):'последний'}`}${warning?' · есть замечание':''}</small><div class="capsule-route" aria-hidden="true">${s.route.map((v,i)=>`<span class="capsule-station ${s.skipped[v.key]?'skipped':p.done||i<p.index?'done':i===p.index?'current':''}"><i></i></span>`).join('')}</div></div><button class="btn ${p.done?'primary':''}" data-action="${p.done?'open-result':'show-processing'}">${p.done?'Открыть':'Подробнее'}</button></div>`;
+};
+function showLibrary(){ $('app').hidden=false;$('hiddenLibrary').hidden=true; }
+function renderProcessingViews(){
+ renderSession();renderList();if(selected()?.id===state.session?.id)renderDetail();syncProcessingControls();
+}
+function syncProcessingControls(){
+ const s=state.session;if(!s||!s.route)return;
+ $('demoStage').innerHTML=s.route.map(v=>`<option value="${v.key}">${esc(v.name)}</option>`).join('');$('demoStage').value=s.stageKey;
+ $('demoSource').value=s.source;$('demoPercent').value=s.percent;$('demoPercentValue').textContent=s.percent+'%';$('demoUnknown').checked=s.unknown;
+ const p=processPresentation(s);$('demoSource').disabled=!p.stage.channels||p.done;$('demoPercent').disabled=!p.measured;$('demoUnknown').disabled=!p.stage.measured||p.done;
+ document.querySelector('[data-action="demo-skip"]').disabled=p.done||!['echo','voices','vad','parakeet'].includes(p.stage.key);
+ document.querySelector('[data-action="demo-next"]').disabled=p.done;
+}
+function startProcessingDemo(){
+ if(state.session?.phase==='recording'){toast('Сначала останови демонстрационную запись.');return;}
+ let r=records.find(v=>v.id==='processing-demo');
+ if(!r){r={id:'processing-demo',title:'Продукт–тех синк · обработка',day:'Сегодня',date:'9 ноября 2026',time:'12:00',duration:3600,status:'processing',rows:productRows.map(v=>({...v}))};records.unshift(r);}
+ r.status='processing';delete r.warning;state.selected=r.id;state.position=0;state.playing=false;showLibrary();beginProcessing(r.id,r.title);
+ state.session.stageKey='gigaam';state.session.percent=64;state.session.source='remote';renderProcessingViews();
+}
+function nextProcessingStage(skip=false){
+ const s=state.session;if(!s||s.phase!=='processing')return;
+ const p=processPresentation(s);if(skip)s.skipped[p.stage.key]=true;
+ if(p.index===s.route.length-1){s.phase='done';const r=records.find(v=>v.id===s.id);if(r){r.status='ready';if(Object.keys(s.skipped).length)r.warning='Некоторые этапы пропущены в демонстрации. Проверь результат.';}}
+ else {s.stageKey=s.route[p.index+1].key;s.percent=0;s.source='host';s.unknown=false;}
+ renderProcessingViews();
+}
+Object.assign(actions,{
+ 'close-window':()=>{$('app').hidden=true;$('hiddenLibrary').hidden=false;$('sessionDock').querySelector('button')?.focus();},
+ 'show-library':()=>{showLibrary();document.querySelector('[data-action="close-window"]')?.focus();},
+ 'show-processing':()=>{showLibrary();if(state.session?.id)selectRecord(state.session.id);document.querySelector('[data-action="close-window"]')?.focus();},
+ 'demo-next':()=>nextProcessingStage(), 'demo-skip':()=>nextProcessingStage(true),'demo-restart':startProcessingDemo
+});
+const originalOpenResult=actions['open-result'];actions['open-result']=()=>{showLibrary();originalOpenResult();};
+delete actions['dismiss-session'];
+for(const id of ['demoAEC','demoParakeet'])$(id).addEventListener('change',()=>{
+ const s=state.session;if(!s?.route)return;const old=processPresentation(s).index;s.route=activeProcessingRoute();
+ if(!s.route.some(v=>v.key===s.stageKey))s.stageKey=s.route[Math.min(old,s.route.length-1)].key;
+ for(const key of Object.keys(s.skipped))if(!s.route.some(v=>v.key===key))delete s.skipped[key];renderProcessingViews();
+});
+$('demoStage').addEventListener('change',()=>{const s=state.session;if(!s?.route)return;s.stageKey=$('demoStage').value;s.phase='processing';s.percent=0;s.unknown=false;delete s.skipped[s.stageKey];const r=records.find(v=>v.id===s.id);if(r){r.status='processing';delete r.warning;}renderProcessingViews();});
+$('demoSource').addEventListener('change',()=>{if(state.session?.route){state.session.source=$('demoSource').value;renderProcessingViews();}});
+$('demoUnknown').addEventListener('change',()=>{if(state.session?.route){state.session.unknown=$('demoUnknown').checked;renderProcessingViews();}});
+$('demoPercent').addEventListener('input',()=>{if(state.session?.route){state.session.percent=Number($('demoPercent').value);renderProcessingViews();}});
+// Optional stages change the route, never the percentage of the current stage.
+console.assert(processingStages.filter(v=>!v.option).length===5&&processingStages.length===7,'Processing route contains five required and two optional stations');
+
+hydrate();applyTheme('system');renderList();renderDetail();startProcessingDemo();
+</script>
+</body>
+</html>

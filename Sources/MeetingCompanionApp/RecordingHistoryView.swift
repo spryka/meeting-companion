@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import QuickLook
 import MeetingCompanionCore
+import MeetingCompanionApplication
 import UniformTypeIdentifiers
 
 struct RecorderWorkspaceView: View {
@@ -81,28 +82,15 @@ struct RecordingHistoryView: View {
                         if workspace.loading {
                             ProgressView("Открываем текст…")
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let snapshot = processingDetails(for: entry) {
+                            ProcessingDetailsView(snapshot: snapshot, entry: entry) { model.retryRecording(entry.id) }
                         } else if let current = workspace.current, current.state.id == entry.id, !entry.phase.isWorking,
                                   current.currentResultID != nil || current.legacyText != nil {
                             TranscriptReviewWindowView(model: current, title: entry.effectiveTitle, entryDate: entry.date, entryDuration: entry.duration, workspaceWidth: geometry.size.width,
                                 keyboardNavigationVisible: !narrow || !model.workspaceShowsList)
                         } else if entry.phase.isWorking {
-                            VStack(alignment: .leading, spacing: 16) {
-                                entryHeading(entry)
-                                Spacer()
-                                ProgressView()
-                                    .controlSize(.regular)
-                                Text("Готовим транскрипт")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundColor(ODColors.ink)
-                                Text(history.progress[entry.id]?.text ?? entry.status)
-                                    .font(.system(size: 13))
-                                    .foregroundColor(ODColors.muted)
-                                Text("Можно выбрать другую встречу. Обработка продолжится.")
-                                    .font(.system(size: 14)).foregroundStyle(ODColors.muted)
-                                Spacer()
-                            }
-                            .padding(32)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            Text("Подготовка обработки…").font(.system(size: 14)).foregroundStyle(ODColors.muted)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
                             VStack(alignment: .leading, spacing: 16) {
                                 entryHeading(entry)
@@ -166,6 +154,11 @@ struct RecordingHistoryView: View {
             await search.update(query: query, entries: history.entries)
         }
         .sheet(item: $renameTarget) { target in renameSheet(target) }
+    }
+
+    func processingDetails(for entry: RecordingEntry) -> ProcessingProgressSnapshot? {
+        guard let snapshot = model.processingRoutes[entry.id], entry.phase.isWorking || snapshot.failure != nil else { return nil }
+        return snapshot
     }
 
     func renameSheet(_ target: RecordingEntry) -> some View {
@@ -308,7 +301,7 @@ struct RecordingHistoryView: View {
             let next = model.selectedHistoryURL.flatMap { selected in entries.firstIndex { $0.id == selected } }
                 .map { $0 + direction } ?? 0
             guard entries.indices.contains(next) else { return }
-            model.selectedHistoryURL = entries[next].id
+            model.selectLibraryRecording(entries[next].id)
             proxy.scrollTo(entries[next].id)
             libraryNavigation.focus()
         }))
@@ -321,7 +314,7 @@ struct RecordingHistoryView: View {
         let isSelected = entry.id == model.selectedHistoryURL
         return Button(action: {
             guard !workspace.hasInput else { return }
-            model.selectedHistoryURL = entry.id
+            model.selectLibraryRecording(entry.id)
             model.workspaceShowsList = false
             libraryNavigation.focus()
         }) {
@@ -510,4 +503,121 @@ struct RecordingHistoryView: View {
         current.requestExport()
     }
 
+}
+
+struct ProcessingDetailsView: View {
+    let snapshot: ProcessingProgressSnapshot
+    let entry: RecordingEntry
+    let retry: () -> Void
+
+    static func fraction(for progress: TranscriptionProgress) -> Double? {
+        guard progress.state == nil, [.echo, .gigaam, .speakers, .parakeet].contains(progress.stage) else { return nil }
+        return progress.stageFraction
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(entry.effectiveTitle).font(.system(size: 28, weight: .semibold)).foregroundStyle(ODColors.ink)
+                        Text(entry.date.formatted(date: .long, time: .shortened) + (entry.duration.map { " · " + formatClock($0) } ?? ""))
+                            .font(.system(size: 13)).foregroundStyle(ODColors.muted)
+                    }
+                    if geometry.size.width - 48 - 32 - 200 >= 280 {
+                        HStack(alignment: .top, spacing: 32) {
+                            route.frame(width: 200)
+                            details.frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        details
+                        route
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+        }
+        .background(ODColors.surface)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+
+    private var route: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(snapshot.route.enumerated()), id: \.element) { index, station in
+                let state = snapshot.states[station] ?? .future
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(spacing: 0) {
+                        ProcessingStationSymbol(state: state, size: 24)
+                        if index < snapshot.route.count - 1 {
+                            Rectangle().fill(ODColors.track).frame(width: 2).frame(minHeight: 32)
+                        }
+                    }.frame(width: 24)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(station.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(ODColors.ink)
+                        Text(status(state)).font(.system(size: 12)).foregroundStyle(ODColors.muted)
+                        if let reason = snapshot.reasons[station] {
+                            Text(reason).font(.system(size: 12)).foregroundStyle(ODColors.warning).textSelection(.enabled)
+                        }
+                    }.padding(.bottom, 16)
+                }
+                .frame(minHeight: 56, alignment: .topLeading)
+                .accessibilityElement(children: .combine)
+            }
+        }.accessibilityLabel("Маршрут обработки")
+    }
+    var phaseTitle: String {
+        snapshot.failure != nil ? "Не удалось обработать" : snapshot.terminal ? "Готово" : snapshot.current?.title ?? "В очереди"
+    }
+    var activityText: String { snapshot.current == nil ? "Ожидает начала обработки." : "Выполняется…" }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(snapshot.current == nil ? snapshot.countText : "Этап \(snapshot.currentIndex + 1) из \(snapshot.route.count)")
+                .font(.system(size: 12)).foregroundStyle(ODColors.muted)
+            Text(phaseTitle)
+                .font(.system(size: 24, weight: .semibold)).foregroundStyle(ODColors.ink)
+            if let model = snapshot.current?.model { Text(model).font(.system(size: 14)).foregroundStyle(ODColors.muted) }
+            if snapshot.current?.hasSources == true, let channel = snapshot.local?.channel {
+                Text(channel == "host" ? "Микрофон · дорожка 1 из 2" : "Системный звук · дорожка 2 из 2")
+                    .font(.system(size: 13)).foregroundStyle(ODColors.muted)
+            }
+            if let fraction = snapshot.localFraction, let local = snapshot.local {
+                HStack {
+                    Text(local.stage == .echo ? "Обработано кадров аудио" : "\(local.completed) из \(local.total) \(local.stage == .speakers ? "слов" : "окон")")
+                    Spacer()
+                    Text("\(Int(fraction * 100))%")
+                }.font(.system(size: 13)).foregroundStyle(ODColors.muted)
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(ODColors.track)
+                        Capsule().fill(ODColors.accent).frame(width: geometry.size.width * fraction)
+                    }
+                }.frame(height: 4)
+                .accessibilityLabel("Прогресс текущей дорожки: \(Int(fraction * 100)) процентов")
+            } else if !snapshot.terminal {
+                Text(activityText).font(.system(size: 13)).foregroundStyle(ODColors.muted)
+            }
+            ForEach(snapshot.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 13)).foregroundStyle(ODColors.warning).textSelection(.enabled)
+            }
+            if snapshot.failure != nil, entry.capabilities.canRetry {
+                Button("Повторить распознавание", action: retry).buttonStyle(.borderedProminent)
+            }
+            Text(snapshot.terminal ? "Запись и доступные журналы не удаляются." : "Можно выбрать другую встречу или закрыть окно. Обработка продолжится.")
+                .font(.system(size: 13)).foregroundStyle(ODColors.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func status(_ state: ProcessingProgressSnapshot.State) -> String {
+        switch state {
+        case .completed: "Завершено"
+        case .warning: "Завершено · замечание"
+        case .current: "Сейчас"
+        case .future: "Далее"
+        case .skipped: "Пропущено"
+        case .failed: "Ошибка"
+        }
+    }
 }

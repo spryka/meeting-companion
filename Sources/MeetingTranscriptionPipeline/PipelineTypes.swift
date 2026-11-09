@@ -106,6 +106,7 @@ public struct Suggestion: Equatable, Codable, Sendable {
 }
 
 public struct PipelineProgressEvent: Sendable {
+    public let state: TranscriptionProgress.State?
     public let stage: TranscriptionProgress.Stage
     public let channel: String?
     public let completed: Int
@@ -121,8 +122,10 @@ public struct PipelineProgressEvent: Sendable {
         total: Int,
         step: Int? = nil,
         steps: Int? = nil,
-        warning: String? = nil
+        warning: String? = nil,
+        state: TranscriptionProgress.State? = nil
     ) {
+        self.state = state
         self.stage = stage
         self.channel = channel
         self.completed = completed
@@ -138,6 +141,7 @@ public struct PipelineProgressEvent: Sendable {
             "completed": completed,
             "total": total
         ]
+        if let state { dict["state"] = state.rawValue }
         if let channel { dict["channel"] = channel }
         if let step { dict["step"] = step }
         if let steps { dict["steps"] = steps }
