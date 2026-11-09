@@ -2,6 +2,27 @@ import Foundation
 import Darwin
 import MeetingCompanionCore
 
+public struct RecordingTrashTarget: Sendable, Equatable {
+    public let recording: URL
+    public let folder: URL
+    public let root: URL
+    fileprivate let device: dev_t
+    fileprivate let inode: ino_t
+    fileprivate let rootDevice: dev_t
+    fileprivate let rootInode: ino_t
+}
+
+public struct RecordingTrashFailure: LocalizedError, Sendable {
+    public let message: String
+    public let retryAllowed: Bool
+    public var errorDescription: String? { message }
+}
+
+public enum RecordingTrashOutcome: Sendable, Equatable {
+    case moved
+    case unconfirmed(String)
+}
+
 /// Result of an operation with non-fatal persistence warning
 public struct HistoryPersistenceResult<T: Sendable>: Sendable {
     public let value: T
@@ -25,6 +46,10 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     private var lastError: String?
     private var unsavedEntries: Set<URL> = []
     private var workReservations: [URL: Set<UUID>] = [:]
+    private var trashReservations: [URL: UUID] = [:]
+    private var runningTrash: Set<UUID> = []
+    // Test seam for substitution during filesystem traversal, before the final identity check.
+    var trashValidationDidScan: (@Sendable () throws -> Void)?
     private let fileManager = FileManager.default
     private var subscribers: [@Sendable ([RecordingEntry]) -> Void] = []
 
@@ -97,6 +122,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         if let cached = entriesMap[canonical] {
             return cached
         }
+        guard allowsHistoryMutation(canonical) else { return nil }
         if fileManager.fileExists(atPath: canonical.path) {
             let loaded = RecordingEntry.load(recording: canonical)
             entriesMap[canonical] = loaded
@@ -108,6 +134,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     /// Internal put implementation. Caller MUST hold lock.
     private func lockedPutThrowing(_ entry: RecordingEntry, persist: Bool = true, preserveTitle: Bool = true) throws -> RecordingEntry {
         let canonical = canonicalURL(entry.recording)
+        guard allowsHistoryMutation(canonical) else { throw trashBusyError }
         var updatedEntry = entry
         if updatedEntry.recording != canonical {
             updatedEntry = RecordingEntry(recording: canonical, date: entry.date, title: entry.title, phase: entry.phase)
@@ -153,8 +180,14 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     }
 
     // Shares rename's transaction lock; callers retain ownership through awaited teardown.
-    public func reserveWork(_ url: URL, id: UUID) {
-        withLock { workReservations[canonicalURL(url), default: []].insert(id) }
+    @discardableResult
+    public func reserveWork(_ url: URL, id: UUID) -> Bool {
+        withLock {
+            let key = canonicalURL(url)
+            guard allowsHistoryMutation(key) else { return false }
+            workReservations[key, default: []].insert(id)
+            return true
+        }
     }
 
     public func releaseWork(_ url: URL, id: UUID) {
@@ -163,6 +196,178 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
             workReservations[key]?.remove(id)
             if workReservations[key]?.isEmpty == true { workReservations.removeValue(forKey: key) }
         }
+    }
+
+    public func prepareTrash(_ url: URL, root: URL) throws -> RecordingTrashTarget {
+        try withLock {
+            guard let entry = lockedEntry(url) else { throw CocoaError(.fileNoSuchFile) }
+            let root = root.standardizedFileURL.resolvingSymlinksInPath()
+            // Keep the supplied path until symlink checks; canonicalizing first hides substitution.
+            let folder = url.deletingLastPathComponent().standardizedFileURL
+            let status = try directoryIdentity(folder), rootStatus = try directoryIdentity(root)
+            let target = RecordingTrashTarget(recording: entry.id, folder: folder, root: root,
+                device: status.st_dev, inode: status.st_ino, rootDevice: rootStatus.st_dev, rootInode: rootStatus.st_ino)
+            try validateTrash(target)
+            return target
+        }
+    }
+
+    public func reserveTrash(_ target: RecordingTrashTarget) throws -> UUID {
+        try withLock {
+            try validateTrash(target)
+            let id = UUID()
+            trashReservations[target.recording] = id
+            return id
+        }
+    }
+
+    public func releaseTrash(_ target: RecordingTrashTarget, id: UUID) {
+        withLock {
+            if !runningTrash.contains(id), trashReservations[target.recording] == id {
+                trashReservations.removeValue(forKey: target.recording)
+            }
+        }
+    }
+
+    public func trash(_ target: RecordingTrashTarget, reservation: UUID,
+                      operation: @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }) throws -> RecordingTrashOutcome {
+        try withLock {
+            guard !runningTrash.contains(reservation) else { throw trashBusyError }
+            do { try validateTrash(target, reservation: reservation) }
+            catch {
+                if trashReservations[target.recording] == reservation { trashReservations.removeValue(forKey: target.recording) }
+                throw error
+            }
+            runningTrash.insert(reservation)
+        }
+        defer {
+            withLock {
+                runningTrash.remove(reservation)
+                if trashReservations[target.recording] == reservation { trashReservations.removeValue(forKey: target.recording) }
+            }
+        }
+        let writer = TranscriptEditsRepository(recordingDirectory: target.folder)
+        do { try writer.acquireWriteLock() }
+        catch { throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: true) }
+        defer { writer.releaseWriteLock() }
+        // No async handoff between the last identity check and the native path operation.
+        try withLock { try validateTrash(target, reservation: reservation) }
+        let outcome: RecordingTrashOutcome
+        do {
+            try operation(target.folder)
+            guard !fileManager.fileExists(atPath: target.folder.path) else {
+                throw RecordingTrashFailure(message: "Исходная папка осталась на диске. Обновите библиотеку и повторите действие.", retryAllowed: false)
+            }
+            outcome = .moved
+        } catch {
+            var status = stat()
+            if lstat(target.folder.path, &status) != 0, errno == ENOENT {
+                outcome = .unconfirmed(error.localizedDescription)
+            } else {
+                let same = status.st_dev == target.device && status.st_ino == target.inode
+                throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: same && !(error is RecordingTrashFailure))
+            }
+        }
+        withLock {
+            generation += 1
+            revisions[target.recording, default: 0] += 1
+            entriesMap.removeValue(forKey: target.recording)
+            unsavedEntries.remove(target.recording)
+        }
+        notifySubscribers()
+        return outcome
+    }
+
+    private var trashBusyError: RecordingTrashFailure {
+        RecordingTrashFailure(message: "Дождитесь завершения работы с записью", retryAllowed: false)
+    }
+
+    private func allowsHistoryMutation(_ url: URL) -> Bool {
+        let folder = url.deletingLastPathComponent().path
+        guard !trashReservations.keys.contains(where: { foldersOverlap(folder, $0.deletingLastPathComponent().path) }) else { return false }
+        // Existing revision is enough to reject a late put after removal; a restored folder is discoverable normally.
+        return !(revisions[url] != nil && entriesMap[url] == nil && !fileManager.fileExists(atPath: folder))
+    }
+
+    private func foldersOverlap(_ a: String, _ b: String) -> Bool {
+        a == b || a.hasPrefix(b + "/") || b.hasPrefix(a + "/")
+    }
+
+    private func directoryIdentity(_ url: URL) throws -> stat {
+        var value = stat()
+        guard lstat(url.path, &value) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard value.st_mode & S_IFMT == S_IFDIR else {
+            throw RecordingTrashFailure(message: "Доступно только для записи в отдельной папке", retryAllowed: false)
+        }
+        return value
+    }
+
+    private func validateTrash(_ target: RecordingTrashTarget, reservation: UUID? = nil) throws {
+        let folder = target.folder.path
+        guard RecordingPaths.isStandardLayout(target.recording),
+              target.folder.lastPathComponent == target.recording.deletingPathExtension().lastPathComponent,
+              folder.hasPrefix(target.root.path + "/"),
+              target.folder.lastPathComponent.range(of: #"^(\d{2}|\d{4}-\d{2})$"#, options: .regularExpression) == nil else {
+            throw RecordingTrashFailure(message: "Доступно только для записи в отдельной папке", retryAllowed: false)
+        }
+        try validateTrashIdentity(target)
+        guard let entry = entriesMap[target.recording], !entry.phase.isWorking,
+              !workReservations.contains(where: { !$0.value.isEmpty && foldersOverlap(folder, $0.key.deletingLastPathComponent().path) }),
+              !trashReservations.contains(where: {
+                  !($0.key == target.recording && $0.value == reservation) && foldersOverlap(folder, $0.key.deletingLastPathComponent().path)
+              }),
+              trashReservations[target.recording] == reservation else { throw trashBusyError }
+        guard !entriesMap.keys.contains(where: { $0 != target.recording && $0.path.hasPrefix(folder + "/") }) else {
+            throw RecordingTrashFailure(message: "Папка содержит другую запись или её принадлежность неоднозначна.", retryAllowed: false)
+        }
+        try validateExclusiveOwnership(target)
+        try trashValidationDidScan?()
+        try validateTrashIdentity(target)
+    }
+
+    private func validateTrashIdentity(_ target: RecordingTrashTarget) throws {
+        let status = try directoryIdentity(target.folder), rootStatus = try directoryIdentity(target.root)
+        guard target.folder.resolvingSymlinksInPath().path == target.folder.path,
+              target.root.resolvingSymlinksInPath().path == target.root.path,
+              status.st_dev == target.device, status.st_ino == target.inode,
+              rootStatus.st_dev == target.rootDevice, rootStatus.st_ino == target.rootInode else {
+            throw RecordingTrashFailure(message: "Папка записи изменилась. Отмените действие и обновите библиотеку.", retryAllowed: false)
+        }
+    }
+
+    private func validateExclusiveOwnership(_ target: RecordingTrashTarget) throws {
+        var failure: Error?
+        guard let items = fileManager.enumerator(at: target.folder, includingPropertiesForKeys: nil,
+            options: [], errorHandler: { _, error in failure = error; return false }) else { throw CocoaError(.fileReadUnknown) }
+        let stem = target.recording.deletingPathExtension().lastPathComponent
+        for case let url as URL in items {
+            var status = stat()
+            guard lstat(url.path, &status) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            if status.st_mode & S_IFMT == S_IFLNK { continue }
+            let name = url.lastPathComponent
+            if status.st_mode & S_IFMT == S_IFDIR {
+                if name.hasPrefix("meeting_") { throw RecordingTrashFailure(message: "Папка содержит другую запись.", retryAllowed: false) }
+                continue
+            }
+            for suffix in [".sources.transcript.txt", ".host_record.aec.wav", ".host_record.wav", ".remote_record.wav", ".processing.json", ".context.json", ".m4a", ".mp4", ".wav"] where name.hasSuffix(suffix) {
+                let candidate = String(name.dropLast(suffix.count)), parent = url.deletingLastPathComponent()
+                let parentIdentity = try directoryIdentity(parent)
+                let inRoot = parentIdentity.st_dev == target.device && parentIdentity.st_ino == target.inode
+                let inRaw: Bool
+                if parent.lastPathComponent == "raw" {
+                    let grandparent = try directoryIdentity(parent.deletingLastPathComponent())
+                    inRaw = grandparent.st_dev == target.device && grandparent.st_ino == target.inode
+                } else { inRaw = false }
+                if candidate == stem, inRoot || inRaw { break }
+                if candidate.hasPrefix("meeting_") || parent.lastPathComponent == candidate
+                    || parent.lastPathComponent == "raw" && parent.deletingLastPathComponent().lastPathComponent == candidate
+                    || (inRoot || inRaw) && suffix != ".wav" {
+                    throw RecordingTrashFailure(message: "Неоднозначная принадлежность файла: " + url.path, retryAllowed: false)
+                }
+                break
+            }
+        }
+        if let failure { throw failure }
     }
 
     @discardableResult
@@ -212,7 +417,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
                 return HistoryPersistenceResult(value: try lockedPutThrowing(entry, persist: persist))
             } catch {
                 let warning = "Не удалось сохранить историю. Аудио не удалено: " + error.localizedDescription
-                if !RecordingPaths.isStandardLayout(entry.recording) {
+                if !RecordingPaths.isStandardLayout(entry.recording) || !allowsHistoryMutation(canonicalURL(entry.recording)) {
                     return HistoryPersistenceResult(value: entriesMap[canonicalURL(entry.recording)] ?? RecordingEntry.load(recording: entry.recording), persistenceWarning: warning)
                 }
                 return HistoryPersistenceResult(value: retainUnsaved(entry, warning: warning), persistenceWarning: warning)
@@ -272,6 +477,9 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
             return HistoryPersistenceResult(value: entry(url), persistenceWarning: RecordingPaths.unsupportedLayoutMessage)
         }
         let result: HistoryPersistenceResult<RecordingEntry?> = withLock {
+            guard allowsHistoryMutation(canonicalURL(url)) else {
+                return HistoryPersistenceResult(value: entriesMap[canonicalURL(url)], persistenceWarning: trashBusyError.message)
+            }
             guard var target = lockedEntry(url) else {
                 return HistoryPersistenceResult(value: nil, persistenceWarning: "Запись не найдена: " + url.path)
             }
@@ -373,7 +581,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
             for scanned in scanResult.entries {
                 let id = scanned.id
                 if revisions[id] == beforeRevisions[id] {
-                    if entriesMap[id]?.phase.isWorking == true || unsavedEntries.contains(id) { continue }
+                    if entriesMap[id]?.phase.isWorking == true || unsavedEntries.contains(id) || !allowsHistoryMutation(id) { continue }
                     revisions[id, default: 0] += 1
                     entriesMap[id] = scanned
                 }

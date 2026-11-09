@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 @MainActor
 final class WorkspaceWindow: NSWindow {
@@ -34,17 +35,51 @@ final class WorkspaceWindow: NSWindow {
     private weak var searchField: NSTextField?
     private var didSetInitialFocus = false
     private var restoringNavigation = false
+    private var trashObservation: AnyCancellable?
+    private weak var trashReturnFocus: NSResponder?
+    private var trashWasBlocking = false
+    private var trashCompletionAtOpen: UUID?
 
     init(model: RecorderViewModel) {
         self.model = model
         super.init(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        model.workspace.nativeInput = { [weak self] in self?.attachedSheet != nil || NSApp?.modalWindow != nil }
         isKeyboardTarget = { [weak self] in NSApp.isActive && self?.isKeyWindow == true }
+        trashObservation = model.$recordingTrash.combineLatest(model.$trashAdmitting).sink { [weak self] presentation, admitting in
+            guard let self else { return }
+            let blocked = presentation != nil || admitting
+            if blocked && !self.trashWasBlocking {
+                self.trashReturnFocus = self.firstResponder
+                self.trashCompletionAtOpen = model.trashCompletion?.id
+            }
+            let restore = self.trashWasBlocking && !blocked && self.trashCompletionAtOpen == model.trashCompletion?.id
+            self.trashWasBlocking = blocked
+            self.canHide = !blocked
+            self.standardWindowButton(.closeButton)?.isEnabled = !blocked
+            self.standardWindowButton(.miniaturizeButton)?.isEnabled = !blocked
+            if restore {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !model.trashOwnsInput, self.isVisible else { return }
+                    if let view = self.trashReturnFocus as? NSView, view.window === self, !view.isHiddenOrHasHiddenAncestor,
+                       view.acceptsFirstResponder { self.makeFirstResponder(view) }
+                    else { self.focusAvailableNavigation() }
+                    self.trashReturnFocus = nil
+                }
+            }
+        }
     }
 
     var admitsNavigationKeys: Bool {
         isKeyboardTarget() && isVisible && !isMiniaturized && attachedSheet == nil
             && model.mainPage == .history && !model.workspace.hasInput
+    }
+
+    private var admitsTrashConfirmationKeys: Bool {
+        isKeyboardTarget() && isVisible && !isMiniaturized && attachedSheet == nil
+            && model.mainPage == .history && !model.workspace.nativeInput()
+            && !model.settingsPresented && !model.workspace.externalModal
+            && model.workspace.current?.currentDraftIdentity == nil
     }
 
     func isPaneVisible(_ pane: WorkspaceNavigationView.Pane) -> Bool {
@@ -93,6 +128,16 @@ final class WorkspaceWindow: NSWindow {
               surface.window === self, event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
         let command: Command
         switch event.keyCode {
+        case 51, 117:
+            guard surface.pane == .library else { return false }
+            if admitsNavigationKeys, !event.isARepeat, let recording = model.selectedHistoryURL {
+                Task { [weak self, weak surface] in
+                    guard let self, let surface, self.admitsNavigationKeys, surface.isUsable,
+                          self.firstResponder === surface, self.model.selectedHistoryURL == recording else { return }
+                    await surface.onDeleteKey?()
+                }
+            }
+            return true
         case 49: command = .togglePlayback
         case 123: command = .seekBackward
         case 124: command = .seekForward
@@ -133,6 +178,20 @@ final class WorkspaceWindow: NSWindow {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let presentation = model.recordingTrash, event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+           event.keyCode == 53 || event.keyCode == 36 || event.keyCode == 76 {
+            guard admitsTrashConfirmationKeys else { return false }
+            if event.isARepeat { return true }
+            if event.keyCode == 53 { model.cancelRecordingTrash() }
+            else {
+                guard !presentation.pending, presentation.error == nil || presentation.retryAllowed else { return true }
+                Task { [weak self] in
+                    guard let self, self.admitsTrashConfirmationKeys, self.model.recordingTrash?.id == presentation.id else { return }
+                    await self.model.confirmRecordingTrash()
+                }
+            }
+            return true
+        }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function]) == .command {
             let command: Command?
             switch event.keyCode {
@@ -169,8 +228,24 @@ final class WorkspaceWindow: NSWindow {
     }
 
     override func orderOut(_ sender: Any?) {
+        guard !model.trashOwnsInput else { return }
         model.workspaceSearchRequest = nil
         super.orderOut(sender)
+    }
+
+    override func close() {
+        guard !model.trashOwnsInput else { return }
+        super.close()
+    }
+
+    override func miniaturize(_ sender: Any?) {
+        guard !model.trashOwnsInput else { return }
+        super.miniaturize(sender)
+    }
+
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        guard place != .out || !model.trashOwnsInput else { return }
+        super.order(place, relativeTo: otherWin)
     }
 
     func registerNavigation(_ surface: WorkspaceNavigationView) {
@@ -255,6 +330,7 @@ final class WorkspaceNavigationView: NSView, ObservableObject {
     let pane: Pane
     var isNavigationEnabled = true
     var onVerticalKey: ((Int) -> Void)?
+    var onDeleteKey: (@MainActor () async -> Void)?
     private weak var owner: WorkspaceWindow?
     var isUsable: Bool {
         isNavigationEnabled && (window as? WorkspaceWindow)?.isPaneVisible(pane) == true
@@ -321,10 +397,12 @@ struct WorkspaceNavigationFocus: NSViewRepresentable {
     let surface: WorkspaceNavigationView
     var visible = true
     var onVerticalKey: ((Int) -> Void)? = nil
+    var onDeleteKey: (@MainActor () async -> Void)? = nil
     func makeNSView(context: Context) -> WorkspaceNavigationView { surface }
     func updateNSView(_ view: WorkspaceNavigationView, context: Context) {
         view.isNavigationEnabled = visible && context.environment.isEnabled
         view.onVerticalKey = onVerticalKey
+        view.onDeleteKey = onDeleteKey
         (view.window as? WorkspaceWindow)?.registerNavigation(view)
     }
 }

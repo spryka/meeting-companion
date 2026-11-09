@@ -88,6 +88,105 @@ final class RecorderViewModel: ObservableObject {
     let processingService: ProcessingService
     let history: RecordingHistory
     let workspace: TranscriptReviewWindowManager
+    @Published private(set) var recordingTrash: RecordingTrashPresentation?
+    @Published private(set) var trashAdmitting = false
+    @Published private(set) var trashCompletion: RecordingTrashCompletion?
+    let recordingTrashOperation: @Sendable (URL) throws -> Void
+    var trashOwnsInput: Bool { trashAdmitting || recordingTrash != nil }
+
+    func renameRecording(_ recording: URL, displayTitle: String) async throws {
+        guard !trashOwnsInput, !settingsPresented else {
+            throw TranscriptEditsError.conflict("Сначала завершите открытое подтверждение.")
+        }
+        try await history.rename(recording, displayTitle: displayTitle)
+    }
+
+    func trashUnavailableReason(_ entry: RecordingEntry) -> String? {
+        if !RecordingPaths.isStandardLayout(entry.recording) { return "Доступно только для записи в отдельной папке" }
+        let jobs = (latestProcessingSnapshot?.queued ?? []) + (latestProcessingSnapshot?.admitting ?? []) + [latestProcessingSnapshot?.active].compactMap { $0 }
+        if entry.phase.isWorking || pendingProcessingEnqueues.values.contains(entry.id)
+            || jobs.contains(where: { $0.recordingURL == entry.id })
+            || lastFileURL == entry.id && (isRecording || sessionStarting || sessionStopping) {
+            return "Дождитесь завершения работы с записью"
+        }
+        return nil
+    }
+
+    @discardableResult
+    func requestRecordingTrash(_ recording: URL) async -> Bool {
+        guard !trashOwnsInput, workspace.admitNavigation(), !workspace.nativeInput(), isAttached, !workspace.loading,
+              !workspaceRequested || completedWorkspaceLoadRequest == workspaceLoadRequest,
+              let entry = history.entry(recording) else { return false }
+        if let reason = trashUnavailableReason(entry) { history.reportError(reason); return false }
+        history.clearNotice()
+        trashAdmitting = true
+        workspace.current?.invalidateQueuedPlaybackSeek()
+        defer { trashAdmitting = false }
+        do {
+            let repository = historyRepository, root = outputDirectory
+            let target = try await Task.detached { try repository.prepareTrash(recording, root: root) }.value
+            guard !Task.isCancelled, !settingsPresented, !workspace.nativeInput(), !workspace.externalModal,
+                  workspace.current?.currentDraftIdentity == nil, root == outputDirectory else { return false }
+            recordingTrash = RecordingTrashPresentation(target: target, title: entry.effectiveTitle)
+            return true
+        } catch { history.reportError(error.localizedDescription); return false }
+    }
+
+    func cancelRecordingTrash() {
+        guard recordingTrash?.pending != true else { return }
+        recordingTrash = nil
+        if workspace.current == nil, selectedHistoryURL != nil { _ = requestWorkspaceOpen() }
+    }
+
+    func confirmRecordingTrash() async {
+        guard let presentation = recordingTrash, !presentation.pending,
+              presentation.error == nil || presentation.retryAllowed else { return }
+        recordingTrash?.pending = true
+        recordingTrash?.error = nil
+        recordingTrash?.retryAllowed = false
+        let repository = historyRepository, operation = recordingTrashOperation
+        let hadReview = workspace.model(for: presentation.target.recording) != nil
+        var reservation: UUID?
+        do {
+            let token = try await Task.detached { try repository.reserveTrash(presentation.target) }.value
+            reservation = token
+            guard await workspace.prepareForTrash(presentation.target.recording, ownsModal: { [weak self] in
+                self?.recordingTrash?.id == presentation.id && self?.recordingTrash?.pending == true
+            }) else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод перед этим действием.") }
+            try Task.checkCancellation()
+            let outcome = try await Task.detached { try repository.trash(presentation.target, reservation: token, operation: operation) }.value
+            reservation = nil
+            await history.synchronize()
+            if historySelection == presentation.target.recording {
+                historySelection = nil
+                workspaceOpenGeneration += 1
+            }
+            history.progress.removeValue(forKey: presentation.target.recording)
+            if let preview = audioPreviewURL, preview.path.hasPrefix(presentation.target.folder.path + "/") { audioPreviewURL = nil }
+            if lastFileURL == presentation.target.recording {
+                lastFileURL = nil; capsuleDismissed = true; capsuleJobID = nil
+                cancelCapsuleDeadline(); transcriptionState = .idle
+            }
+            trashCompletion = RecordingTrashCompletion(recording: presentation.target.recording)
+            switch outcome {
+            case .moved:
+                recordingTrash = nil
+                history.reportNotice("Запись перемещена в Корзину")
+            case .unconfirmed(let reason):
+                recordingTrash?.error = "Исходная папка отсутствует. Результат перемещения не подтверждён. " + reason
+                recordingTrash?.pending = false
+            }
+        } catch {
+            if let reservation { await Task.detached { repository.releaseTrash(presentation.target, id: reservation) }.value }
+            recordingTrash?.error = error.localizedDescription
+            recordingTrash?.retryAllowed = (error as? RecordingTrashFailure)?.retryAllowed ?? false
+            if hadReview, workspace.current == nil, selectedHistoryURL == presentation.target.recording {
+                _ = try? await workspace.reopenAfterFailedTrash(recordingURL: presentation.target.recording, title: presentation.title,
+                    ownsModal: { [weak self] in self?.recordingTrash?.id == presentation.id })
+            }
+            recordingTrash?.pending = false
+        }
+    }
     @Published private(set) var settingsPresented = false
     @Published var settingsPage: RecorderSettingsView.Page = .general {
         didSet { onSettingsVisibilityChange?() }
@@ -140,6 +239,7 @@ final class RecorderViewModel: ObservableObject {
         let phase: RecordingEntry.Phase?
         let jobs: Int
     }
+    private var completedWorkspaceLoadRequest: WorkspaceLoadRequest?
     var workspaceLoadRequest: WorkspaceLoadRequest {
         WorkspaceLoadRequest(requested: workspaceRequested, generation: workspaceOpenGeneration,
             url: selectedHistoryURL, phase: selectedHistoryURL.flatMap { history.entry($0)?.phase }, jobs: transcriptionJobs)
@@ -157,7 +257,13 @@ final class RecorderViewModel: ObservableObject {
     @discardableResult
     func loadWorkspace(_ request: WorkspaceLoadRequest) async -> Bool {
         guard !Task.isCancelled, request.requested, request == workspaceLoadRequest,
-              let url = request.url, let entry = history.entry(url) else { return false }
+              let url = request.url, let entry = history.entry(url),
+              workspace.admitNavigation() else { return false }
+        defer {
+            if !Task.isCancelled, request == workspaceLoadRequest, !workspace.hasInput {
+                completedWorkspaceLoadRequest = request
+            }
+        }
         do {
             let target = try await workspace.open(recordingURL: url, title: entry.effectiveTitle)
             return !Task.isCancelled && request == workspaceLoadRequest && !workspace.hasInput
@@ -207,7 +313,7 @@ final class RecorderViewModel: ObservableObject {
     private var capsuleDeadlineID: UUID?
     private var capsuleJobID: UUID?
     private var pendingCapsuleEnqueue: UUID?
-    @Published private var pendingProcessingEnqueues = 0
+    @Published private var pendingProcessingEnqueues: [UUID: URL] = [:]
     private var latestProcessingSnapshot: ProcessingService.Snapshot?
     private var activeRecordingURL: URL?
     private(set) var recordingMeetingID: String?
@@ -439,7 +545,7 @@ final class RecorderViewModel: ObservableObject {
         resetCommitBlockedByWork || localDiagnosticRunning || isResettingCache
     }
     private var resetCommitBlockedByWork: Bool {
-        !sessionAttached || !processingAttached || preparingCapture || sessionStarting || sessionStopping || isRecording || isBusy || transcriptionJobs > 0 || isAdmittingProcessing || pendingProcessingEnqueues > 0 || preparationState != .idle || isCheckingAudio
+        !sessionAttached || !processingAttached || preparingCapture || sessionStarting || sessionStopping || isRecording || isBusy || transcriptionJobs > 0 || isAdmittingProcessing || !pendingProcessingEnqueues.isEmpty || preparationState != .idle || isCheckingAudio
     }
 
     var onRecordingStarted: (() -> Void)?
@@ -558,6 +664,7 @@ final class RecorderViewModel: ObservableObject {
         startBackgroundServices: Bool = true,
         captureControllerFactory: (@MainActor (URL, String?, AudioCaptureBackend) async throws -> any AudioCaptureControllerProtocol)? = nil,
         shortRecordingTrash: (@Sendable (URL) throws -> Void)? = nil,
+        recordingTrashOperation: (@Sendable (URL) throws -> Void)? = nil,
         audioLevelMonitorFactory: AudioLevelMonitorFactory? = nil,
         audioCheckTimeoutSleeper: AudioCheckTimeoutSleeper? = nil,
         audioCheckTimeoutDuration: Duration = .seconds(30),
@@ -573,6 +680,7 @@ final class RecorderViewModel: ObservableObject {
         }
         self.captureControllerFactory = captureControllerFactory
         self.shortRecordingTrash = shortRecordingTrash
+        self.recordingTrashOperation = recordingTrashOperation ?? { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
         self.audioLevelMonitorFactory = audioLevelMonitorFactory
         self.audioCheckTimeoutSleeper = audioCheckTimeoutSleeper
         self.audioCheckTimeoutDuration = audioCheckTimeoutDuration
@@ -600,6 +708,7 @@ final class RecorderViewModel: ObservableObject {
         self.processingService = proc
         self.history = RecordingHistory(repository: repo)
         self.workspace.settingsInput = { [weak self] in self?.settingsPresented ?? false }
+        self.workspace.trashInput = { [weak self] in self?.trashOwnsInput ?? false }
 
         self.workspaceSubscription = self.workspace.$current.sink { [weak self] current in
             self?.rebindCurrentEditor(current)
@@ -1088,8 +1197,12 @@ final class RecorderViewModel: ObservableObject {
             parakeet: improveTerms,
             echoCancellation: echoCancellation
         )
-        pendingProcessingEnqueues += 1
         let presentationID = UUID()
+        guard historyRepository.reserveWork(recording, id: presentationID) else {
+            history.reportError("Дождитесь завершения работы с записью")
+            return
+        }
+        pendingProcessingEnqueues[presentationID] = RecordingEntry.canonicalURL(recording)
         if lastFileURL == recording && !isRecording {
             cancelCapsuleDeadline()
             recordingCancelled = false
@@ -1098,7 +1211,10 @@ final class RecorderViewModel: ObservableObject {
             transcriptionState = .running(nil)
         }
         Task {
-            defer { pendingProcessingEnqueues -= 1 }
+            defer {
+                historyRepository.releaseWork(recording, id: presentationID)
+                pendingProcessingEnqueues.removeValue(forKey: presentationID)
+            }
             let job = await processingService.enqueue(
                 recordingURL: recording,
                 settings: settings,

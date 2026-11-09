@@ -10,6 +10,7 @@ public final class RecordingHistory: ObservableObject {
     @Published public private(set) var loading = false
     @Published public private(set) var initialLoadComplete = false
     @Published public private(set) var error: String?
+    @Published public private(set) var notice: String?
     @Published public var progress: [URL: TranscriptionProgress] = [:]
     public let repository: RecordingHistoryRepository
     private var revision = -1
@@ -42,6 +43,8 @@ public final class RecordingHistory: ObservableObject {
 
     public func reportError(_ message: String) { error = message }
     public func clearError() { error = nil }
+    public func reportNotice(_ message: String) { notice = message }
+    public func clearNotice() { notice = nil }
     public func entry(_ url: URL) -> RecordingEntry? { entries.first { $0.id == url } }
 
     public func refresh(root: URL) async {

@@ -226,7 +226,9 @@ public actor RecordingSessionService {
         }
 
         let reservation = UUID()
-        historyRepo.reserveWork(outputURL, id: reservation)
+        guard historyRepo.reserveWork(outputURL, id: reservation) else {
+            throw TranscriptEditsError.conflict("Дождитесь завершения работы с записью")
+        }
         workReservation = reservation
         // Reserve starting ownership before awaiting startCapture
         state = .starting(outputURL: outputURL, controller: controller, meetingID: meetingID, meetingSummary: meetingSummary)
