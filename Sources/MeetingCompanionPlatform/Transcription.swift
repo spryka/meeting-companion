@@ -242,7 +242,7 @@ public enum Transcription {
         func publish(_ progress: TranscriptionProgress) {
             let now = ContinuousClock.now
             if let previous, previous.stage == progress.stage, previous.channel == progress.channel,
-               previous.step == progress.step, progress.warning == nil,
+               previous.step == progress.step, progress.warning == nil, progress.state == nil,
                progress.completed != progress.total, now - lastPublished < .milliseconds(500) { return }
             previous = progress
             lastPublished = now

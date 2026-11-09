@@ -73,10 +73,10 @@ public struct AudioMixer: Sendable {
         let hostFrames = Int(hostFile.length)
         let remoteFrames = Int(remoteFile.length)
 
-        guard hostFrames == remoteFrames else {
+        guard max(hostFrames, remoteFrames) - min(hostFrames, remoteFrames) <= 1 else {
             throw AudioMixerError.durationMismatch(hostFrames: hostFrames, remoteFrames: remoteFrames)
         }
-        let totalFrames = hostFrames
+        let totalFrames = max(hostFrames, remoteFrames)
 
         let destDir = destStandard.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
@@ -114,27 +114,34 @@ public struct AudioMixer: Sendable {
             hostFile.framePosition = 0
             remoteFile.framePosition = 0
 
-            while hostFile.framePosition < hostFile.length {
-                let framesLeft = AVAudioFrameCount(hostFile.length - hostFile.framePosition)
-                let toRead = min(blockFrames, framesLeft)
+            var mixedFrames = 0
+            while mixedFrames < totalFrames {
+                let readCount = min(Int(blockFrames), totalFrames - mixedFrames)
+                let hostCount = min(readCount, max(0, hostFrames - mixedFrames))
+                let remoteCount = min(readCount, max(0, remoteFrames - mixedFrames))
 
-                try hostFile.read(into: hostBuffer, frameCount: toRead)
-                try remoteFile.read(into: remoteBuffer, frameCount: toRead)
+                hostBuffer.frameLength = 0
+                remoteBuffer.frameLength = 0
+                if hostCount > 0 { try hostFile.read(into: hostBuffer, frameCount: AVAudioFrameCount(hostCount)) }
+                if remoteCount > 0 { try remoteFile.read(into: remoteBuffer, frameCount: AVAudioFrameCount(remoteCount)) }
 
-                let readCount = Int(hostBuffer.frameLength)
-                guard readCount > 0,
+                guard Int(hostBuffer.frameLength) == hostCount,
+                      Int(remoteBuffer.frameLength) == remoteCount,
                       let hostPtr = hostBuffer.floatChannelData?[0],
                       let remotePtr = remoteBuffer.floatChannelData?[0],
                       let mixedPtr = mixedBuffer.floatChannelData?[0] else {
-                    break
+                    throw AudioMixerError.invalidSource("Не удалось прочитать ожидаемое число отсчётов WAV")
                 }
 
                 for i in 0..<readCount {
-                    mixedPtr[i] = (hostPtr[i] + remotePtr[i]) * 0.5
+                    let hostSample = i < Int(hostBuffer.frameLength) ? hostPtr[i] : 0
+                    let remoteSample = i < Int(remoteBuffer.frameLength) ? remotePtr[i] : 0
+                    mixedPtr[i] = (hostSample + remoteSample) * 0.5
                 }
 
                 mixedBuffer.frameLength = AVAudioFrameCount(readCount)
                 try mixedFile.write(from: mixedBuffer)
+                mixedFrames += readCount
             }
         }()
 

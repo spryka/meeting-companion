@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "processing-progress-ui-handoff/openspec/changes/processing-progress-ui/reference/index.html",
+  "entry": "processing-progress-ui-handoff/openspec/changes/processing-progress-ui/reference/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-11-09T11:49:12.154Z",
+  "updatedAt": "2026-11-09T11:49:12.154Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

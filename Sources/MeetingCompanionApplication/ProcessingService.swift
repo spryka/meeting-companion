@@ -92,6 +92,7 @@ public actor ProcessingService {
         public let queued: [ProcessingJob]
         public let admitting: [ProcessingJob]
         public let preparation: PreparationState
+        public let routes: [URL: ProcessingProgressSnapshot]
         public let progress: [URL: TranscriptionProgress]
         public var jobCount: Int { queued.count + admitting.count + (active == nil ? 0 : 1) }
 
@@ -100,12 +101,14 @@ public actor ProcessingService {
             queued: [ProcessingJob],
             admitting: [ProcessingJob] = [],
             preparation: PreparationState,
-            progress: [URL: TranscriptionProgress]
+            progress: [URL: TranscriptionProgress],
+            routes: [URL: ProcessingProgressSnapshot] = [:]
         ) {
             self.active = active
             self.queued = queued
             self.admitting = admitting
             self.preparation = preparation
+            self.routes = routes
             self.progress = progress
         }
     }
@@ -117,6 +120,7 @@ public actor ProcessingService {
 
     private var observers: [UUID: AsyncStream<Update>.Continuation] = [:]
     private var progress: [URL: TranscriptionProgress] = [:]
+    private var routes: [URL: ProcessingProgressSnapshot] = [:]
 
     public func observe() -> AsyncStream<Update> {
         let id = UUID()
@@ -135,7 +139,8 @@ public actor ProcessingService {
             queued: queue,
             admitting: Array(admitting.values),
             preparation: preparationState,
-            progress: progress
+            progress: progress,
+            routes: routes
         )
     }
 
@@ -239,6 +244,7 @@ public actor ProcessingService {
             }
             if cached == nil { historyRepository.put(existingEntry, persist: false) }
         }
+        routes[canonical] = ProcessingProgressSnapshot(job: job)
         queue.append(job)
         enqueued = true
         if let historyRepository {
@@ -362,9 +368,13 @@ public actor ProcessingService {
                     }
                 }
 
+                await self.handleProgress(job: nextJob, progress: .init(stage: .audio, completed: 0, total: 0, state: .started))
                 // Finalize stopped capture or export audio if missing
                 if let stopped = nextJob.stoppedCapture {
                     let result = await stopped.finish()
+                    for warning in result.warnings {
+                        await self.handleProgress(job: nextJob, progress: .init(stage: .audio, completed: 0, total: 0, warning: warning))
+                    }
                     if let historyRepository {
                         _ = historyRepository.updateStatus(nextJob.recordingURL) { entry in
                             entry.duration = result.duration
@@ -390,6 +400,8 @@ public actor ProcessingService {
                                 $0.readArtifacts()
                             }
                         } catch {
+                            await self.handleProgress(job: nextJob, progress: .init(stage: .audio, completed: 0, total: 0,
+                                warning: "Сборка общего аудио не удалась: " + error.localizedDescription))
                             _ = historyRepository.updateStatus(nextJob.recordingURL) {
                                 $0.addProblem(.saving, "Сборка общего аудио не удалась: " + error.localizedDescription, error: true)
                                 $0.readArtifacts()
@@ -403,6 +415,8 @@ public actor ProcessingService {
                                 $0.readArtifacts()
                             }
                         } catch {
+                            await self.handleProgress(job: nextJob, progress: .init(stage: .audio, completed: 0, total: 0,
+                                warning: "Сборка общего аудио не удалась: " + error.localizedDescription))
                             _ = historyRepository.updateStatus(nextJob.recordingURL) {
                                 $0.addProblem(.saving, "Сборка общего аудио не удалась: " + error.localizedDescription, error: true)
                                 $0.readArtifacts()
@@ -413,6 +427,7 @@ public actor ProcessingService {
 
                 try Task.checkCancellation()
 
+                await self.handleProgress(job: nextJob, progress: .init(stage: .audio, completed: 0, total: 0, state: .completed))
                 // Mark processing phase in history
                 if let historyRepository {
                     _ = historyRepository.updateStatus(nextJob.recordingURL) { $0.phase = .processing }
@@ -422,18 +437,23 @@ public actor ProcessingService {
                 let previousID = try storage.currentResultDirectory()?.lastPathComponent
                 let warnings = ProcessingWarnings()
                 let transcriptURL: URL
+                // AsyncStream preserves callback order and is drained before terminal acceptance.
+                let (events, continuation) = AsyncStream<TranscriptionProgress>.makeStream()
+                let delivery = Task {
+                    for await event in events { await self.handleProgress(job: nextJob, progress: event) }
+                }
                 do {
                 let returnedURL = try await transcriptionRunner.run(
                     recording: nextJob.recordingURL,
                     parakeet: nextJob.settings.parakeet,
                     echoCancellation: nextJob.settings.echoCancellation
-                ) { [weak self] progress in
+                ) { progress in
                     if let warning = progress.warning { warnings.append(warning) }
-                    Task { [weak self] in
-                        await self?.handleProgress(job: nextJob, progress: progress)
-                    }
+                    continuation.yield(progress)
                 }
 
+                continuation.finish()
+                await delivery.value
                 if let committed = try storage.committedText(after: previousID) {
                     transcriptURL = committed
                     if Task.isCancelled { warnings.append("Новый результат сохранён до отмены обработки.") }
@@ -442,6 +462,8 @@ public actor ProcessingService {
                     transcriptURL = returnedURL
                 }
                 } catch {
+                    continuation.finish()
+                    await delivery.value
                     guard let committed = try? storage.committedText(after: previousID) else { throw error }
                     transcriptURL = committed
                     warnings.append("Новый результат сохранён; подтверждение обработки прервано: " + error.localizedDescription)
@@ -491,6 +513,11 @@ public actor ProcessingService {
 
     private func finishJob(_ job: ProcessingJob, result: JobInternalResult) {
         historyRepository?.releaseWork(job.recordingURL, id: job.id)
+        switch result {
+        case .success(_, let warning): routes[job.recordingURL]?.finish(success: true, reason: warning)
+        case .failure(let message, _): routes[job.recordingURL]?.finish(success: false, reason: message)
+        case .cancelled: routes[job.recordingURL]?.finish(success: false, reason: "Обработка отменена.")
+        }
         activeJob = nil
         activeTask = nil
         cancelledJobIDs.remove(job.id)
@@ -511,6 +538,7 @@ public actor ProcessingService {
     private func handleProgress(job: ProcessingJob, progress: TranscriptionProgress) {
         guard activeJob?.id == job.id else { return }
         guard !cancelledJobIDs.contains(job.id) else { return }
+        routes[job.recordingURL]?.receive(progress, jobID: job.id)
         self.progress[job.recordingURL] = progress
         if let warning = progress.warning, let historyRepository {
             let source = progress.channel.map { "[\($0)] " } ?? ""
@@ -523,6 +551,118 @@ public actor ProcessingService {
 private final class ProcessingWarnings: @unchecked Sendable {
     private let lock = NSLock()
     private var messages: [String] = []
-    func append(_ value: String) { lock.lock(); defer { lock.unlock() }; messages.append(value) }
+    func append(_ value: String) { lock.lock(); defer { lock.unlock() }; if !messages.contains(value) { messages.append(value) } }
     var values: [String] { lock.lock(); defer { lock.unlock() }; return messages }
+}
+
+/// Presentation state is transient and belongs to the accepted job, never live Settings.
+public struct ProcessingProgressSnapshot: Equatable, Sendable {
+    public enum Station: String, CaseIterable, Sendable {
+        case audio, echo, diarization, vad, recognition, correction, saving
+        public var title: String {
+            switch self {
+            case .audio: "Сборка аудио"
+            case .echo: "Подавление эха"
+            case .diarization: "Разделение голосов"
+            case .vad: "Поиск речи"
+            case .recognition: "Распознавание"
+            case .correction: "Уточнение терминов"
+            case .saving: "Сохранение"
+            }
+        }
+        public var model: String? {
+            switch self {
+            case .echo: "WebRTC AEC"
+            case .diarization: "Nemotron"
+            case .vad: "Silero VAD"
+            case .recognition: "GigaAM"
+            case .correction: "Parakeet"
+            default: nil
+            }
+        }
+        public var hasSources: Bool { [.diarization, .vad, .recognition, .correction].contains(self) }
+    }
+    public enum State: String, Sendable { case future, current, completed, warning, skipped, failed }
+    public let jobID: UUID
+    public let route: [Station]
+    public private(set) var states: [Station: State] = [:]
+    public private(set) var sources: [Station: Set<String>] = [:]
+    public private(set) var reasons: [Station: String] = [:]
+    public private(set) var local: TranscriptionProgress?
+    public private(set) var terminal = false
+    public private(set) var failure: String?
+    private var position: Station = .audio
+    private var sourceStates: [Station: [String: State]] = [:]
+    public init(job: ProcessingJob) {
+        jobID = job.id
+        route = Station.allCases.filter { ($0 != .echo || job.settings.echoCancellation) && ($0 != .correction || job.settings.parakeet) }
+    }
+    public var currentIndex: Int { route.firstIndex(of: position) ?? 0 }
+    public var current: Station? { local == nil && !terminal ? nil : position }
+    public var countText: String {
+        guard current != nil else { return "В очереди · \(route.count) этапов" }
+        return "Этап \(currentIndex + 1) из \(route.count)"
+    }
+    public var localFraction: Double? {
+        guard !terminal, let local, local.state == nil,
+              [.echo, .gigaam, .speakers, .parakeet].contains(local.stage) else { return nil }
+        return local.stageFraction
+    }
+    public var warnings: [String] { route.compactMap { reasons[$0] } }
+    public mutating func receive(_ event: TranscriptionProgress, jobID: UUID) {
+        guard self.jobID == jobID, !terminal else { return }
+        let station: Station
+        switch event.stage {
+        case .audio: station = .audio
+        case .echo: station = .echo
+        case .diarization: station = .diarization
+        case .vad: station = .vad
+        case .gigaam, .speakers: station = .recognition
+        case .parakeet, .correction: station = .correction
+        case .merge, .mix, .publication: station = .saving
+        case .warning:
+            if let warning = event.warning { appendReason(warning, to: position) }
+            return
+        }
+        guard route.contains(station) else { return }
+        position = station
+        local = event
+        if let reason = event.warning { appendReason(reason, to: station) }
+        var state: State
+        switch event.state {
+        case .completed: state = .completed
+        case .skipped: state = .skipped
+        case .failed: state = .failed
+        case .started: state = .current
+        case nil:
+            // Older start/end-only producers report the two model sources independently.
+            state = [.diarization, .vad].contains(station) && event.total > 0 && event.completed == event.total ? .completed : .current
+        }
+        if state == .completed, reasons[station] != nil { state = .warning }
+        if station == .saving { states[station] = .current; return }
+        if station.hasSources {
+            guard let channel = event.channel else { states[station] = .current; return }
+            sourceStates[station, default: [:]][channel] = state
+            if state != .current { sources[station, default: []].insert(channel) }
+            else { sources[station, default: []].remove(channel) }
+            let values = sourceStates[station, default: [:]]
+            if sources[station] == Set(["host", "remote"]) {
+                states[station] = values.values.contains(.failed) ? .failed : values.values.contains(.skipped) ? .skipped : values.values.contains(.warning) ? .warning : .completed
+            } else { states[station] = .current }
+        } else { states[station] = state }
+    }
+    private mutating func appendReason(_ reason: String, to station: Station) {
+        guard !reason.isEmpty else { return }
+        if reasons[station]?.contains(reason) == true { return }
+        reasons[station] = [reasons[station], reason].compactMap { $0 }.joined(separator: "\n")
+        if states[station] == .completed { states[station] = .warning }
+    }
+    public mutating func finish(success: Bool, reason: String?) {
+        guard !terminal else { return }
+        terminal = true
+        local = nil
+        if success { position = .saving; states[.saving] = reasons[.saving] == nil && reason == nil ? .completed : .warning }
+        else { states[position] = .failed; failure = reason }
+        if let reason { appendReason(reason, to: position) }
+    }
 }

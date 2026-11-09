@@ -1,11 +1,39 @@
 import Testing
 import Foundation
+import os
 import MeetingCompanionCore
 @testable import MeetingTranscriptionPipeline
 @testable import MeetingCompanionPlatform
 
 @Suite("PipelineLogic Tests")
 struct PipelineLogicTests {
+
+    @Test func processingLifecycleWireSurvivesPlatformAdapter() throws {
+        let events = [
+            PipelineProgressEvent(stage: .gigaam, channel: "host", completed: 0, total: 10),
+            PipelineProgressEvent(stage: .gigaam, channel: "host", completed: 0, total: 10, state: .started),
+            PipelineProgressEvent(stage: .speakers, channel: "host", completed: 0, total: 0, state: .completed),
+            PipelineProgressEvent(stage: .parakeet, channel: "remote", completed: 0, total: 0, warning: "Synthetic model missing", state: .skipped),
+            PipelineProgressEvent(stage: .mix, completed: 0, total: 0, state: .started),
+            PipelineProgressEvent(stage: .publication, completed: 0, total: 0, state: .started)
+        ]
+        let pipe = Pipe(), capture = OSAllocatedUnfairLock(initialState: [TranscriptionProgress]())
+        let logURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: logURL) }
+        let log = try FileHandle(forWritingTo: logURL)
+        defer { try? log.close() }
+        let wire = events.map { $0.formatStdoutLine() }.joined(separator: "\n") + "\n"
+        try pipe.fileHandleForWriting.write(contentsOf: Data(wire.utf8))
+        try pipe.fileHandleForWriting.close()
+        try Transcription.readProgress(from: pipe.fileHandleForReading, log: log) { event in capture.withLock { $0.append(event) } }
+        let parsed = capture.withLock { $0 }
+        #expect(parsed.count == events.count)
+        #expect(parsed.map(\.stage) == events.map(\.stage))
+        #expect(parsed.map(\.state) == events.map(\.state))
+        #expect(parsed[3].warning == "Synthetic model missing")
+        #expect(try String(contentsOf: logURL, encoding: .utf8) == wire)
+    }
 
     @Test(arguments: [[1, 1, 1, 2], [nil, nil, nil, 1]])
     func cascadeRejectsMixedOriginalSpeakerCandidates(speakers: [Int?]) {

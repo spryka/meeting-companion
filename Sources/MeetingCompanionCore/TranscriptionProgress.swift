@@ -2,9 +2,12 @@ import Foundation
 
 public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public enum Stage: String, Decodable, Sendable {
-        case gigaam, diarization, speakers, vad, parakeet, correction, merge, warning, echo
+        case gigaam, diarization, speakers, vad, parakeet, correction, merge, warning, echo, audio, mix, publication
     }
 
+    public enum State: String, Decodable, Sendable { case started, completed, skipped, failed }
+
+    public let state: State?
     public let stage: Stage
     public let channel: String?
     public let completed: Int
@@ -25,7 +28,8 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         self = value
     }
 
-    public init(stage: Stage, channel: String? = nil, completed: Int, total: Int, step: Int? = nil, steps: Int? = nil, warning: String? = nil) {
+    public init(stage: Stage, channel: String? = nil, completed: Int, total: Int, step: Int? = nil, steps: Int? = nil, warning: String? = nil, state: State? = nil) {
+        self.state = state
         self.stage = stage
         self.channel = channel
         self.completed = completed
@@ -47,6 +51,9 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public var text: String {
         let label: String
         switch stage {
+        case .audio: label = "Сборка аудио"
+        case .mix: label = "Подготовка аудио плеера"
+        case .publication: label = "Публикация результата"
         case .echo: label = "Подавление эха"
         case .gigaam: label = "Распознавание GigaAM"
         case .vad: label = "Поиск речи"

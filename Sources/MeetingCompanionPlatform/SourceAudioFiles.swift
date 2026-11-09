@@ -86,8 +86,13 @@ final class SourceAudioFiles {
     func finish(duration: TimeInterval) throws {
         defer { startTime = nil; recording = false }
         var finishError: Error?
-        let duration = max(duration, host.duration, remote.duration)
-        for source in [host, remote] + archive {
+        let sources = [host, remote] + archive
+        // Draining may extend a source beyond its last written frame.
+        for source in sources {
+            do { try source.drainConverter() } catch { finishError = error }
+        }
+        let duration = max(duration, sources.map(\.duration).max() ?? 0)
+        for source in sources {
             do { try source.finish(duration: duration) } catch { finishError = error }
         }
         if let error = failure ?? finishError { throw error }
@@ -170,7 +175,7 @@ final class SourceAudioFile {
         }
     }
 
-    private func drainConverter() throws {
+    fileprivate func drainConverter() throws {
         if let converter { try convert(converter, input: nil) }
         converter = nil
         inputPosition = nil

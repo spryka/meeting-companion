@@ -196,6 +196,7 @@ do {
             onProgress: emitProgress
         )
 
+        emitProgress(PipelineProgressEvent(stage: .publication, completed: 0, total: 0, state: .started))
         let publisher = TranscriptPublisher(recordingDirectory: outputDir)
         let publishedURL = try publisher.publish(
             document: res.document,
@@ -234,6 +235,7 @@ do {
         onProgress: emitProgress
     )
 
+    emitProgress(PipelineProgressEvent(stage: .publication, completed: 0, total: 0, state: .started))
     let publisher = TranscriptPublisher(recordingDirectory: sources.recordingDirectory)
     let publishedURL = try publisher.publish(
         document: pipelineResult.document,

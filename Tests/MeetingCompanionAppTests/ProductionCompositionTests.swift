@@ -76,6 +76,121 @@ private actor Capsule28OpenGate {
         try #require(await predicate(), "Bounded synthetic service observation timed out")
     }
 
+    @Test func queuedProgressPresentationReportsWaiting() {
+        let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/queued/queued.m4a"), settings: .init(parakeet: true, echoCancellation: true))
+        let snapshot = ProcessingProgressSnapshot(job: job)
+        let details = ProcessingDetailsView(snapshot: snapshot, entry: RecordingEntry.load(recording: job.recordingURL), retry: {})
+        #expect(snapshot.countText == "В очереди · 7 этапов")
+        #expect(details.phaseTitle == "В очереди" && details.activityText == "Ожидает начала обработки.")
+        #expect(snapshot.current == nil && snapshot.localFraction == nil)
+    }
+
+    @Test func processingFailedRetryDetailsOverrideActualPriorCurrent() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("processing-prior-" + UUID().uuidString), folder = root.appendingPathComponent("a")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("a.m4a"), text = folder.appendingPathComponent("a.sources.transcript.txt")
+        for path in ["a.m4a", "raw/a.host_record.wav", "raw/a.remote_record.wav"] { try Data().write(to: folder.appendingPathComponent(path)) }
+        try Data("Synthetic previous committed text".utf8).write(to: text)
+        let suite = "processing-prior-" + UUID().uuidString, defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repo = RecordingHistoryRepository(), runner = Capsule24Runner()
+        var entry = RecordingEntry.load(recording: url); entry.phase = .completed
+        repo.put(entry, persist: false)
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: Exporter(), historyRepository: repo)
+        let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
+        try await settle { model.isAttached }
+        let initial = try #require(model.showTranscript(url))
+        #expect(await model.loadWorkspace(initial))
+        #expect(model.workspace.current?.legacyText == "Synthetic previous committed text")
+        _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: false, echoCancellation: false))
+        try await settle { await runner.waiting }
+        await runner.emit(.init(stage: .gigaam, channel: "host", completed: 1, total: 3))
+        await runner.finish(failed: true)
+        try await settle { model.capsuleProgress?.failure != nil && model.transcriptionJobs == 0 }
+        model.showProcessingDetails()
+        #expect(await model.loadWorkspace(model.workspaceLoadRequest))
+        let failedEntry = try #require(model.history.entry(url))
+        let view = RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: {})
+        #expect(view.processingDetails(for: failedEntry)?.failure != nil, "New failed job details take priority over cached old transcript")
+        #expect(model.workspace.current?.legacyText == "Synthetic previous committed text")
+        #expect(try String(contentsOf: text, encoding: .utf8) == "Synthetic previous committed text")
+        #expect(failedEntry.capabilities.canRetry)
+    }
+
+    @Test func processingDetailsUsesSharedAdmissionAndCloseDoesNotRestartJob() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("processing-details-" + UUID().uuidString)
+        let folder = root.appendingPathComponent("a")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("a.m4a")
+        for path in ["a.m4a", "raw/a.host_record.wav", "raw/a.remote_record.wav"] { try Data().write(to: folder.appendingPathComponent(path)) }
+        let suite = "processing-details-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repo = RecordingHistoryRepository(), runner = Capsule24Runner()
+        repo.put(RecordingEntry.load(recording: url), persist: false)
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: Exporter(), historyRepository: repo)
+        let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
+        var presentations = 0
+        model.onPresentWorkspace = { presentations += 1 }
+        try await settle { model.isAttached }
+        let job = await service.enqueue(recordingURL: url, settings: .init(parakeet: true, echoCancellation: true))
+        try await settle { await runner.waiting && model.capsuleProgress?.jobID == job.id }
+        let other = root.appendingPathComponent("other/other.m4a")
+        model.selectedHistoryURL = other
+        model.echoCancellation = false
+        await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 52, total: 153))
+        try await settle { model.capsuleProgress?.local?.completed == 52 }
+        #expect(model.selectedHistoryURL == other && model.capsuleProgress?.route.count == 7)
+        #expect(model.presentSettings())
+        model.showProcessingDetails()
+        #expect(model.selectedHistoryURL == other && presentations == 0 && model.processingNavigationNotice != nil)
+        model.dismissSettings()
+        model.workspace.externalModal = true
+        model.showProcessingDetails()
+        #expect(model.selectedHistoryURL == other && presentations == 0)
+        model.workspace.externalModal = false
+        for _ in 0..<3 {
+            model.showProcessingDetails()
+            #expect(model.selectedHistoryURL == url && model.processingNavigationNotice == nil)
+            #expect(model.admitWindowClose(isWorkspace: true))
+            #expect(model.showsProcessingCapsule && model.capsuleProgress?.local?.completed == 52)
+            #expect(await service.totalJobCount == 1)
+        }
+        #expect(presentations == 3 && model.capsuleProgress?.jobID == job.id)
+        await runner.finish()
+        try await settle { model.transcriptionJobs == 0 }
+    }
+
+    @Test func processingCapsuleRejectsManualDismiss() async throws {
+        let suite = "progress-dismiss-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repo = RecordingHistoryRepository()
+        let model = isolatedRecorderModel(historyRepository: repo, defaults: defaults)
+        try await settle { model.isAttached }
+        let url = URL(fileURLWithPath: defaults.string(forKey: "recordingsDirectory")!).appendingPathComponent("a/a.m4a")
+        var entry = RecordingEntry.load(recording: url)
+        entry.phase = .processing
+        repo.put(entry, persist: false)
+        await model.history.synchronize()
+        model.lastFileURL = url
+        model.syncProcessingPresentation(url)
+        #expect(model.showsProcessingCapsule)
+        model.dismissCapsule()
+        #expect(model.showsProcessingCapsule, "Processing has no manual dismissal command")
+        entry.phase = .failed
+        repo.put(entry, persist: false)
+        await model.history.synchronize()
+        model.syncProcessingPresentation(url)
+        model.capsuleDismissed = false
+        model.dismissCapsule()
+        #expect(model.showsProcessingCapsule, "Terminal processing also has no manual dismissal command")
+    }
+
     @Test(arguments: ["pending", "running", "foreign", "cancelled", "idle", "handoff"])
     func reset31CurrentCommitAdmission(scenario: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("reset31-" + UUID().uuidString)
@@ -349,20 +464,20 @@ private actor Capsule28OpenGate {
         clock.advance(1) // No B progress is emitted here or required to resume B.
         #expect(!model.recordingCancelled && model.lastFileURL == b)
         #expect(model.transcriptionState == .running(resumed) && model.transcriptionJobs == 1)
-        #expect(model.capsuleDismissed == hidden && model.showsProcessingCapsule == !hidden)
+        #expect(!model.capsuleDismissed && model.showsProcessingCapsule)
         #expect(await runner.waiting)
         feedback.action() // A delivered callback cannot act again after presentation ownership changes.
-        #expect(!model.recordingCancelled && model.capsuleDismissed == hidden)
+        #expect(!model.recordingCancelled && !model.capsuleDismissed)
         await runner.emit(.init(stage: .gigaam, completed: 54, total: 153))
         try await settle { model.transcriptionState == .running(.init(stage: .gigaam, completed: 54, total: 153)) }
-        #expect(model.capsuleDismissed == hidden)
+        #expect(!model.capsuleDismissed)
         await runner.finish()
         try await settle { model.transcriptionJobs == 0 && clock.deadlines.count >= 2 }
         #expect(clock.deadlines.last?.due == clock.now + 60)
         feedback.action()
-        #expect(model.capsuleDismissed == hidden)
+        #expect(!model.capsuleDismissed)
         clock.advance(59)
-        #expect(model.capsuleDismissed == hidden)
+        #expect(!model.capsuleDismissed)
         clock.advance(1)
         #expect(model.capsuleDismissed && !model.showsRecordingCapsule)
         #expect(repo.entry(a) == nil && !FileManager.default.fileExists(atPath: a.deletingLastPathComponent().path))
@@ -428,7 +543,7 @@ private actor Capsule28OpenGate {
         model.dismissCapsule()
         await runner.emit(.init(stage: .gigaam, completed: 53, total: 153))
         try await settle { model.history.progress[saved]?.completed == 53 }
-        #expect(model.capsuleDismissed)
+        #expect(!model.capsuleDismissed && model.showsProcessingCapsule)
         await runner.finish()
         try await settle { model.transcriptionJobs == 0 && repo.entry(saved)?.phase == .completed }
 
@@ -454,12 +569,12 @@ private actor Capsule28OpenGate {
 
     @Test func capsule24NativeProgressUsesCurrentStageWithoutOptionalSteps() throws {
         let native = try #require(TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"gigaam\",\"channel\":\"remote\",\"completed\":52,\"total\":153}".utf8)))
-        #expect(ProcessingCapsuleView.fraction(for: native) == native.stageFraction)
+        #expect(ProcessingDetailsView.fraction(for: native) == native.stageFraction)
         let unknown = try #require(TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"gigaam\",\"completed\":0,\"total\":0}".utf8)))
-        #expect(ProcessingCapsuleView.fraction(for: unknown) == nil)
+        #expect(ProcessingDetailsView.fraction(for: unknown) == nil)
         let optional = TranscriptionProgress(stage: .gigaam, completed: 52, total: 153, step: 2, steps: 7)
-        #expect(ProcessingCapsuleView.fraction(for: optional) == native.stageFraction)
-        #expect(ProcessingCapsuleView.fraction(for: .init(stage: .warning, completed: 0, total: 1, warning: "synthetic")) == nil)
+        #expect(ProcessingDetailsView.fraction(for: optional) == native.stageFraction)
+        #expect(ProcessingDetailsView.fraction(for: .init(stage: .warning, completed: 0, total: 1, warning: "synthetic")) == nil)
     }
 
     @Test func capsule24RealQueuedRetryRejectsOldDeadline() async throws {
@@ -552,11 +667,11 @@ private actor Capsule28OpenGate {
         model.dismissCapsule()
         await runner.emit(.init(stage: .gigaam, completed: 53, total: 153))
         try await settle { model.history.progress[recording]?.completed == 53 }
-        #expect(model.capsuleDismissed)
+        #expect(!model.capsuleDismissed && model.showsProcessingCapsule)
         await runner.finish(failed: failed)
         try await settle { clock.deadlines.count >= 2 && model.transcriptionJobs == 0 }
         let terminal = try #require(clock.deadlines.last)
-        #expect(terminal.due == clock.now + 60 && model.capsuleDismissed)
+        #expect(terminal.due == clock.now + 60 && !model.capsuleDismissed)
         model.retryRecording(recording)
         try await settle { await admission.waiting && model.isAdmittingProcessing }
         terminal.action()
@@ -646,6 +761,84 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
     func releaseBuffer() { if pendingPlay { onEvent?(.playing(true)) } }
 }
 @Suite @MainActor struct ProductionCompositionTests {
+    @Test(arguments: [true, false])
+    func librarySelectionRestoresLoadAfterSettingsReopen(sameRecording: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-reopen-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = RecordingHistoryRepository()
+        var recordings: [URL] = [], texts: [URL] = []
+        for name in ["a", "b"] {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let recording = folder.appendingPathComponent(name + ".m4a")
+            let text = folder.appendingPathComponent(name + ".sources.transcript.txt")
+            try Data("Saved synthetic text \(name)".utf8).write(to: text)
+            var entry = RecordingEntry.load(recording: recording); entry.phase = .completed
+            repo.put(entry, persist: false)
+            recordings.append(recording); texts.append(text)
+        }
+        let original = try texts.map { try Data(contentsOf: $0) }
+        let suite = "library-reopen-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        let model = isolatedRecorderModel(historyRepository: repo, defaults: defaults)
+        await model.history.synchronize()
+        let initial = try #require(model.showTranscript(recordings[0]))
+        #expect(await model.loadWorkspace(initial))
+        #expect(model.workspace.current?.legacyText == "Saved synthetic text a")
+        #expect(model.admitWindowClose(isWorkspace: true))
+        #expect(!model.workspaceLoadRequest.requested)
+        #expect(model.presentSettings())
+        model.dismissSettings()
+        model.workspaceShowsList = true
+        let index = sameRecording ? 0 : 1
+        model.selectLibraryRecording(recordings[index])
+        let request = model.workspaceLoadRequest
+        #expect(request.requested, "A visible library selection must restore the invalidated load request")
+        #expect(await model.loadWorkspace(request))
+        #expect(model.workspace.current?.legacyText == "Saved synthetic text \(index == 0 ? "a" : "b")")
+        #expect(model.workspaceShowsList, "Arrow selection must retain the narrow library pane")
+        #expect(await model.processingService.totalJobCount == 0)
+        #expect(try texts.map { try Data(contentsOf: $0) } == original)
+        model.workspace.closeCurrent()
+    }
+
+    @Test func librarySelectionPreservesModalAndRealDraftAdmission() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try published("res_valid_parakeet_off", in: root)
+        let recording = root.appendingPathComponent("meeting.m4a")
+        let suite = "library-admission-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        let workspace = TranscriptReviewWindowManager(transportFactory: { BufferingPresentationTransport() })
+        let model = isolatedRecorderModel(workspace: workspace, defaults: defaults)
+        await model.history.put(RecordingEntry.load(recording: recording), persist: false)
+        let initial = try #require(model.showTranscript(recording))
+        #expect(await model.loadWorkspace(initial))
+        let editor = try #require(workspace.current)
+        defer { model.dismissSettings(); editor.cancelTextDraft(); workspace.externalModal = false; workspace.closeCurrent() }
+        let other = root.deletingLastPathComponent().appendingPathComponent("other/other.m4a")
+        let request = model.workspaceLoadRequest
+        #expect(model.presentSettings())
+        model.selectLibraryRecording(other)
+        #expect(model.workspaceLoadRequest == request && model.selectedHistoryURL == recording)
+        model.dismissSettings()
+        workspace.externalModal = true
+        model.selectLibraryRecording(other)
+        #expect(model.workspaceLoadRequest == request && model.selectedHistoryURL == recording)
+        workspace.externalModal = false
+        editor.openTextEditing(for: "turn_1")
+        editor.updateDraftText("Keep actual draft")
+        model.selectLibraryRecording(other)
+        #expect(model.workspaceLoadRequest == request && model.selectedHistoryURL == recording)
+        #expect(editor.activeTextDraft?.text == "Keep actual draft" && workspace.current === editor)
+        #expect(await model.processingService.totalJobCount == 0)
+    }
+
     @Test func recordingEligibilityUnderSettingsDoesNotPublishOrMutateCurrent() async throws {
         let root = try fixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }

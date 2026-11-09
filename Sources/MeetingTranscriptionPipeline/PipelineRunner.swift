@@ -121,8 +121,12 @@ public final class PipelineRunner: @unchecked Sendable {
         var recognitionHostURL = hostURL
         var recognitionHostRelPath = sources.hostRelPath
 
+        func station(_ stage: TranscriptionProgress.Stage, _ channel: String? = nil,
+                     _ state: TranscriptionProgress.State, _ reason: String? = nil) {
+            onProgress?(PipelineProgressEvent(stage: stage, channel: channel, completed: 0, total: 0, warning: reason?.isEmpty == true ? nil : reason, state: state))
+        }
         if echoCancelEnabled {
-            onProgress?(PipelineProgressEvent(stage: .echo, channel: "host", completed: 0, total: 1))
+            station(.echo, "host", .started)
             let aecResult = EchoCanceller.process(
                 host: hostURL,
                 remote: remoteURL,
@@ -142,7 +146,9 @@ public final class PipelineRunner: @unchecked Sendable {
                 recognitionHostRelPath = "raw/transcripts/\(resultID)/host_aec.wav"
                 aecAudioURL = aecResult.audioURL
             }
-            onProgress?(PipelineProgressEvent(stage: .echo, channel: "host", completed: 1, total: 1))
+            let aecReason = aecResult.warnings.map(\.message).joined(separator: "\n")
+            station(.echo, "host", aecResult.outcome == .applied ? .completed : .skipped,
+                    aecResult.outcome == .applied ? nil : (aecReason.isEmpty ? "Подавление эха не применено." : aecReason))
         } else {
             aecOutcome = .disabled
         }
@@ -183,6 +189,7 @@ public final class PipelineRunner: @unchecked Sendable {
         // Stage 1: Nemotron Diarization
         // ----------------------------------------------------
         try checkCancellation(checkCancel)
+        station(.diarization, "host", .started)
         let nemotronDir = modelPath("nemotron")
         if FileManager.default.fileExists(atPath: nemotronDir.path) {
             do {
@@ -232,7 +239,9 @@ public final class PipelineRunner: @unchecked Sendable {
                             message: "Сбой диаризации: \(error.localizedDescription)"
                         ))
                     }
-                    onProgress?(PipelineProgressEvent(stage: .diarization, channel: channels[i].id.rawValue, completed: 1, total: 1))
+                    station(.diarization, channels[i].id.rawValue, channels[i].diarizationStatus == .completed ? .completed : .failed,
+                            channels[i].warnings.map(\.message).joined(separator: "\n"))
+
                 }
             } catch {
                 try checkCancellation(checkCancel)
@@ -245,14 +254,20 @@ public final class PipelineRunner: @unchecked Sendable {
                     ))
                 }
             }
+            for channel in channels where channel.diarizationStatus == .failed {
+                station(.diarization, channel.id.rawValue, .failed, channel.warnings.map(\.message).joined(separator: "\n"))
+            }
             MLX.Stream.gpu.synchronize()
             Memory.clearCache()
+        } else {
+            for channel in channels { station(.diarization, channel.id.rawValue, .skipped, "Модель Nemotron недоступна.") }
         }
 
         // ----------------------------------------------------
         // Stage 2: Silero VAD
         // ----------------------------------------------------
         try checkCancellation(checkCancel)
+        station(.vad, "host", .started)
         let vadDir = modelPath("vad")
         if FileManager.default.fileExists(atPath: vadDir.path) {
             do {
@@ -289,7 +304,8 @@ public final class PipelineRunner: @unchecked Sendable {
                             message: "Сбой VAD: \(error.localizedDescription)"
                         ))
                     }
-                    onProgress?(PipelineProgressEvent(stage: .vad, channel: channels[i].id.rawValue, completed: 1, total: 1))
+                    let reason = channels[i].warnings.filter { $0.code.hasPrefix("vad_") }.map(\.message).joined(separator: "\n")
+                    station(.vad, channels[i].id.rawValue, reason.isEmpty ? .completed : .failed, reason.isEmpty ? nil : reason)
                 }
             } catch {
                 try checkCancellation(checkCancel)
@@ -301,14 +317,23 @@ public final class PipelineRunner: @unchecked Sendable {
                     ))
                 }
             }
+            for channel in channels {
+                let reason = channel.warnings.filter { $0.code == "vad_load_failed" }.map(\.message).joined(separator: "\n")
+                if !reason.isEmpty {
+                    station(.vad, channel.id.rawValue, .failed, reason)
+                }
+            }
             MLX.Stream.gpu.synchronize()
             Memory.clearCache()
+        } else {
+            for channel in channels { station(.vad, channel.id.rawValue, .skipped, "Модель Silero VAD недоступна.") }
         }
 
         // ----------------------------------------------------
         // Stage 3: GigaAM (Mandatory ASR)
         // ----------------------------------------------------
         try checkCancellation(checkCancel)
+        station(.gigaam, "host", .started)
         let gigaamDir = modelPath("gigaam")
         let bundle = try ModelBundle.load(configuration: .init(modelDirectory: gigaamDir))
         guard bundle.manifest.sampleRate == 16000, let weights = bundle.weightsURL else {
@@ -361,8 +386,10 @@ public final class PipelineRunner: @unchecked Sendable {
                 onProgress?(PipelineProgressEvent(stage: .gigaam, channel: channels[i].id.rawValue, completed: j + 1, total: grid.count))
             }
 
+            station(.speakers, channels[i].id.rawValue, .started)
             channels[i].gigaamWords = PipelineLogic.assign(channels[i].gigaamWords, channels[i].intervals)
             channels[i].finalWords = channels[i].gigaamWords
+            station(.speakers, channels[i].id.rawValue, .completed)
         }
         MLX.Stream.gpu.synchronize()
         Memory.clearCache()
@@ -372,6 +399,7 @@ public final class PipelineRunner: @unchecked Sendable {
         // ----------------------------------------------------
         var allSuggestions: [Suggestion] = []
         if parakeetEnabled {
+            station(.parakeet, "host", .started)
             try checkCancellation(checkCancel)
             let parakeetDir = modelPath("parakeet")
             if FileManager.default.fileExists(atPath: parakeetDir.path) {
@@ -410,11 +438,13 @@ public final class PipelineRunner: @unchecked Sendable {
                                 }
                                 onProgress?(PipelineProgressEvent(stage: .parakeet, channel: channels[i].id.rawValue, completed: j + 1, total: grid.count))
                             }
+                            station(.correction, channels[i].id.rawValue, .started)
                             let (corrected, journal) = PipelineLogic.cascade(channels[i].gigaamWords, donorWords)
                             channels[i].finalWords = corrected
                             channels[i].suggestions = journal
                             channels[i].correctionStatus = .completed
                             allSuggestions += journal
+                            station(.correction, channels[i].id.rawValue, .completed)
                         } catch {
                             try checkCancellation(checkCancel)
                             channels[i].correctionStatus = .failed
@@ -423,6 +453,9 @@ public final class PipelineRunner: @unchecked Sendable {
                                 sourceID: channels[i].id,
                                 message: "Сбой коррекции Parakeet: \(error.localizedDescription)"
                             ))
+                        }
+                        if channels[i].correctionStatus == .failed {
+                            station(.correction, channels[i].id.rawValue, .failed, channels[i].warnings.filter { $0.code.hasPrefix("parakeet_") }.map(\.message).joined(separator: "\n"))
                         }
                     }
                 } catch {
@@ -436,14 +469,20 @@ public final class PipelineRunner: @unchecked Sendable {
                         ))
                     }
                 }
+                for channel in channels where channel.correctionStatus == .failed {
+                    station(.correction, channel.id.rawValue, .failed, channel.warnings.filter { $0.code.hasPrefix("parakeet_") }.map(\.message).joined(separator: "\n"))
+                }
                 MLX.Stream.gpu.synchronize()
                 Memory.clearCache()
+            } else {
+                for channel in channels { station(.parakeet, channel.id.rawValue, .skipped, "Модель Parakeet недоступна.") }
             }
         }
 
         // ----------------------------------------------------
         // Stage 5: Audio Mixing
         // ----------------------------------------------------
+        station(.mix, nil, .started)
         let stagingMixURL = aecTempDir.appendingPathComponent("mix.m4a")
         var finalMixURL: URL? = nil
         var playback: TranscriptDocument.Playback

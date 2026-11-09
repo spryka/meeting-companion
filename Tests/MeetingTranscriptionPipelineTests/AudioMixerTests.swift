@@ -75,4 +75,56 @@ struct AudioMixerTests {
             try AudioMixer.prepareMix(host: hostURL, remote: remoteURL, destination: mixURL)
         }
     }
+
+    @Test(arguments: [false, true], [16000, 65536])
+    func oneFrameTailMixPreservesBothSources(shortHost: Bool, shorterFrames: Int) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let host = directory.appendingPathComponent("host.wav")
+        let remote = directory.appendingPathComponent("remote.wav")
+        let destination = directory.appendingPathComponent("mix.m4a")
+        try createTestWAV(url: host, frames: shorterFrames + (shortHost ? 0 : 1))
+        try createTestWAV(url: remote, frames: shorterFrames + (shortHost ? 1 : 0))
+        let originalHost = try Data(contentsOf: host)
+        let originalRemote = try Data(contentsOf: remote)
+        try AudioMixer.prepareMix(host: host, remote: remote, destination: destination)
+        let mix = try AVAudioFile(forReading: destination)
+        #expect(mix.length >= shorterFrames + 1 && mix.length <= shorterFrames + 1024)
+        #expect(try Data(contentsOf: host) == originalHost)
+        #expect(try Data(contentsOf: remote) == originalRemote)
+        let existingMix = try Data(contentsOf: destination)
+        do {
+            try AudioMixer.prepareMix(host: host, remote: remote, destination: destination)
+            Issue.record("Existing destination was accepted")
+        } catch AudioMixerError.destinationExists(let path) {
+            #expect(path == destination.path)
+        }
+        #expect(try Data(contentsOf: destination) == existingMix)
+    }
+
+    @Test(arguments: [false, true])
+    func twoFrameMismatchStillRejects(shortHost: Bool) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let host = directory.appendingPathComponent("host.wav")
+        let remote = directory.appendingPathComponent("remote.wav")
+        let destination = directory.appendingPathComponent("mix.m4a")
+        let hostFrames = shortHost ? 16000 : 16002
+        let remoteFrames = shortHost ? 16002 : 16000
+        try createTestWAV(url: host, frames: hostFrames)
+        try createTestWAV(url: remote, frames: remoteFrames)
+        let originalHost = try Data(contentsOf: host)
+        let originalRemote = try Data(contentsOf: remote)
+        do {
+            try AudioMixer.prepareMix(host: host, remote: remote, destination: destination)
+            Issue.record("Two-frame mismatch was accepted")
+        } catch AudioMixerError.durationMismatch(let actualHost, let actualRemote) {
+            #expect(actualHost == hostFrames && actualRemote == remoteFrames)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(try Data(contentsOf: host) == originalHost)
+        #expect(try Data(contentsOf: remote) == originalRemote)
+    }
 }

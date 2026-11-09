@@ -191,6 +191,12 @@ final class RecorderViewModel: ObservableObject {
         return requestWorkspaceOpen()
     }
 
+    func selectLibraryRecording(_ recording: URL) {
+        guard workspace.admitNavigation() else { return }
+        selectedHistoryURL = RecordingEntry.canonicalURL(recording)
+        _ = requestWorkspaceOpen()
+    }
+
     @Published var audioPreviewURL: URL?
     @Published var reminderMeeting: MeetingContext?
     @Published var mainWindowRequested = false
@@ -256,6 +262,12 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
+    @Published private(set) var processingRoutes: [URL: ProcessingProgressSnapshot] = [:]
+    var capsuleProgress: ProcessingProgressSnapshot? {
+        guard let lastFileURL, let snapshot = processingRoutes[lastFileURL], snapshot.jobID == capsuleJobID else { return nil }
+        return snapshot
+    }
+
     @Published var capsuleDismissed = false
     @Published private(set) var transcriptionWarnings: [String] = []
     @Published private(set) var lastRecordingTitle = "Запись встречи"
@@ -288,14 +300,25 @@ final class RecorderViewModel: ObservableObject {
     var showsCancelRecording: Bool { isRecording && elapsed < 10 }
 
     func dismissCapsule() {
-        guard !sessionStarting, !sessionStopping else { return }
+        guard !sessionStarting, !sessionStopping, !showsProcessingCapsule else { return }
         capsuleDismissed = true
     }
 
     func prepareForAutomaticReminder() {
         guard !isRecording, pendingCapsuleEnqueue == nil, transcriptionJobs == 0 else { return }
         if case .running = transcriptionState { return }
-        dismissCapsule()
+        capsuleDismissed = true
+    }
+
+    @Published var processingNavigationNotice: String?
+    func showProcessingDetails() {
+        guard let lastFileURL, history.entry(lastFileURL) != nil else { return }
+        guard showTranscript(lastFileURL) != nil else {
+            processingNavigationNotice = workspace.commandNotice
+            return
+        }
+        processingNavigationNotice = nil
+        onPresentWorkspace?()
     }
 
     @Published private var recordingOvertime: RecordingOvertime?
@@ -328,7 +351,7 @@ final class RecorderViewModel: ObservableObject {
                   pendingCapsuleEnqueue == nil, transcriptionJobs == 0, !isAdmittingProcessing,
                   !isRecording, !sessionStarting, !sessionStopping,
                   !recordingCancelled, recordingSaveError == nil else { return }
-            dismissCapsule()
+            capsuleDismissed = true
         }
     }
     @Published var elapsed: TimeInterval = 0
@@ -676,6 +699,7 @@ final class RecorderViewModel: ObservableObject {
         transcriptionJobs = snapshot.jobCount
         isAdmittingProcessing = !snapshot.admitting.isEmpty
         history.progress = snapshot.progress
+        processingRoutes = snapshot.routes
         if isInitialAttachment, snapshot.preparation != .idle {
             diagnosticReport = snapshot.preparation == .preparing ? "Скачивание и проверка моделей…" : "Проверка транскрибации…"
         }
@@ -1119,7 +1143,7 @@ final class RecorderViewModel: ObservableObject {
                     case .completed, .failed: break
                     default: return
                     }
-                    self.dismissCapsule()
+                    self.capsuleDismissed = true
             }
         }
     }
@@ -1282,6 +1306,7 @@ final class RecorderViewModel: ObservableObject {
                         self.recordingCancelled = false
                         if let snapshot = self.latestProcessingSnapshot,
                            snapshot.active != nil || !snapshot.queued.isEmpty || !snapshot.admitting.isEmpty {
+                            self.capsuleDismissed = false
                             self.applyProcessingSnapshot(snapshot)
                         } else {
                             self.capsuleDismissed = true

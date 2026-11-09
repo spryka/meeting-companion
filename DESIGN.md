@@ -5,6 +5,8 @@
 HTML-референс и активные предложения объясняют замысел; при расхождении фактическое
 поведение нужно смотреть в production caller. Состояние проверки описано отдельно
 в [verification-release](openspec/changes/archive/2026-11-06-refresh-macos-interface/verification-release.md).
+Последующие изменения обработки и аудио приняты в [beta.35](docs/beta35-acceptance.md);
+дизайн капсулы описан в [processing-progress-ui](openspec/changes/archive/2026-11-09-processing-progress-ui/design.md).
 
 ## Где менять
 
@@ -60,7 +62,8 @@ Helper считает положительный leading из метрик `NSFo
 | Settings group / row label / hint | 12 semibold / 14 medium / 12 regular | 18.6 / 21.7 / 19.2 |
 | Settings tiles / selector / footer | 12 medium / 13 regular / 11 regular | Intrinsic; footer может переноситься |
 | Capsule timer / title / subtitle | 20 medium / 13 semibold / 11 regular | Intrinsic; timer tracking −0.7 и monospaced digits; title/subtitle 1 строка с tail ellipsis |
-| Capsule действия | Open 13 semibold, retry/close 12 medium, overtime 11 medium | Intrinsic |
+| Capsule обработки: «Подробнее» / «Открыть» | 13 regular | Native borderless button, без ручного close |
+| Capsule записи/ошибки: close / overtime | 12 medium / 11 medium | Intrinsic; отдельные состояния от обработки |
 | Новая запись: intro / диагностика | 14 regular / `.headline`, `.callout`, `.caption` | Native intrinsic; diagnostic report `.system(.caption, design: .monospaced)` |
 | Reminder title / пояснение / Picker и кнопки | `.headline` / `.caption` / native inherited | Native intrinsic; пояснение переносится |
 | Status menu | Системная `NSMenu` typography | Native intrinsic; размер не задаёт OD style |
@@ -160,6 +163,17 @@ primary button с `.buttonBorderShape(.capsule)`. Это существующе�
 этот modifier не объявляет; фактическую доступность и контраст проверяют отдельно.
 
 ## Общие компоненты и взаимодействие
+
+Капсула обработки — `ProcessingCapsuleView`, 420×84 pt: leading 32 / trailing 16 /
+vertical 12 pt, зазор текста и кнопки 12 pt. Сверху title 13 semibold, ниже
+11 regular «Этап N из M»; до старта — «В очереди · M этапов». Маршрут содержит
+5–7 станций по зафиксированным опциям job: узлы 8 pt, линии 2 pt.
+Отдельные «далее K», «последний», процент дорожки и локальная
+полоса отсутствуют. «Подробнее» использует существующий admission основного окна,
+после успеха кнопка называется «Открыть». Manual close/Hide/Escape/⌘W для капсулы
+не предусмотрены; terminal timeout и скрытие после accepted Open сохраняются.
+Проценты и дорожки находятся в `ProcessingDetailsView` в workspace; неизвестный
+total не создаёт долю. Processing UI обновляется дискретными событиями без анимации.
 
 - `ODButtonStyle`: padding12×8, minHeight36 или compact32, radius8; secondary
   border `line`, primary accent без border. Hover меняет fill, pressed opacity0.7,
