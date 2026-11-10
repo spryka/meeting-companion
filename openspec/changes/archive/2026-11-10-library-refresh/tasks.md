@@ -11,16 +11,19 @@ Baseline: `19c84249e8141442601eab88b7846a0b9592f6f7`, ветка `library-refres
 ## Этапы
 
 - [x] A. Команда и данные: guarded admission и off-main scan; request/root ownership; missing/nil/partial read, retry/error ownership; synthetic trash→restore без дубликатов и записи в пользовательские файлы. RED→GREEN и независимое ревью завершены.
-- [ ] B. UI и сквозной результат: кнопка/меню/⌘R, narrow form action, inline busy/error/VoiceOver, scroll/focus/session/playback. Суммарное source review A+B, обязательные проверки, native UAT и CHANGELOG. Непроведённая обязательная UAT блокирует отметку завершения B.
-- [ ] Передать PR с подтверждёнными результатами и открытыми проверками; не архивировать change до приёмки.
+- [x] B. UI и сквозной результат: кнопка/меню/⌘R, narrow form action, inline busy/error/announcement, scroll/focus/session/playback. Source review, обязательные проверки и UI-приёмка владельцем завершены; физический VoiceOver исключён из приёмки.
+- [x] Передать PR с подтверждёнными результатами и статусом приёмки: общий [PR #18](https://github.com/spryka/meeting-companion/pull/18), SDD closeout перед merge.
 
 ## Проверка B
 
-- [ ] Wide/compact/narrow list/detail и resize туда/обратно; light/dark, прежние header/divider/toolbar. Ровно одна видимая «Новая запись»; narrow action перед поиском, минимум 44 pt; refresh 36×36 или 44×44 pt.
-- [ ] Pointer, «Вид», ⌘R из списка/документа/обычного поиска вызывают общий command. Busy запрещает повтор без очереди. Modal/draft/Settings/native sheet/trash, inactive/hidden/minimized/form/capsule не обходят admission; native input сохраняет приоритет. ⌘N и обе видимые кнопки открывают прежнюю форму без старта capture.
-- [ ] Query/selection, list anchor **и offset**, focus, та же review session, text scroll и непрерывный playback при добавлении/изменении entries. При исчезновении anchor по независимому событию — ближайшая сохранившаяся строка. Refresh не выбирает восстановленную запись и не переоткрывает текущий документ.
-- [ ] Busy/error на месте под поиском, список остаётся доступным. Missing/unreadable/partial root не выдаётся за пустой успех; успешный retry убирает только refresh error. VoiceOver: «Библиотека обновлена», без переноса фокуса/toast/alert.
-- [ ] Synthetic restore, metadata/edits, ошибки и retry; coexistence с capture/processing без остановки. Не использовать реальные записи владельца.
+Итоговая приёмка объединяет native regression tests и подтверждение UI владельцем.
+Физический VoiceOver не запускался; проверка этой частью приёмки не заявляется.
+
+- [x] Wide/compact/narrow list/detail и resize; одна видимая «Новая запись», narrow action перед поиском и размеры refresh. Native tests и UI-приёмка владельцем.
+- [x] Pointer, «Вид», ⌘R из списка/документа/поиска используют общий command; busy/modal/draft/Settings/native sheet/trash/inactive guards и прежняя форма записи. Native regression tests и source review.
+- [x] Query/selection, list anchor/offset, focus, review session, text scroll и playback сохраняются. Native regression tests и UI-приёмка владельцем; refresh не выбирает и не переоткрывает документ.
+- [x] Inline busy/error, missing/unreadable/partial root и владение refresh error. Native tests/source review; announcement path сохранён, физическая проверка VoiceOver исключена.
+- [x] Synthetic restore, metadata/edits, ошибки/retry и coexistence с capture/processing — native tests и source review без изменения реальных записей.
 - [x] Полный штатный `swift build -c release`, полный `swift test`, build-app и bundle validation. После установки Metal Toolchain default engine работает; подтверждены все final summaries.
 - [x] `openspec validate library-refresh --type change --strict`.
 - [x] `bash scripts/check-python-free.sh`.
@@ -90,6 +93,22 @@ Checkpoint установки 2026-11-10T17:10:24+03:00: полный штатн
 - [x] Приложение запущено; installation-result.json подтверждает version/build, PID и executablePath установленной копии. До установки старое приложение уже не работало; force kill не использован.
 - [x] Полный default-engine swift test: Swift Testing 7/1, 49/8, 251/27, 239/10 — все PASS; отдельно XCTest ModelAssetsTests 12/12 PASS. Native refreshShortcutFromSearchAndViewMenuShareAdmission, manualLibraryRefreshAdmitsOnlyOneRequestAndPreservesReview и admission cases — PASS. EXIT 0, installation-full-tests.log. Это законченный полный прогон, не прежний subset или exit 0 без summary.
 - [x] Полная release-сборка и bundle validation — PASS. Rollback signed bundle beta.35 сохранён в installation-rollback/ хранилища треда.
-- [ ] Ручная UI/VoiceOver приёмка нового интерфейса и полная матрица coexistence ещё открыты; B целиком не закрыт, change не архивирован.
+- [x] UI-приёмка владельцем завершена в ходе совместного закрытия beta.36; физический VoiceOver исключён, native coexistence tests прошли. См. итог ниже.
 
 Функциональный код source-reviewed версии не менялся. Для локальной beta изменены только version/build Info.plist и upcoming-version header CHANGELOG. A/B source review остаются PASS, ремонты A 2/2 и B 2/2 не обнулялись. Публичная публикация не выполнялась. Локальная установка завершена, общая приёмка функции остаётся открытой.
+
+## Совместная приёмка beta.36 — 2026-11-10
+
+UI принят владельцем; разрешены merge в master и завершение SDD вместе с
+scope-recording-feedback. Физический VoiceOver исключён из проверок и не запускался.
+Существующие статусы ожидания выше относятся к предыдущим checkpoint.
+
+Baseline установленной beta.36 — `3d2691c`; интеграция feedback сохраняет
+library-refresh. Совместные тесты: 552 Swift Testing и 12 XCTest PASS, включая
+native refresh/keyboard/admission и сохранение session/selection/feedback.
+Strict validation обоих changes, Python-free, module boundaries и finder PASS.
+Source integration review — PASS, reviewer `thr_fv6ueayu66`, freeze beta36.sha256.
+Прежние бюджеты library-refresh A 2/2 и B 2/2 сохранены, новых ремонтов этого feature нет.
+Release, signed bundle и установка совместной beta.36 завершены; прежний bundle
+сохранён, сертификат и точное установленное содержимое проверены.
+Подробный итог проверок: [beta36 acceptance](../../../../docs/beta36-acceptance.md).

@@ -19,9 +19,12 @@
   переключение A→B, позднее завершение A при открытой B и сохранение общих ошибок;
   минимальный fix, GREEN и полные обязательные проверки проекта; свежий независимый
   reviewer gpt-6.1-sol/high без истории, read-only, с freeze/hash/diff.
-- [ ] 2. Собрать подписанный локальный bundle; при утверждении этого плана установка
+- [x] 2. Собрать подписанный локальный bundle; при утверждении этого плана установка
   входит в объём после PASS и штатного завершения app/worker. Сохранить прежний bundle,
   сертификат и данные; проверить точное установленное содержимое. Owner UI UAT — отдельно.
+- [x] 3. Подготовить общий PR к запрошенному слиянию в master: синхронизировать
+  основные specs, архивировать оба принятых changes и пройти closeout review.
+  Remote merge и обновление checkout — финальные операции после этого PASS.
 
 ## Границы
 
@@ -30,7 +33,9 @@ metadata, edits и аудио не менять; не запускать capture
 Не менять диаризацию/пороги и не скрывать все сообщения без разбора. Сохранить
 selection/current, modal/input/Trash guards и общий библиотечный feedback.
 Новых dependencies/store/notification layer не добавлять. VoiceOver/CUA не запускать.
-Merge, публикация и закрытие SDD — после проверки и отдельного решения владельца.
+Владелец дополнительно поручил merge в master и закрытие всех specs обоих changes.
+Публичный release не входит в задачу. Прежний отказ auto-review для публикации
+library-refresh не обходить: новый push/PR оценивается по этому явному поручению.
 
 ## Текущее состояние
 
@@ -93,4 +98,42 @@ PASS на repair1. Release exit 0 и signed bundle `Bundle check passed`
 проверить feedback + refresh, full checks/review и подписанный bundle. Старый PASS
 сохраняется для прежней базы; интегрированная версия требует своих проверок.
 Чужой checkout read-only; reviewer прежний, ремонтный бюджет остаётся 1/2.
-Owner UAT не выполнена. Логи остановки: install.log, installed-bundle-precheck.log.
+Логи остановки: install.log, installed-bundle-precheck.log.
+
+Rebase выполнен: beta.36 baseline `3d2691c`, собственный commit `8a419c3`.
+Конфликты только CHANGELOG и refresh-метод: сохранены оба пункта и все
+request/root/loading/error guards library-refresh; background failure остаётся
+global feedback. В existing feedback regression добавлен production manual refresh:
+проверяет сохранение session/selection и independent global/A/B feedback.
+Library-refresh tasks отдельно отмечают обязательную manual matrix; перед закрытием
+отделить доказанные native-сценарии от непройденной ручной приёмки.
+
+Совместная версия: targeted beta36-green.log PASS, все 552 Swift Testing и 12 XCTest
+в beta36-tests.log PASS с четырьмя final summaries. Strict обоих changes,
+Python-free/boundaries/finder/diff PASS. Reviewer `thr_fv6ueayu66`: beta.36 integration
+PASS, 11 hashes и beta36.patch совпали, бюджет 1/2. Source freeze не менялся.
+Владелец подтвердил UI-приёмку; физический VoiceOver исключён. В specs сохраняются
+только требования и сценарии; подтверждение приёмки хранится в tasks/acceptance.
+Следующий шаг: завершить release/bundle, установить, передать PR, синхронизировать
+и архивировать оба changes, проверить closeout docs, затем merge/update master.
+
+Release/bundle beta.36 PASS; установка завершена, beta36-install.log exit 0.
+Deep/strict bundle check, совпадение сертификата и точное содержимое подтверждены.
+Установленный executable SHA256
+`5b3c5ef6f162db614e62e9861177549bd10414209a52699e25620b21eb51e413`;
+прежний original bundle сохранён в локальной install-backup. Приложение не запускалось.
+Итог приёмки без цитат из переписки: [beta36 acceptance](../../../../docs/beta36-acceptance.md).
+
+Closeout подготовлен в общем [PR #18](https://github.com/spryka/meeting-companion/pull/18).
+Оба changes архивированы с синхронизацией основных desktop-workspace и
+library-refresh specs. 16 основных specs strict PASS, активных changes нет.
+README/DESIGN/acceptance синхронизированы; root ADR и принятый source/test код
+не менялись. На момент archive незавершённым оставался только административный
+пункт closeout review/PR, реализация и её проверки были завершены.
+Следующий шаг — read-only closeout review, затем commit/push/merge и проверка master.
+
+Closeout review `thr_fv6ueayu66` — PASS: архивы/specs/ссылки/acceptance корректны,
+source7 и staged documentation freeze совпали до/после; существенных замечаний нет.
+Бюджет feedback 1/2, library-refresh A 2/2 и B 2/2 сохранён. Все локальные этапы
+завершены 2026-11-10; remote merge/update проверяется ведущим после этого checkpoint.
+Точные интервалы ожидания, кроме записанных checkpoint, не измерялись.
