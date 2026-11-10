@@ -6,7 +6,7 @@
 
 Baseline: `19c84249e8141442601eab88b7846a0b9592f6f7`, ветка `library-refresh`. Продолжен существующий dirty/untracked diff, без повторной реализации и отката чужих правок. Исходные файлы/diff/hashes сохранены в хранилище BB-треда (`implementation-baseline/`); actual GitHub master сверён и совпал с baseline. Основной checkout не изменён.
 
-Ограничения: без watcher, pruning, миграций, реальных пользовательских записей, изменения форматов, моделей или capture/pipeline. **Текущее установленное приложение не завершать, не перезапускать, не заменять и не устанавливать поверх него.** Владелец ведёт важную запись. Native app/fixture hosts, UAT с записью/обработкой и операции с аудиоустройствами отложены до явного подтверждения окончания записи. Установка, выпуск и архивирование до приёмки не разрешены.
+Ограничения: без watcher, pruning, миграций, пользовательских записей в тестах и изменения capture/pipeline. Первоначальная важная запись и обработка явно завершены владельцем; по новому запросу разрешена локальная установка beta.36/build72. Она выполнена без остановки активной работы: прежнее приложение уже было закрыто. Новые активные записи/обработку не прерывать. Публичные push/release и архивирование до приёмки по-прежнему не разрешены.
 
 ## Этапы
 
@@ -21,7 +21,7 @@ Baseline: `19c84249e8141442601eab88b7846a0b9592f6f7`, ветка `library-refres
 - [ ] Query/selection, list anchor **и offset**, focus, та же review session, text scroll и непрерывный playback при добавлении/изменении entries. При исчезновении anchor по независимому событию — ближайшая сохранившаяся строка. Refresh не выбирает восстановленную запись и не переоткрывает текущий документ.
 - [ ] Busy/error на месте под поиском, список остаётся доступным. Missing/unreadable/partial root не выдаётся за пустой успех; успешный retry убирает только refresh error. VoiceOver: «Библиотека обновлена», без переноса фокуса/toast/alert.
 - [ ] Synthetic restore, metadata/edits, ошибки и retry; coexistence с capture/processing без остановки. Не использовать реальные записи владельца.
-- [ ] `swift build -c release`, полный `swift test`, bundle validation при упаковке. Не выдавать filtered native-engine tests за полный набор.
+- [x] Полный штатный `swift build -c release`, полный `swift test`, build-app и bundle validation. После установки Metal Toolchain default engine работает; подтверждены все final summaries.
 - [x] `openspec validate library-refresh --type change --strict`.
 - [x] `bash scripts/check-python-free.sh`.
 - [x] `bash scripts/check-module-boundaries.sh`.
@@ -43,7 +43,7 @@ A: **PASS**, reviewer thr_57dcchfygy, Codex gpt-6.1-sol/high, sourceThreadId=nul
 
 Команда GREEN: `DEVELOPER_DIR=<Xcode Developer> nice -n 15 swift test --build-system native -j 2 --filter 'LibraryRefreshTests|LibraryRefreshCommandTests|historyManualMissingRootAndSuccessfulRetryOwnOnlyRefreshError|RecordingTrashTests|RecordingRenameTests'`. Это штатный полный manifest с фильтром; временный subset runner прошлого harness не использован. Native engine — штатный, но deprecated флаг SwiftPM.
 
-Environment blocker default engine: `cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain`. Компонент не установлен. Полные release/test/bundle проверки не подтверждены; Metal blocker нельзя объявлять продуктовой регрессией или закрывать filtered GREEN.
+Исторический blocker default engine (отсутствовал Metal Toolchain) устранён: официальный компонент Metal Toolchain 27B47 загружен для запрошенной локальной установки. Полные release/test/bundle проверки выполнены штатным default engine, результаты ниже. Старые filtered/native-engine логи остаются историческими доказательствами.
 
 B: source review и cumulative A/B — **PASS**, reviewer thr_a2pwwtctbm, Codex gpt-6.1-sol/high, ремонт **2/2** (включая завершающую EOF-правку). Reviewed stage-b-final.diff SHA256 030a5432df4fc686ac6b6cd7beaffa369810d6df26091207b27c13eb8dfbeeb8; все 18 stable hashes совпали. Приняты и исправлены оба P2: phase refresh больше не включает loading для valid current, сохраняя processing/input guards; status-menu вызывает общий requestRecordingForm. Итоговый headless набор **263 tests / 30 suites PASS**. Native shortcut/menu/session/playback regression только скомпилирована. ScrollPosition/focus/VoiceOver и все пункты native UAT выше остаются **непроверенными**. B целиком не закрыт. Вопрос владельцу об окончании записи и UI/toolchain разрешении пока без ответа. Готовится draft PR, без установки/выпуска/архивирования.
 
@@ -68,3 +68,28 @@ Source phase завершена: 2026-11-10T14:05:25+03:00. A PASS (ремонт
 Финальная staged-проверка включила бывшие untracked files и нашла лишнюю пустую строку EOF LibraryRefreshTests.swift. Удалён ровно один LF, логика не менялась, остальные 17 stable hashes прежние. git diff --cached --check чист. Обновлённый stage-b-final.diff/.sha256 направляется тому же reviewer; консервативный бюджет B **2/2**. Native UAT по-прежнему открыта.
 
 Итоговый source PASS подтверждён 2026-11-10T14:10:43+03:00: thr_a2pwwtctbm, stage-b-final.diff SHA256 030a5432df4fc686ac6b6cd7beaffa369810d6df26091207b27c13eb8dfbeeb8, 18 stable hashes. A 2/2, B 2/2. Только mutable checkpoint/PR metadata могут обновляться без изменения reviewed кода; новые существенные ремонты требуют согласования бюджета. Общая задача и B остаются открыты до native UAT и полных проверок.
+
+Checkpoint 2026-11-10T14:12:37+03:00: reviewed source закоммичен локально: 43e116b (feat: add guarded library refresh), 19 файлов. Push/draft PR **не выполнены**: automatic approval review отклонил публичную публикацию в spryka/meeting-companion, поскольку принятие подготовки PR не сочли явным согласием на эту destination/раскрытие исходников и SDD. Вопрос о конкретном публичном push/PR задан владельцу. Никакой обход не использован; повторять до явного согласия нельзя. Локальные reviewable artifacts: reviewed-library-refresh.patch, pr-body.md, publication-blocker.txt в хранилище BB-треда. Вопрос о завершении важной записи и UI/Metal тоже пока без ответа. Следующий шаг: дождаться соответствующего явного разрешения; native UI/установка/публикация до него не выполняются. Код и source hashes прежние. Полное завершение/UAT не наступили.
+
+## Локальная установка для UAT — запрос владельца 2026-11-10T17:01:02+03:00
+
+Владелец спросил «готово? можем поставить приложение?»: разрешена подготовка локальной установки; прежнее исключение установки расширено этим запросом, публичная публикация по-прежнему не разрешена. Важная запись/обработка пока не подтверждены завершёнными: приложение не останавливать и не заменять. Задан отдельный вопрос об окончании записи. Native UAT не отменена и не объявлена выполненной.
+
+Официальный Metal Toolchain 27B47 загружен через xcodebuild -downloadComponent MetalToolchain. Подпись установленного bundle валидна; designated requirement сохранён в installed-designated-requirement.txt хранилища треда. Все 18 reviewed source hashes совпали до подготовки установки. Следующий шаг: штатный полный release build и проверенный bundle с прежней signing identity, затем установка только после явного подтверждения отсутствия активной записи/обработки. Не сбрасывать разрешения и не менять пользовательские записи.
+
+Для локальной тестовой установки подготовлены только metadata: 2.0.0-beta.36 / build 72 (выше source и установленной beta.35 / 71), Unreleased помечен как предстоящая beta.36, исторические release sections не переписаны. Это не публичный выпуск и не приёмка UI. Функциональный код reviewed версии не изменён; source-ревью A/B и бюджеты не обнуляются. Metadata-only packaging проверяется штатным check-bundle и сравнением designated requirement. До разрешения не завершать/не заменять активное приложение.
+
+Владелец подтвердил 2026-11-10T17:03:48+03:00: «Да, запись и обработка завершены». Recording gate снят для запрошенной локальной установки: допускается штатно закрыть приложение и заменить его после успешной проверки bundle. Текущее приложение пока не остановлено; подготовка сборки идёт. Записи/настройки/permissions не изменять и не сбрасывать. Публичная публикация по-прежнему не разрешена.
+
+Checkpoint установки 2026-11-10T17:10:24+03:00: полный штатный swift build -c release -j 2 **PASS** (250.50s), installation-full-release.log; build-app.sh **PASS**, installation-build-bundle.log. Готов dist bundle beta.36/build72; check-bundle и deep/strict codesign PASS. Designated requirement нового bundle точно совпал с установленной beta.35. Rollback bundle installation-rollback/Meeting Companion beta35.app сохранён и проверен. 17 функциональных reviewed hashes прежние; вне reviewed версии изменены только upcoming-version header CHANGELOG и две version metadata Info.plist. Идёт обязательный полный swift test; установленное приложение ещё не остановлено и не заменено. Native UAT не объявлена выполненной.
+
+## Результат локальной установки — 2026-11-10T17:25:20+03:00
+
+- [x] 2.0.0-beta.36 / build 72 установлена в /Applications/Meeting Companion.app штатным install-app.sh (installation-install.log, EXIT 0).
+- [x] Фактически установленный bundle повторно прошёл check-bundle, deep/strict codesign; designated requirement точно совпадает с beta.35. Bundle ID прежний: local.meeting-companion. TCC/настройки/записи не сбрасывались и не удалялись.
+- [x] Приложение запущено; installation-result.json подтверждает version/build, PID и executablePath установленной копии. До установки старое приложение уже не работало; force kill не использован.
+- [x] Полный default-engine swift test: Swift Testing 7/1, 49/8, 251/27, 239/10 — все PASS; отдельно XCTest ModelAssetsTests 12/12 PASS. Native refreshShortcutFromSearchAndViewMenuShareAdmission, manualLibraryRefreshAdmitsOnlyOneRequestAndPreservesReview и admission cases — PASS. EXIT 0, installation-full-tests.log. Это законченный полный прогон, не прежний subset или exit 0 без summary.
+- [x] Полная release-сборка и bundle validation — PASS. Rollback signed bundle beta.35 сохранён в installation-rollback/ хранилища треда.
+- [ ] Ручная UI/VoiceOver приёмка нового интерфейса и полная матрица coexistence ещё открыты; B целиком не закрыт, change не архивирован.
+
+Функциональный код source-reviewed версии не менялся. Для локальной beta изменены только version/build Info.plist и upcoming-version header CHANGELOG. A/B source review остаются PASS, ремонты A 2/2 и B 2/2 не обнулялись. Публичная публикация не выполнялась. Локальная установка завершена, общая приёмка функции остаётся открытой.
