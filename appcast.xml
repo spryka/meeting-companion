@@ -5,6 +5,17 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.0.0-beta.36</title>
+            <description><![CDATA[<p>Публичная бета 2.0.0-beta.36 (build 74) объединяет изменения beta.33-beta.36.</p><ul><li>Перенос встречи в Корзину с подтверждением и клавиатурой. Стрелки продолжают выбор после удаления.</li><li>Обновление библиотеки по кнопке, меню или ⌘R убирает исчезнувшие встречи и возвращает восстановленные. Работа и ввод защищены.</li><li>Ошибки и предупреждения относятся к нужной встрече.</li><li>Капсула показывает весь маршрут обработки и открывает подробности текущего этапа.</li><li>Исправлены повторное открытие текста и микс аудиодорожек при разнице хвостов ровно в один отсчёт. Исходные файлы сохраняются.</li></ul><p>Apple Silicon, macOS 15+. Предварительная версия без Apple notarization.</p>]]></description>
+            <pubDate>Tue, 10 Nov 2026 21:06:33 +0300</pubDate>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>74</sparkle:version>
+            <sparkle:shortVersionString>2.0.0-beta.36</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.0.0-beta.36/Meeting-Companion-2.0.0-beta.36-arm64.zip" length="17040830" type="application/octet-stream" sparkle:edSignature="7RRGz9uzy8FKMWD7tdRttpdTT2rhV0fRUE84W9u4mIpRMZtNt6c68gx+U2l4mV53gZmov0oQOLFV+6zqrbogAA=="/>
+        </item>
+        <item>
             <title>2.0.0-beta.32</title>
             <description><![CDATA[<p>Исправлена регистрация автозапуска: служебные и тестовые процессы больше не добавляют себя в объекты входа. Обычный автозапуск Meeting Companion сохранён.</p><p>Установка — DMG из GitHub Releases, дальнейшие обновления — через Sparkle. Существующие системные записи от прошлых тестов автоматически не удаляются.</p>]]></description>
             <pubDate>Fri, 06 Nov 2026 23:31:54 +0300</pubDate>
