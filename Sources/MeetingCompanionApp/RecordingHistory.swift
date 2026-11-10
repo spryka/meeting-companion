@@ -10,6 +10,7 @@ public final class RecordingHistory: ObservableObject {
     @Published public private(set) var loading = false
     @Published public private(set) var initialLoadComplete = false
     @Published public private(set) var error: String?
+    @Published private var recordingErrors: [URL: String] = [:]
     @Published public private(set) var notice: String?
     @Published public var progress: [URL: TranscriptionProgress] = [:]
     public let repository: RecordingHistoryRepository
@@ -36,7 +37,6 @@ public final class RecordingHistory: ObservableObject {
         guard snapshot.revision >= revision else { return }
         revision = snapshot.revision
         entries = snapshot.entries
-        if let warning = entries.compactMap(\.persistenceWarning).first { error = warning }
     }
 
     public func synchronize() async {
@@ -44,8 +44,20 @@ public final class RecordingHistory: ObservableObject {
         apply(await Task.detached { repository.snapshot() }.value)
     }
 
-    public func reportError(_ message: String) { error = message }
-    public func clearError() { error = nil }
+    public func reportError(_ message: String, recording: URL? = nil) {
+        if let recording { recordingErrors[RecordingEntry.canonicalURL(recording)] = message }
+        else { error = message }
+    }
+    public func error(for recording: URL?) -> String? {
+        let recording = recording.map(RecordingEntry.canonicalURL)
+        let local = recording.flatMap { recordingErrors[$0] }
+        let persistence = recording.flatMap { entry($0)?.persistenceWarning }
+        var messages: [String] = []
+        for case let message? in [error, local, persistence] where !messages.contains(message) { messages.append(message) }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+    public func clearError() { error = nil; recordingErrors.removeAll() }
+    public func clearError(for recording: URL) { recordingErrors.removeValue(forKey: RecordingEntry.canonicalURL(recording)) }
     public func reportNotice(_ message: String) { notice = message }
     public func clearNotice() { notice = nil }
     public func entry(_ url: URL) -> RecordingEntry? { entries.first { $0.id == url } }
@@ -75,7 +87,7 @@ public final class RecordingHistory: ObservableObject {
         if manual {
             refreshError = result.error.map { "Не удалось полностью обновить библиотеку. Повторите обновление. " + $0 }
             if result.error == nil { refreshCompletion = id }
-        } else if let failure = result.error { error = failure }
+        } else if let failure = result.error { reportError(failure) }
     }
 
     public func putThrowing(_ entry: RecordingEntry, persist: Bool = true) async throws {
@@ -88,7 +100,7 @@ public final class RecordingHistory: ObservableObject {
         let repository = repository
         let result = await Task.detached { repository.put(entry, persist: persist) }.value
         await synchronize()
-        if let warning = result.persistenceWarning { error = warning }
+        if let warning = result.persistenceWarning { reportError(warning, recording: entry.recording) }
     }
 
     public func rename(_ url: URL, displayTitle: String) async throws {
@@ -107,14 +119,14 @@ public final class RecordingHistory: ObservableObject {
         let repository = repository
         let result = await Task.detached { repository.update(url, change) }.value
         await synchronize()
-        if let warning = result.persistenceWarning { error = warning }
+        if let warning = result.persistenceWarning { reportError(warning, recording: url) }
     }
 
     public func updateStatus(_ url: URL, _ change: @escaping @Sendable (inout RecordingEntry) -> Void) async {
         let repository = repository
         let result = await Task.detached { repository.updateStatus(url, change) }.value
         await synchronize()
-        if let warning = result.persistenceWarning { error = warning }
+        if let warning = result.persistenceWarning { reportError(warning, recording: url) }
     }
 
 }

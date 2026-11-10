@@ -156,7 +156,7 @@ final class RecorderViewModel: ObservableObject {
         guard !trashOwnsInput, workspace.admitNavigation(), !workspace.nativeInput(), isAttached, !workspace.loading,
               !workspaceRequested || completedWorkspaceLoadRequest == workspaceLoadRequest,
               let entry = history.entry(recording) else { return false }
-        if let reason = trashUnavailableReason(entry) { history.reportError(reason); return false }
+        if let reason = trashUnavailableReason(entry) { history.reportError(reason, recording: recording); return false }
         history.clearNotice()
         trashAdmitting = true
         workspace.current?.invalidateQueuedPlaybackSeek()
@@ -168,7 +168,7 @@ final class RecorderViewModel: ObservableObject {
                   workspace.current?.currentDraftIdentity == nil, root == outputDirectory else { return false }
             recordingTrash = RecordingTrashPresentation(target: target, title: entry.effectiveTitle)
             return true
-        } catch { history.reportError(error.localizedDescription); return false }
+        } catch { history.reportError(error.localizedDescription, recording: recording); return false }
     }
 
     func cancelRecordingTrash() {
@@ -884,11 +884,11 @@ final class RecorderViewModel: ObservableObject {
             syncProcessingPresentation(job.recordingURL)
         case .completed(let job, _, let warning), .failed(let job, _, let warning), .cancelled(let job, let warning):
             history.progress.removeValue(forKey: job.recordingURL)
-            if let warning { history.reportError(warning) }
+            if let warning { history.reportError(warning, recording: job.recordingURL) }
             if capsuleJobID == job.id, pendingCapsuleEnqueue == nil {
                 syncProcessingPresentation(job.recordingURL)
             }
-        case .persistenceWarning(_, let warning): history.reportError(warning)
+        case .persistenceWarning(let job, let warning): history.reportError(warning, recording: job.recordingURL)
         case .dependenciesChecked(let output, let succeeded):
             transcriptionReady = succeeded
             let summary = succeeded ? "Транскрибация готова." : "Проверка транскрибации не пройдена."
@@ -1186,11 +1186,17 @@ final class RecorderViewModel: ObservableObject {
         retryRecording(lastFileURL)
     }
 
+    func prepareRecordingRetry(_ recording: URL) async -> Bool {
+        guard await workspace.prepareForRetry(recording) else { return false }
+        history.clearError(for: recording)
+        return true
+    }
+
     func retryRecording(_ recording: URL) {
         guard workspace.admitNavigation() else { return }
         guard sessionAttached, processingAttached, !sessionStopping, !isBusy, !diagnosticRunning, let entry = history.entry(recording), !entry.phase.isWorking else { return }
         if !entry.capabilities.canRetry {
-            history.reportError(entry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.")
+            history.reportError(entry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.", recording: recording)
             return
         }
         if !isRecording {
@@ -1229,7 +1235,7 @@ final class RecorderViewModel: ObservableObject {
     private func enqueue(_ recording: URL, stopped: StoppedRecording?) {
         guard let entry = history.entry(recording) else { return }
         if stopped == nil && !entry.capabilities.canRetry {
-            history.reportError(entry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.")
+            history.reportError(entry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.", recording: recording)
             return
         }
         let settings = ProcessingJobSettings(
@@ -1238,7 +1244,7 @@ final class RecorderViewModel: ObservableObject {
         )
         let presentationID = UUID()
         guard historyRepository.reserveWork(recording, id: presentationID) else {
-            history.reportError("Дождитесь завершения работы с записью")
+            history.reportError("Дождитесь завершения работы с записью", recording: recording)
             return
         }
         pendingProcessingEnqueues[presentationID] = RecordingEntry.canonicalURL(recording)
@@ -1472,7 +1478,7 @@ final class RecorderViewModel: ObservableObject {
 
             status = "Исходные дорожки сохранены"
             await history.synchronize()
-            for warning in stopResult.warnings { history.reportError(warning) }
+            for warning in stopResult.warnings { history.reportError(warning, recording: stopResult.outputURL) }
             enqueue(stopResult.outputURL, stopped: stopResult.stoppedCapture as? StoppedRecording)
             return true
         } catch let error as RecordingSessionService.ServiceError where error == .staleCommand || error == .shortCancellationExpired || error == .notRecording {

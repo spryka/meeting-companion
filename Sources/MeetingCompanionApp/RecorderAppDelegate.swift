@@ -14,7 +14,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         historyRepository: historyRepository,
         retryAdmission: { [weak self] recording in
             guard let self else { return false }
-            return await self.model.workspace.prepareForRetry(recording)
+            return await self.model.prepareRecordingRetry(recording)
         }
     )
     private lazy var model = RecorderViewModel(

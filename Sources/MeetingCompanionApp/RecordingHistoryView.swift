@@ -189,7 +189,7 @@ struct RecordingHistoryView: View {
                     if let notice = history.notice {
                         Text(notice).font(.system(size: 12)).foregroundStyle(ODColors.muted).padding(8)
                     }
-                    if let error = history.error {
+                    if let error = feedbackError {
                         Text(error)
                             .font(.system(size: 12))
                             .foregroundColor(ODColors.red)
@@ -285,6 +285,8 @@ struct RecordingHistoryView: View {
             ])
         }
     }
+
+    var feedbackError: String? { history.error(for: model.selectedHistoryURL) }
 
     func processingDetails(for entry: RecordingEntry) -> ProcessingProgressSnapshot? {
         guard let snapshot = model.processingRoutes[entry.id], entry.phase.isWorking || snapshot.failure != nil else { return nil }
