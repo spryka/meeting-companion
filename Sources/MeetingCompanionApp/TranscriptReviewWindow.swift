@@ -1818,5 +1818,4 @@ struct TranscriptReviewWindowView: View {
     }
 
     private static func clock(seconds: Double) -> String { formatClock(seconds) }
-    private static func timestamp(_ seconds: Double) -> String { TranscriptExportFormatter.formatTimestamp(seconds: seconds) }
 }

@@ -128,7 +128,17 @@ final class RecorderViewModel: ObservableObject {
             guard let self else { return }
             defer { self.libraryRefreshPending = false }
             guard self.admitsLibraryRefresh, !self.history.loading, self.outputDirectory == root else { return }
-            await self.history.refresh(root: root, manual: true)
+            await self.history.refresh(root: root, manual: true, preservingMissing: { @MainActor [weak self] in
+                guard let self, self.workspace.hasInput || self.workspace.nativeInput(),
+                      let selected = self.selectedHistoryURL else { return [] }
+                return [selected]
+            })
+            guard self.outputDirectory == root, self.history.refreshError == nil,
+                  let selected = self.selectedHistoryURL, self.history.entry(selected) == nil,
+                  !self.workspace.hasInput, !self.workspace.nativeInput() else { return }
+            self.workspace.closeCurrent()
+            self.historySelection = nil
+            self.workspaceOpenGeneration += 1
         }
         return true
     }
@@ -248,7 +258,6 @@ final class RecorderViewModel: ObservableObject {
         settingsPresented = false
         onSettingsVisibilityChange?()
     }
-    var onOpenTranscript: ((RecordingEntry) -> Void)?
     enum MainPage: String, CaseIterable, Identifiable {
         case recording, history
         var id: Self { self }
@@ -1051,11 +1060,6 @@ final class RecorderViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.fileExists(atPath: lastFileURL.path) ? lastFileURL : lastFileURL.deletingLastPathComponent()])
     }
 
-    func openTranscript() {
-        guard let lastFileURL, let entry = history.entry(lastFileURL) else { return }
-        onOpenTranscript?(entry)
-    }
-
     var canResetCache: Bool {
         !preventsSettingsOperation
     }
@@ -1629,31 +1633,6 @@ struct LevelMetersView: View {
             LevelMeterRow(label: "Микрофон", level: levels.mic, color: .green)
             LevelMeterRow(label: "Система", level: levels.system, color: .blue)
         }
-    }
-}
-
-struct CompactLevelMetersView: View {
-    @ObservedObject var levels: AudioLevels
-
-    var body: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 5) {
-                Image(systemName: "mic.fill").frame(width: 14)
-                ThinMeter(level: levels.mic, color: .green)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Микрофон")
-            .accessibilityValue("\(Int(levels.mic * 100)) процентов")
-            HStack(spacing: 5) {
-                Image(systemName: "speaker.wave.2.fill").frame(width: 14)
-                ThinMeter(level: levels.system, color: .blue)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Системный звук")
-            .accessibilityValue("\(Int(levels.system * 100)) процентов")
-        }
-        .font(.system(size: 10))
-        .foregroundStyle(.primary)
     }
 }
 

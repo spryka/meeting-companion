@@ -635,51 +635,6 @@ public struct ODIconView: View {
     }
 }
 
-
-import MeetingCompanionCore
-
-public struct TranscriptionProgressView: View {
-    public let progress: TranscriptionProgress
-
-    public init(progress: TranscriptionProgress) {
-        self.progress = progress
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let step = progress.step, let steps = progress.steps, let completed = progress.completedSteps {
-                HStack {
-                    Text("Обработка записи")
-                    Spacer(minLength: 4)
-                    Text("Этап \(step) из \(steps)").monospacedDigit().foregroundStyle(.secondary)
-                }.font(.caption)
-                VStack(spacing: 4) {
-                    bar(Double(completed) / Double(steps), color: Color(nsColor: .systemBlue), height: 6)
-                        .accessibilityLabel("Завершено этапов")
-                        .accessibilityValue("\(completed) из \(steps)")
-                    if let fraction = progress.stageFraction {
-                        bar(fraction, color: Color(nsColor: .systemPink), height: 2)
-                            .accessibilityLabel("Текущий этап")
-                            .accessibilityValue("\(progress.completed) из \(progress.total)")
-                    }
-                }
-            }
-            Text(progress.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-        }
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
-    }
-
-    private func bar(_ fraction: Double, color: Color, height: CGFloat) -> some View {
-        GeometryReader { geometry in
-            Capsule().fill(Color(nsColor: .controlColor))
-                .overlay(alignment: .leading) {
-                    Capsule().fill(color).frame(width: geometry.size.width * fraction)
-                }
-        }.frame(height: height)
-    }
-}
-
-
 public struct MeetingOverlaySurface: ViewModifier {
     public var capsule: Bool
 
