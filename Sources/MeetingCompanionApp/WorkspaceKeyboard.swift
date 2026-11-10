@@ -5,11 +5,12 @@ import Combine
 @MainActor
 final class WorkspaceWindow: NSWindow {
     enum Command: Int, CaseIterable {
-        case newRecording, findRecording, togglePlayback, seekBackward, seekForward
+        case newRecording, findRecording, togglePlayback, seekBackward, seekForward, refreshLibrary
         var title: String {
             switch self {
             case .newRecording: "Новая запись"
             case .findRecording: "Найти запись"
+            case .refreshLibrary: "Обновить библиотеку"
             case .togglePlayback: "Воспроизвести/Пауза"
             case .seekBackward: "Назад на 5 секунд"
             case .seekForward: "Вперёд на 5 секунд"
@@ -19,12 +20,13 @@ final class WorkspaceWindow: NSWindow {
             switch self {
             case .newRecording: "n"
             case .findRecording: "f"
+            case .refreshLibrary: "r"
             case .togglePlayback: " "
             case .seekBackward: "\u{f702}"
             case .seekForward: "\u{f703}"
             }
         }
-        var modifiers: NSEvent.ModifierFlags { self == .newRecording || self == .findRecording ? .command : [] }
+        var modifiers: NSEvent.ModifierFlags { self == .newRecording || self == .findRecording || self == .refreshLibrary ? .command : [] }
     }
 
     let model: RecorderViewModel
@@ -46,6 +48,10 @@ final class WorkspaceWindow: NSWindow {
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         model.workspace.nativeInput = { [weak self] in self?.attachedSheet != nil || NSApp?.modalWindow != nil }
         isKeyboardTarget = { [weak self] in NSApp.isActive && self?.isKeyWindow == true }
+        model.libraryRefreshTarget = { [weak self] in
+            guard let self else { return false }
+            return self.isKeyboardTarget() && self.isVisible && !self.isMiniaturized
+        }
         trashObservation = model.$recordingTrash.combineLatest(model.$trashAdmitting).sink { [weak self] presentation, admitting in
             guard let self else { return }
             let blocked = presentation != nil || admitting
@@ -90,8 +96,9 @@ final class WorkspaceWindow: NSWindow {
     func allows(_ command: Command) -> Bool {
         guard admitsNavigationKeys else { return false }
         switch command {
-        case .newRecording: return model.canStartRecording
+        case .newRecording: return model.canStartRecording && !model.workspace.nativeInput()
         case .findRecording: return true
+        case .refreshLibrary: return model.canRefreshLibrary
         case .togglePlayback, .seekBackward, .seekForward:
             guard let surface = firstResponder as? WorkspaceNavigationView, surface.window === self,
                   surface.isUsable,
@@ -104,7 +111,9 @@ final class WorkspaceWindow: NSWindow {
     func dispatch(_ command: Command, repeating: Bool = false) {
         guard allows(command) else { return }
         switch command {
-        case .newRecording: model.mainPage = .recording
+        case .newRecording: model.requestRecordingForm()
+        case .refreshLibrary:
+            if !repeating { model.requestLibraryRefresh() }
         case .findRecording:
             model.workspaceShowsList = true
             model.workspaceSearchRequest = UUID()
@@ -197,9 +206,14 @@ final class WorkspaceWindow: NSWindow {
             switch event.keyCode {
             case 45: command = .newRecording
             case 3: command = .findRecording
+            case 15: command = .refreshLibrary
             default: command = nil
             }
-            if let command { dispatch(command); return true }
+            if let command {
+                if command == .refreshLibrary, !allows(command) { return super.performKeyEquivalent(with: event) }
+                dispatch(command, repeating: event.isARepeat)
+                return true
+            }
         }
         if handleNavigationKey(event) { return true }
         return super.performKeyEquivalent(with: event)
@@ -207,14 +221,18 @@ final class WorkspaceWindow: NSWindow {
 
     func makeCommandMenu() -> NSMenu {
         let menu = NSMenu(title: "Запись")
-        for command in Command.allCases {
-            let item = NSMenuItem(title: command.title, action: #selector(performWorkspaceCommand(_:)), keyEquivalent: command.key)
-            item.keyEquivalentModifierMask = command.modifiers
-            item.tag = command.rawValue
-            item.target = self
-            menu.addItem(item)
+        for command in Command.allCases where command != .refreshLibrary {
+            menu.addItem(makeCommandMenuItem(command))
         }
         return menu
+    }
+
+    func makeCommandMenuItem(_ command: Command) -> NSMenuItem {
+        let item = NSMenuItem(title: command.title, action: #selector(performWorkspaceCommand(_:)), keyEquivalent: command.key)
+        item.keyEquivalentModifierMask = command.modifiers
+        item.tag = command.rawValue
+        item.target = self
+        return item
     }
 
     @objc private func performWorkspaceCommand(_ sender: NSMenuItem) {
@@ -314,6 +332,7 @@ final class WorkspaceWindow: NSWindow {
 
     override func becomeKey() {
         super.becomeKey()
+        model.objectWillChange.send()
         if !didSetInitialFocus { focusAvailableNavigation() }
         else { recoverNavigationFocus() }
     }
@@ -321,6 +340,7 @@ final class WorkspaceWindow: NSWindow {
     override func resignKey() {
         model.workspace.current?.endTurnNavigationGesture()
         super.resignKey()
+        model.objectWillChange.send()
     }
 }
 

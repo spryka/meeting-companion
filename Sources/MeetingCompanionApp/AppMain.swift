@@ -77,9 +77,14 @@ final class RecorderViewModel: ObservableObject {
     }
 
     @Published var outputDirectory: URL {
+        willSet { history.invalidateRefresh() }
         didSet {
             defaults.set(outputDirectory.path, forKey: "recordingsDirectory")
-            Task { await history.refresh(root: outputDirectory) }
+            let root = outputDirectory
+            Task {
+                guard outputDirectory == root else { return }
+                await history.refresh(root: root)
+            }
         }
     }
     let calendar: MeetingCalendar
@@ -93,6 +98,40 @@ final class RecorderViewModel: ObservableObject {
     @Published private(set) var trashCompletion: RecordingTrashCompletion?
     let recordingTrashOperation: @Sendable (URL) throws -> Void
     var trashOwnsInput: Bool { trashAdmitting || recordingTrash != nil }
+
+    @Published private(set) var libraryRefreshPending = false
+    var libraryRefreshTarget: @MainActor () -> Bool = { false }
+
+    private var admitsLibraryRefresh: Bool {
+        libraryRefreshTarget() && mainPage == .history && isAttached
+            && !settingsPresented && !trashOwnsInput && !workspace.hasInput
+            && !workspace.nativeInput() && !workspace.loading
+    }
+
+    var canRefreshLibrary: Bool {
+        admitsLibraryRefresh && !libraryRefreshPending && !history.loading
+    }
+
+    @discardableResult
+    func requestRecordingForm() -> Bool {
+        guard canStartRecording, !workspace.nativeInput() else { return false }
+        mainPage = .recording
+        return mainPage == .recording
+    }
+
+    @discardableResult
+    func requestLibraryRefresh() -> Bool {
+        guard canRefreshLibrary else { return false }
+        libraryRefreshPending = true
+        let root = outputDirectory
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.libraryRefreshPending = false }
+            guard self.admitsLibraryRefresh, !self.history.loading, self.outputDirectory == root else { return }
+            await self.history.refresh(root: root, manual: true)
+        }
+        return true
+    }
 
     func renameRecording(_ recording: URL, displayTitle: String) async throws {
         guard !trashOwnsInput, !settingsPresented else {

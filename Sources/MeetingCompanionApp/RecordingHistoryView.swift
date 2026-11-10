@@ -140,6 +140,7 @@ struct RecordingHistoryView: View {
     @StateObject private var search: RecordingSearch
     @StateObject private var windowState = AppWindowState()
     @State private var query = ""
+    @State private var libraryScrollPosition: URL?
     @State private var renameTarget: RecordingEntry?
     @State private var renameTitle = ""
     @State private var renameError: String?
@@ -263,6 +264,9 @@ struct RecordingHistoryView: View {
                     width: geometry.size.width, sidebarWidth: sidebarWidth,
                     narrow: narrow, showsList: model.workspaceShowsList)
             })
+            .onChange(of: narrow) { _, _ in
+                DispatchQueue.main.async { (windowState.window as? WorkspaceWindow)?.recoverNavigationFocus() }
+            }
         }
         .quickLookPreview($model.audioPreviewURL)
         .task {
@@ -274,6 +278,12 @@ struct RecordingHistoryView: View {
             await search.update(query: query, entries: history.entries)
         }
         .sheet(item: $renameTarget) { target in renameSheet(target) }
+        .onChange(of: history.refreshCompletion) { _, completion in
+            guard completion != nil, let window = windowState.window, window.isVisible else { return }
+            NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+                .announcement: "Библиотека обновлена", .priority: NSAccessibilityPriorityLevel.medium.rawValue
+            ])
+        }
     }
 
     func processingDetails(for entry: RecordingEntry) -> ProcessingProgressSnapshot? {
@@ -335,7 +345,6 @@ struct RecordingHistoryView: View {
     private func sidebarHeader(narrow: Bool, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(spacing: 16) {
-            // Title row with badge and plus
             HStack(alignment: .center) {
                 Text("Записи")
                     .font(.system(size: narrow ? 28 : 22, weight: .semibold))
@@ -348,14 +357,35 @@ struct RecordingHistoryView: View {
                     .padding(.vertical, 2)
                     .frame(minWidth: 24)
                     .background(ODColors.hover, in: RoundedRectangle(cornerRadius: 6))
-                Button(action: { model.mainPage = .recording }) {
-                    ODIconView(.plus, size: 16, color: ODColors.ink)
-                        .frame(width: 36, height: 36)
+                Button(action: { model.requestLibraryRefresh() }) {
+                    Group {
+                        if model.libraryRefreshPending {
+                            ProgressView().controlSize(.small).frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 16)).foregroundStyle(ODColors.ink)
+                        }
+                    }
+                        .frame(width: narrow ? 44 : 36, height: narrow ? 44 : 36)
                         .background(ODColors.hover, in: RoundedRectangle(cornerRadius: 8))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Новая запись")
+                .disabled(!model.canRefreshLibrary)
+                .help("Обновить библиотеку (⌘R)")
+                .accessibilityLabel("Обновить библиотеку")
+                .accessibilityValue(model.libraryRefreshPending ? "Обновляем библиотеку" : "")
+            }
+
+            if narrow {
+                Button(action: { model.requestRecordingForm() }) {
+                    HStack(spacing: 8) {
+                        ODIconView(.plus, size: 16, color: ODColors.primaryButtonForeground)
+                        Text("Новая запись")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                }
+                .buttonStyle(ODButtonStyle(primary: true))
+                .disabled(!model.canStartRecording || workspace.nativeInput())
             }
 
             // Search input (font 14)
@@ -368,6 +398,14 @@ struct RecordingHistoryView: View {
             .padding(.vertical, 9)
             .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line, lineWidth: 1))
+
+            if model.libraryRefreshPending {
+                Text("Обновляем библиотеку…")
+                    .font(.caption).foregroundStyle(ODColors.muted)
+            } else if let error = history.refreshError ?? (history.entries.isEmpty ? history.error : nil) {
+                Text(error).font(.caption).foregroundStyle(ODColors.warning)
+                    .textSelection(.enabled)
+            }
 
             if search.loading {
                 ProgressView("Поиск…").controlSize(.small)
@@ -387,6 +425,8 @@ struct RecordingHistoryView: View {
         Group {
             if !history.initialLoadComplete {
                 ProgressView("Загружаем записи…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if history.entries.isEmpty && (history.refreshError != nil || history.error != nil) {
+                Color.clear
             } else if history.entries.isEmpty && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 ContentUnavailableView("Записей пока нет", systemImage: "tray", description: Text("Начните новую запись встречи."))
             } else if visibleEntries.isEmpty && !search.loading {
@@ -411,7 +451,9 @@ struct RecordingHistoryView: View {
                         }
                     }
                     .padding(.bottom, 16)
+                    .scrollTargetLayout()
                 }
+                .scrollPosition(id: $libraryScrollPosition)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -636,7 +678,7 @@ struct RecordingHistoryView: View {
                 if !narrow { Rectangle().fill(ODColors.line).frame(width: 1, height: 20) }
             }
 
-            Button(action: { model.mainPage = .recording }) {
+            Button(action: { model.requestRecordingForm() }) {
                 HStack(spacing: 6) {
                     ODIconView(.record, size: 16, color: ODColors.primaryButtonForeground)
                     Text("Новая запись")
@@ -649,6 +691,7 @@ struct RecordingHistoryView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(!model.canStartRecording || workspace.nativeInput())
         }
         .padding(.horizontal, narrow ? 12 : compact ? 16 : 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -51,6 +51,10 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     // Test seam for substitution during filesystem traversal, before the final identity check.
     var trashValidationDidScan: (@Sendable () throws -> Void)?
     private let fileManager = FileManager.default
+    var historyEnumerator: (URL, @escaping (URL, any Error) -> Bool) -> FileManager.DirectoryEnumerator? = { directory, handler in
+        FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles], errorHandler: handler)
+    }
     private var subscribers: [@Sendable ([RecordingEntry]) -> Void] = []
 
     public struct Snapshot: Sendable {
@@ -528,20 +532,15 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         var failure: String?
         guard fileManager.fileExists(atPath: directory.path) else { return ([], nil) }
 
-        let enumerator = fileManager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles],
-            errorHandler: { _, error in
-                failure = error.localizedDescription
-                return true
-            }
-        )
+        guard let enumerator = historyEnumerator(directory, { _, error in
+            failure = error.localizedDescription
+            return true
+        }) else { return ([], failure ?? "Папка записей недоступна.") }
 
-        while let url = enumerator?.nextObject() as? URL {
+        while let url = enumerator.nextObject() as? URL {
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                 if url.lastPathComponent == "raw" || url.lastPathComponent == "experiments" {
-                    enumerator?.skipDescendants()
+                    enumerator.skipDescendants()
                     continue
                 }
                 if url.lastPathComponent.hasPrefix("meeting_") {
@@ -565,22 +564,34 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     }
 
     /// Refreshes entries from disk, guarding against overwriting active jobs or concurrent updates.
-    public func refresh(root: URL) async -> (entries: [RecordingEntry], error: String?) {
-        let (requestGeneration, beforeRevisions) = withLock { () -> (Int, [URL: Int]) in
+    public struct RefreshRequest: Sendable {
+        fileprivate let generation: Int
+        fileprivate let revisions: [URL: Int]
+    }
+
+    /// Reserve ordering before handing filesystem work to another executor.
+    public func beginRefresh() -> RefreshRequest {
+        withLock {
             generation += 1
-            return (generation, revisions)
+            return RefreshRequest(generation: generation, revisions: revisions)
+        }
+    }
+
+    public func refresh(root: URL, request: RefreshRequest? = nil, allowMissingRoot: Bool = false) async -> (entries: [RecordingEntry], error: String?) {
+        let request = request ?? beginRefresh()
+        var scanResult = scanRecordings(in: root)
+        if !allowMissingRoot, !fileManager.fileExists(atPath: root.path) {
+            scanResult.error = "Папка записей недоступна."
         }
 
-        let scanResult = scanRecordings(in: root)
-
         let (sorted, errorToReport, subscribersToNotify) = withLock { () -> ([RecordingEntry], String?, [@Sendable ([RecordingEntry]) -> Void]) in
-            guard requestGeneration == generation else {
+            guard request.generation == generation else {
                 return (entriesMap.values.sorted { $0.date > $1.date }, nil, [])
             }
 
             for scanned in scanResult.entries {
                 let id = scanned.id
-                if revisions[id] == beforeRevisions[id] {
+                if revisions[id] == request.revisions[id] {
                     if entriesMap[id]?.phase.isWorking == true || unsavedEntries.contains(id) || !allowsHistoryMutation(id) { continue }
                     revisions[id, default: 0] += 1
                     entriesMap[id] = scanned

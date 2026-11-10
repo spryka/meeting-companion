@@ -13,6 +13,9 @@ public final class RecordingHistory: ObservableObject {
     @Published public private(set) var notice: String?
     @Published public var progress: [URL: TranscriptionProgress] = [:]
     public let repository: RecordingHistoryRepository
+    @Published public private(set) var refreshError: String?
+    @Published public private(set) var refreshCompletion: UUID?
+    private var refreshRequest: UUID?
     private var revision = -1
     private var observation: Task<Void, Never>?
 
@@ -47,12 +50,32 @@ public final class RecordingHistory: ObservableObject {
     public func clearNotice() { notice = nil }
     public func entry(_ url: URL) -> RecordingEntry? { entries.first { $0.id == url } }
 
-    public func refresh(root: URL) async {
+    func invalidateRefresh() {
+        refreshRequest = nil
+        _ = repository.beginRefresh()
+        loading = false
+        refreshError = nil
+        refreshCompletion = nil
+    }
+
+    public func refresh(root: URL, manual: Bool = false) async {
+        let id = UUID(), repository = repository
+        refreshRequest = id
+        let request = repository.beginRefresh()
         loading = true
-        defer { loading = false; initialLoadComplete = true }
-        let result = await repository.refresh(root: root)
+        refreshError = nil
+        let result = await Task.detached {
+            await repository.refresh(root: root, request: request, allowMissingRoot: !manual)
+        }.value
+        guard refreshRequest == id else { return }
         await synchronize()
-        if let failure = result.error { error = failure }
+        guard refreshRequest == id else { return }
+        loading = false
+        initialLoadComplete = true
+        if manual {
+            refreshError = result.error.map { "Не удалось полностью обновить библиотеку. Повторите обновление. " + $0 }
+            if result.error == nil { refreshCompletion = id }
+        } else if let failure = result.error { error = failure }
     }
 
     public func putThrowing(_ entry: RecordingEntry, persist: Bool = true) async throws {

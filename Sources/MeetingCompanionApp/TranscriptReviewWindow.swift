@@ -86,7 +86,8 @@ final class TranscriptReviewWindowManager: ObservableObject {
         if openingURL == key, let opening { return try await opening.value }
         generation += 1
         let expected = generation
-        loading = true
+        let reusesCurrent = current.map { $0.state.id == key && !$0.state.isClosed } ?? false
+        loading = !reusesCurrent
         defer {
             if expected == generation { loading = false; opening = nil; openingURL = nil }
         }
@@ -94,6 +95,7 @@ final class TranscriptReviewWindowManager: ObservableObject {
         guard expected == generation else { throw TranscriptWindowError.closed }
         guard admitted() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
         if let current, current.state.id == key, !current.state.isClosed { return current }
+        loading = true
         let previous = opening
         failure = nil; openingURL = key
         let task = Task { [self] in
