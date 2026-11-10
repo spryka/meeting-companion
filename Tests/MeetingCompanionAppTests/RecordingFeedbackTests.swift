@@ -173,6 +173,12 @@ private struct FeedbackExporter: AudioExporterProtocol {
         f.model.history.reportError(localB, recording: f.b)
         try await f.settle("global library error is visible") { f.visibleText().contains(global) }
         try await f.finishJobForA()
+        try await f.settle("initial library scan finishes") { !f.model.history.loading }
+        let current = f.model.workspace.current
+        try #require(f.model.requestLibraryRefresh())
+        try await f.settle("manual refresh finishes") { !f.model.libraryRefreshPending }
+        #expect(f.model.history.refreshError == nil && f.model.history.refreshCompletion != nil)
+        #expect(f.model.selectedHistoryURL == f.b && f.model.workspace.current === current)
         #expect(f.visibleText().contains(global))
         #expect(f.visibleText().contains(localB))
         #expect(!f.visibleText().contains(f.warning))
