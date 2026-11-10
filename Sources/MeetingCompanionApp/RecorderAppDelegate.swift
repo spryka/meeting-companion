@@ -14,7 +14,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         historyRepository: historyRepository,
         retryAdmission: { [weak self] recording in
             guard let self else { return false }
-            return await self.model.workspace.prepareForRetry(recording)
+            return await self.model.prepareRecordingRetry(recording)
         }
     )
     private lazy var model = RecorderViewModel(
@@ -70,6 +70,12 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         let item = NSMenuItem(title: "Запись", action: nil, keyEquivalent: "")
         item.submenu = workspace.makeCommandMenu()
         menu.addItem(item)
+        let view = menu.items.first { $0.title == "Вид" || $0.title == "View" }
+            ?? NSMenuItem(title: "Вид", action: nil, keyEquivalent: "")
+        view.title = "Вид"
+        if view.submenu == nil { view.submenu = NSMenu(title: "Вид") }
+        view.submenu?.addItem(workspace.makeCommandMenuItem(.refreshLibrary))
+        if view.menu == nil { menu.addItem(view) }
     }
 
     func setUpPresentation() {
@@ -155,8 +161,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     @objc func startRecordingAction() {
-        guard model.canStartRecording else { return }
-        model.mainPage = .recording
+        guard model.requestRecordingForm() else { return }
         showWindow()
     }
     @objc func stopRecordingAction(_ sender: NSMenuItem? = nil) {

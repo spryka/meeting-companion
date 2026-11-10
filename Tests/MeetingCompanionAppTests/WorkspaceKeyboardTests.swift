@@ -7,6 +7,100 @@ import MeetingCompanionCore
 
 @Suite(.serialized) @MainActor
 struct WorkspaceKeyboardTests {
+    @Test func refreshShortcutFromSearchAndViewMenuShareAdmission() async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        try await fixture.loadPlayableRecording()
+        try await fixture.settle { !fixture.model.history.loading }
+        let current = try #require(fixture.model.workspace.current)
+        current.togglePlayback()
+        let window = try #require(fixture.delegate.window as? WorkspaceWindow)
+        let previousMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMenu }
+        let root = NSMenu()
+        NSApp.mainMenu = root
+        fixture.delegate.installWorkspaceCommands()
+        let view = try #require(root.item(withTitle: "Вид")?.submenu)
+        let item = try #require(view.items.first { $0.title == "Обновить библиотеку" })
+        #expect(item.keyEquivalent == "r" && item.keyEquivalentModifierMask == .command)
+        #expect(root.item(withTitle: "Запись")?.submenu?.items.contains { $0.title == item.title } == false)
+        let field = try #require(fixture.searchField)
+        #expect(window.makeFirstResponder(field))
+        #expect(window.performKeyEquivalent(with: fixture.key("r", code: 15, modifiers: .command)))
+        #expect(fixture.model.libraryRefreshPending)
+        #expect(!window.validateMenuItem(item))
+        try await fixture.settle { !fixture.model.libraryRefreshPending }
+        #expect(fixture.model.history.refreshCompletion != nil)
+        #expect(fixture.model.workspace.current === current)
+        #expect(current.playbackState == .playing)
+        let completion = fixture.model.history.refreshCompletion
+        #expect(fixture.model.presentSettings())
+        #expect(!window.validateMenuItem(item))
+        #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        await Task.yield()
+        #expect(!fixture.model.libraryRefreshPending)
+        #expect(fixture.model.history.refreshCompletion == completion)
+    }
+
+    @Test func manualLibraryRefreshAdmitsOnlyOneRequestAndPreservesReview() async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        try await fixture.loadPlayableRecording()
+        try await fixture.settle { !fixture.model.history.loading }
+        let current = try #require(fixture.model.workspace.current)
+        let selected = fixture.model.selectedHistoryURL
+        fixture.model.history.reportError("Existing save error")
+        #expect(fixture.model.requestLibraryRefresh())
+        #expect(!fixture.model.requestLibraryRefresh())
+        try await fixture.settle { !fixture.model.libraryRefreshPending }
+        #expect(fixture.model.history.refreshError == nil)
+        #expect(fixture.model.history.refreshCompletion != nil)
+        #expect(fixture.model.history.error == "Existing save error")
+        #expect(fixture.model.workspace.current === current)
+        #expect(fixture.model.selectedHistoryURL == selected)
+    }
+
+    @Test(arguments: ["settings", "external", "sheet", "inactive", "hidden", "form"])
+    func manualLibraryRefreshRespectsAdmission(blocker: String) async throws {
+        let fixture = try KeyboardFixture()
+        defer { fixture.close() }
+        try await fixture.ready()
+        let window = try #require(fixture.delegate.window as? WorkspaceWindow)
+        let sheet = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        switch blocker {
+        case "settings": #expect(fixture.model.presentSettings())
+        case "external": fixture.model.workspace.externalModal = true
+        case "sheet": window.beginSheet(sheet, completionHandler: nil)
+        case "inactive": window.isKeyboardTarget = { false }
+        case "hidden": window.orderOut(nil)
+        default: fixture.model.mainPage = .recording
+        }
+        #expect(!fixture.model.requestLibraryRefresh())
+        #expect(!fixture.model.libraryRefreshPending)
+        #expect(fixture.model.history.refreshCompletion == nil)
+        if window.attachedSheet === sheet { window.endSheet(sheet) }
+    }
+
+    @Test func historyManualMissingRootAndSuccessfulRetryOwnOnlyRefreshError() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let history = RecordingHistory()
+        await history.refresh(root: root)
+        #expect(history.error == nil) // First launch may not have a recordings folder yet.
+        history.reportError("Save failed")
+        await history.refresh(root: root, manual: true)
+        #expect(history.refreshError != nil)
+        #expect(!history.loading)
+        #expect(history.error == "Save failed")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        await history.refresh(root: root, manual: true)
+        #expect(history.refreshError == nil)
+        #expect(history.refreshCompletion != nil)
+        #expect(history.error == "Save failed")
+    }
+
     @Test(arguments: [false, true]) func windowResponderRecoversAtNativeLifecycleBoundary(sheet: Bool) async throws {
         let fixture = try KeyboardFixture()
         defer { fixture.close() }
