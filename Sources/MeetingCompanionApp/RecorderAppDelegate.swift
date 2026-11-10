@@ -101,12 +101,6 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
                 }
             }
         }
-        model.onOpenTranscript = { [weak self] entry in
-            guard let self else { return }
-            guard self.model.workspace.admitNavigation() else { return }
-            self.model.showTranscript(entry.id)
-            self.showWindow()
-        }
         NSApp.appearance = model.appearance.value
         NSApp.setActivationPolicy(.accessory)
         window = WorkspaceWindow(model: model)

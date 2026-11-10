@@ -43,7 +43,6 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     private var entriesMap: [URL: RecordingEntry] = [:]
     private var revisions: [URL: Int] = [:]
     private var generation: Int = 0
-    private var lastError: String?
     private var unsavedEntries: Set<URL> = []
     private var workReservations: [URL: Set<UUID>] = [:]
     private var trashReservations: [URL: UUID] = [:]
@@ -440,7 +439,6 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         entriesMap[id] = updated
         revisions[id, default: 0] += 1
         unsavedEntries.insert(id)
-        lastError = warning
         return updated
     }
 
@@ -469,7 +467,6 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
             return HistoryPersistenceResult(value: try updateThrowing(url, change))
         } catch {
             let warning = "Не удалось сохранить историю. Аудио не удалено: " + error.localizedDescription
-            withLock { lastError = warning }
             return HistoryPersistenceResult(value: entry(url), persistenceWarning: warning)
         }
     }
@@ -567,26 +564,51 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
     public struct RefreshRequest: Sendable {
         fileprivate let generation: Int
         fileprivate let revisions: [URL: Int]
+        fileprivate let entries: Set<URL>
     }
 
     /// Reserve ordering before handing filesystem work to another executor.
     public func beginRefresh() -> RefreshRequest {
         withLock {
             generation += 1
-            return RefreshRequest(generation: generation, revisions: revisions)
+            return RefreshRequest(generation: generation, revisions: revisions, entries: Set(entriesMap.keys))
         }
     }
 
-    public func refresh(root: URL, request: RefreshRequest? = nil, allowMissingRoot: Bool = false) async -> (entries: [RecordingEntry], error: String?) {
+    public func refresh(root: URL, request: RefreshRequest? = nil, allowMissingRoot: Bool = false,
+                        preservingMissing: @Sendable () async -> Set<URL> = { [] }) async -> (entries: [RecordingEntry], error: String?) {
         let request = request ?? beginRefresh()
         var scanResult = scanRecordings(in: root)
         if !allowMissingRoot, !fileManager.fileExists(atPath: root.path) {
             scanResult.error = "Папка записей недоступна."
         }
+        let scannedIDs = Set(scanResult.entries.map(\.id))
+        let rootComponents = root.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let canPrune = scanResult.error == nil && fileManager.fileExists(atPath: root.path)
+        let protectedIDs: Set<URL>
+        if canPrune, withLock({ request.generation == generation }) {
+            protectedIDs = await preservingMissing()
+        } else {
+            protectedIDs = []
+        }
 
         let (sorted, errorToReport, subscribersToNotify) = withLock { () -> ([RecordingEntry], String?, [@Sendable ([RecordingEntry]) -> Void]) in
             guard request.generation == generation else {
                 return (entriesMap.values.sorted { $0.date > $1.date }, nil, [])
+            }
+
+            if canPrune {
+                for id in request.entries where id.pathComponents.starts(with: rootComponents)
+                    && !scannedIDs.contains(id) && !protectedIDs.contains(id) {
+                    guard let entry = entriesMap[id], revisions[id] == request.revisions[id],
+                          !entry.phase.isWorking, !unsavedEntries.contains(id), allowsHistoryMutation(id),
+                          !workReservations.contains(where: {
+                              !$0.value.isEmpty && foldersOverlap(id.deletingLastPathComponent().path, $0.key.deletingLastPathComponent().path)
+                          }) else { continue }
+                    entriesMap.removeValue(forKey: id)
+                    // Keep a newer revision so UI snapshots and late writers cannot resurrect the row.
+                    revisions[id, default: 0] += 1
+                }
             }
 
             for scanned in scanResult.entries {
@@ -600,7 +622,6 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
 
             let sorted = entriesMap.values.sorted { $0.date > $1.date }
             let error = scanResult.error.map { "Не удалось прочитать часть истории: " + $0 }
-            self.lastError = error
             return (sorted, error, self.subscribers)
         }
 

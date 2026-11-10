@@ -7,6 +7,89 @@ import MeetingCompanionCore
 
 @Suite(.serialized) @MainActor
 struct LibraryRefreshCommandTests {
+    @Test(arguments: [false, true])
+    func refreshReconcilesRemovedSelectionWithoutReopeningOtherDocument(removesSelected: Bool) async throws {
+        let repository = RecordingHistoryRepository()
+        let fixture = try RefreshCommandFixture(repository: repository)
+        defer { fixture.close() }
+        try await fixture.ready()
+        let selected = fixture.root.appendingPathComponent("meeting_selected/meeting_selected.m4a")
+        let other = fixture.root.appendingPathComponent("meeting_other/meeting_other.m4a")
+        for recording in [selected, other] {
+            try FileManager.default.createDirectory(at: recording.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: recording)
+            try Data("Synthetic saved text".utf8).write(to: recording.deletingPathExtension().appendingPathExtension("sources.transcript.txt"))
+        }
+        await fixture.model.history.refresh(root: fixture.root)
+        let request = try #require(fixture.model.showTranscript(selected))
+        #expect(await fixture.model.loadWorkspace(request))
+        let session = try #require(fixture.model.workspace.current)
+        let removed = removesSelected ? selected : other
+        try FileManager.default.moveItem(at: removed.deletingLastPathComponent(), to: fixture.root.appendingPathComponent(".moved"))
+
+        #expect(fixture.model.requestLibraryRefresh())
+        for _ in 0..<200 where fixture.model.libraryRefreshPending { try await Task.sleep(for: .milliseconds(5)) }
+
+        #expect(!fixture.model.libraryRefreshPending)
+        #expect(fixture.model.history.entries.count == 1)
+        #expect(fixture.model.history.entry(removed) == nil)
+        #expect(fixture.model.history.refreshError == nil)
+        if removesSelected {
+            #expect(fixture.model.selectedHistoryURL == nil)
+            #expect(fixture.model.workspace.current == nil)
+            #expect(session.state.isClosed)
+            #expect(!(await fixture.model.loadWorkspace(request)))
+        } else {
+            #expect(fixture.model.selectedHistoryURL == selected)
+            #expect(fixture.model.workspace.current === session)
+            #expect(!session.state.isClosed)
+        }
+    }
+
+    @Test(arguments: ["modal", "native"])
+    func refreshDoesNotCloseInputOpenedDuringScan(input: String) async throws {
+        let repository = RecordingHistoryRepository()
+        let fixture = try RefreshCommandFixture(repository: repository)
+        defer { fixture.model.workspace.nativeInput = { false }; fixture.close() }
+        try await fixture.ready()
+        let recording = fixture.root.appendingPathComponent("meeting_selected/meeting_selected.m4a")
+        try FileManager.default.createDirectory(at: recording.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: recording)
+        try Data("Synthetic saved text".utf8).write(to: recording.deletingPathExtension().appendingPathExtension("sources.transcript.txt"))
+        await fixture.model.history.refresh(root: fixture.root)
+        let request = try #require(fixture.model.showTranscript(recording))
+        #expect(await fixture.model.loadWorkspace(request))
+        let session = try #require(fixture.model.workspace.current)
+        try FileManager.default.moveItem(at: recording.deletingLastPathComponent(), to: fixture.root.appendingPathComponent(".moved"))
+        let gate = RefreshScanGate()
+        let enumerate = repository.historyEnumerator
+        repository.historyEnumerator = { directory, handler in
+            gate.waitForFirstScan()
+            return enumerate(directory, handler)
+        }
+        defer { gate.release.signal() }
+        #expect(fixture.model.requestLibraryRefresh())
+        for _ in 0..<200 where gate.scanCount == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(gate.scanCount == 1)
+        if input == "modal" { fixture.model.workspace.externalModal = true }
+        else { fixture.model.workspace.nativeInput = { true } }
+        gate.release.signal()
+        for _ in 0..<200 where fixture.model.libraryRefreshPending { try await Task.sleep(for: .milliseconds(5)) }
+
+        #expect(!fixture.model.libraryRefreshPending)
+        #expect(fixture.model.history.entries.map(\.id) == [recording])
+        #expect(fixture.model.selectedHistoryURL == recording)
+        #expect(fixture.model.workspace.current === session)
+        #expect(!session.state.isClosed)
+        fixture.model.workspace.externalModal = false
+        fixture.model.workspace.nativeInput = { false }
+        #expect(fixture.model.requestLibraryRefresh())
+        for _ in 0..<200 where fixture.model.libraryRefreshPending { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(fixture.model.selectedHistoryURL == nil)
+        #expect(fixture.model.workspace.current == nil)
+        #expect(session.state.isClosed)
+    }
+
     @Test func statusMenuFormRouteRechecksNativeInput() async throws {
         let fixture = try RefreshCommandFixture(repository: RecordingHistoryRepository())
         defer { fixture.close() }

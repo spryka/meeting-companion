@@ -56,7 +56,6 @@ public final class RecordingHistory: ObservableObject {
         for case let message? in [error, local, persistence] where !messages.contains(message) { messages.append(message) }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
-    public func clearError() { error = nil; recordingErrors.removeAll() }
     public func clearError(for recording: URL) { recordingErrors.removeValue(forKey: RecordingEntry.canonicalURL(recording)) }
     public func reportNotice(_ message: String) { notice = message }
     public func clearNotice() { notice = nil }
@@ -70,14 +69,16 @@ public final class RecordingHistory: ObservableObject {
         refreshCompletion = nil
     }
 
-    public func refresh(root: URL, manual: Bool = false) async {
+    public func refresh(root: URL, manual: Bool = false,
+                        preservingMissing: @escaping @Sendable () async -> Set<URL> = { [] }) async {
         let id = UUID(), repository = repository
         refreshRequest = id
         let request = repository.beginRefresh()
         loading = true
         refreshError = nil
         let result = await Task.detached {
-            await repository.refresh(root: root, request: request, allowMissingRoot: !manual)
+            await repository.refresh(root: root, request: request, allowMissingRoot: !manual,
+                                     preservingMissing: preservingMissing)
         }.value
         guard refreshRequest == id else { return }
         await synchronize()

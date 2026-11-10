@@ -151,7 +151,6 @@ public actor RecordingSessionService {
 
     private var state: State = .idle
     private var workReservation: UUID?
-    private var subscribers: [@Sendable (RecordingSessionSnapshot) -> Void] = []
     private let historyRepo: RecordingHistoryRepository
 
     public init(historyRepo: RecordingHistoryRepository = RecordingHistoryRepository()) {
@@ -195,20 +194,8 @@ public actor RecordingSessionService {
         }
     }
 
-    /// Registers a state subscriber and delivers the current snapshot immediately.
-    @discardableResult
-    public func addSubscriber(
-        _ subscriber: @escaping @Sendable (RecordingSessionSnapshot) -> Void
-    ) -> RecordingSessionSnapshot {
-        subscribers.append(subscriber)
-        let snapshot = currentSnapshot
-        subscriber(snapshot)
-        return snapshot
-    }
-
     private func notifySubscribers() {
         let snapshot = currentSnapshot
-        for subscriber in subscribers { subscriber(snapshot) }
         for observer in observers.values { observer.yield(snapshot) }
     }
 

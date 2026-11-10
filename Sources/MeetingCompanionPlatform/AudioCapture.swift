@@ -95,16 +95,6 @@ final class AudioDelivery: @unchecked Sendable {
         if report.failure == nil { report.failure = error.localizedDescription }
     }
 
-    func noteMicrophoneRecovery(reason: String) {
-        lock.lock(); defer { lock.unlock() }
-        report.microphoneRecoveries = (report.microphoneRecoveries ?? 0) + 1
-        if (report.microphoneRecoveryEvents?.count ?? 0) < 128 {
-            if report.microphoneRecoveryEvents == nil { report.microphoneRecoveryEvents = [] }
-            report.microphoneRecoveryEvents?.append(MicrophoneRecoveryEvent(
-                timestamp: CMClockGetTime(CMClockGetHostTimeClock()).seconds, reason: reason))
-        }
-    }
-
     func submit(_ buffer: AVAudioPCMBuffer, time: CMTime, microphone: Bool) {
         guard slots.wait(timeout: .now()) == .success else {
             let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
