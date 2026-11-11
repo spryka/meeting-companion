@@ -55,7 +55,8 @@ artifact layout, failure behavior and evaluation method.
   canonical folder basename == recording stem (standard since 1.4.0). Legacy flat
   placement is list + contained saved TXT read-only; never process or write it.
 - VAD gates whole existing ASR windows; keep absolute timestamps and original audio.
-  Only a detection copy is amplified. Preserve baseline GigaAM text with Parakeet enabled.
+  Gate windows by existing Nemotron intervals; unavailable/empty diarization admits all windows.
+  Preserve baseline GigaAM text with Parakeet enabled.
 - Keep processing UI event-driven and discrete; no continuous animation for transcription.
 - On transcription failure keep audio and logs, and allow retry.
 - Capture warnings must not block transcription of finalized WAVs. Keep the bounded

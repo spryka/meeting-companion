@@ -23,9 +23,9 @@ final class ModelAssetsTests: XCTestCase {
             log.append(message)
             if message.hasPrefix("Проверка файла 1/") { try? Data("corrupt synthetic content".utf8).write(to: file) }
         })
-        XCTAssertEqual(log.messages.count, 10)
+        XCTAssertEqual(log.messages.count, 8)
         XCTAssertTrue(log.messages.first?.contains("gigaam/manifest.json (SHA-256)") == true)
-        XCTAssertTrue(log.messages.last?.hasPrefix("Проверка файла 10/10:") == true)
+        XCTAssertTrue(log.messages.last?.hasPrefix("Проверка файла 8/8:") == true)
         XCTAssertFalse(result.ready)
         XCTAssertTrue(result.missingFiles.contains("gigaam/manifest.json (corrupt checksum)"))
     }
@@ -37,8 +37,27 @@ final class ModelAssetsTests: XCTestCase {
         let log = AssetProgressLog()
         XCTAssertThrowsError(try ModelAssets.prepare(modelRoot: root, parakeet: false,
             allowDownload: false, onProgress: { log.append($0) }))
-        XCTAssertTrue(log.messages.first?.hasPrefix("Проверка файла 1/10:") == true,
+        XCTAssertTrue(log.messages.first?.hasPrefix("Проверка файла 1/8:") == true,
             "Initial checksum scan must be visible before preparation: \(log.messages)")
+    }
+
+    func testSileroIsNotRequiredOrTouchedByPreparation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for spec in [ModelAssets.gigaamSpec, ModelAssets.nemotronSpec] {
+            let directory = root.appendingPathComponent(spec.name)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for file in spec.files { try Data([1]).write(to: directory.appendingPathComponent(file.filename)) }
+        }
+        XCTAssertTrue(ModelAssets.checkAvailability(modelRoot: root, parakeet: false, verifyChecksums: false).ready)
+        let vad = root.appendingPathComponent("vad")
+        try FileManager.default.createDirectory(at: vad, withIntermediateDirectories: true)
+        let marker = vad.appendingPathComponent("model.safetensors")
+        try Data([42]).write(to: marker)
+        let log = AssetProgressLog()
+        XCTAssertThrowsError(try ModelAssets.prepare(modelRoot: root, parakeet: false, allowDownload: false, onProgress: { log.append($0) }))
+        XCTAssertFalse(log.messages.contains { $0.contains("vad/") })
+        XCTAssertEqual(try Data(contentsOf: marker), Data([42]))
     }
 
     func testModelSpecsPinnedIntegrity() {

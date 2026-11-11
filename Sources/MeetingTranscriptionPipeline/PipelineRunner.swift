@@ -6,7 +6,6 @@ import MLX
 import MLXNN
 import GigaAMKit
 import Nemotron
-import PipelineSilero
 import MLXAudioSTT
 import MeetingCompanionCore
 
@@ -264,69 +263,16 @@ public final class PipelineRunner: @unchecked Sendable {
         }
 
         // ----------------------------------------------------
-        // Stage 2: Silero VAD
+        // Stage 2: Reuse Nemotron speech intervals
         // ----------------------------------------------------
-        try checkCancellation(checkCancel)
-        station(.vad, "host", .started)
-        let vadDir = modelPath("vad")
-        if FileManager.default.fileExists(atPath: vadDir.path) {
-            do {
-                let vadModel = try PipelineSilero.SileroVAD.fromModelDirectory(vadDir)
-                eval(vadModel.parameters())
-                MLX.Stream.gpu.synchronize()
-
-                for i in channels.indices {
-                    try checkCancellation(checkCancel)
-                    onProgress?(PipelineProgressEvent(stage: .vad, channel: channels[i].id.rawValue, completed: 0, total: 1))
-                    do {
-                        let reader = try PCMReader(channels[i].recognitionURL, block: 160_000)
-                        let (p, _) = try boundedVAD(vadModel, checkCancel: checkCancel) {
-                            try reader.next()
-                        }
-                        let probs = MLXArray(p)
-                        eval(probs)
-                        let speech = PipelineSilero.SileroVAD.probsToTimestamps(
-                            probs,
-                            audioLen: channels[i].frameCount,
-                            sampleRate: 16000,
-                            threshold: 0.5,
-                            minSpeechDurationMs: 250,
-                            minSilenceDurationMs: 250,
-                            speechPadMs: 150
-                        )
-                        let accepted = PipelineLogic.mask(channels[i].frameCount, speech.map { $0.start..<$0.end })
-                        channels[i].windowMask = accepted
-                    } catch {
-                        try checkCancellation(checkCancel)
-                        channels[i].warnings.append(TranscriptDocument.Warning(
-                            code: "vad_failed",
-                            sourceID: channels[i].id,
-                            message: "Сбой VAD: \(error.localizedDescription)"
-                        ))
-                    }
-                    let reason = channels[i].warnings.filter { $0.code.hasPrefix("vad_") }.map(\.message).joined(separator: "\n")
-                    station(.vad, channels[i].id.rawValue, reason.isEmpty ? .completed : .failed, reason.isEmpty ? nil : reason)
-                }
-            } catch {
-                try checkCancellation(checkCancel)
-                for i in channels.indices {
-                    channels[i].warnings.append(TranscriptDocument.Warning(
-                        code: "vad_load_failed",
-                        sourceID: channels[i].id,
-                        message: "Не удалось загрузить VAD: \(error.localizedDescription)"
-                    ))
-                }
-            }
-            for channel in channels {
-                let reason = channel.warnings.filter { $0.code == "vad_load_failed" }.map(\.message).joined(separator: "\n")
-                if !reason.isEmpty {
-                    station(.vad, channel.id.rawValue, .failed, reason)
-                }
-            }
-            MLX.Stream.gpu.synchronize()
-            Memory.clearCache()
-        } else {
-            for channel in channels { station(.vad, channel.id.rawValue, .skipped, "Модель Silero VAD недоступна.") }
+        for i in channels.indices {
+            try checkCancellation(checkCancel)
+            let usable = channels[i].diarizationStatus == .completed && !channels[i].intervals.isEmpty
+            channels[i].windowMask = PipelineLogic.speechMask(
+                channels[i].frameCount, channels[i].intervals, status: channels[i].diarizationStatus
+            )
+            station(.vad, channels[i].id.rawValue, usable ? .completed : .skipped,
+                    usable ? nil : "Нет интервалов речи Nemotron; распознаются все окна.")
         }
 
         // ----------------------------------------------------
