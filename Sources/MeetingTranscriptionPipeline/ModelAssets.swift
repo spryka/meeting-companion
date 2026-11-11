@@ -124,7 +124,7 @@ public enum ModelAssets {
         let fm = FileManager.default
         var missing: [String] = []
 
-        var specs = [gigaamSpec, vadSpec, nemotronSpec]
+        var specs = [gigaamSpec, nemotronSpec]
         if parakeet {
             specs.append(parakeetSpec)
         }
@@ -199,7 +199,7 @@ public enum ModelAssets {
 
         try fm.createDirectory(at: standardizedRoot, withIntermediateDirectories: true)
 
-        var specs = [gigaamSpec, vadSpec, nemotronSpec]
+        var specs = [gigaamSpec, nemotronSpec]
         if parakeet {
             specs.append(parakeetSpec)
         }

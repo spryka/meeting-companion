@@ -577,7 +577,7 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
             switch self {
             case .echo: "WebRTC AEC"
             case .diarization: "Nemotron"
-            case .vad: "Silero VAD"
+            case .vad: "Nemotron (отбор окон)"
             case .recognition: "GigaAM"
             case .correction: "Parakeet"
             default: nil

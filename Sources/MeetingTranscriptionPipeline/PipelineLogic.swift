@@ -50,6 +50,15 @@ public enum PipelineLogic {
         }
     }
 
+    static func speechMask(_ samples: Int, _ intervals: [DiarizationInterval], status: TranscriptDocument.ProcessingStatus) -> [Bool] {
+        windows(samples).map { window in
+            status != .completed || intervals.isEmpty || intervals.contains { interval in
+                max(Double(window.lowerBound) / 16000, interval.start)
+                    < min(Double(window.upperBound) / 16000, interval.end)
+            }
+        }
+    }
+
     private static func round3(_ value: Double) -> Double {
         (value * 1000.0).rounded() / 1000.0
     }

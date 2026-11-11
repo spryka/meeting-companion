@@ -178,6 +178,18 @@ struct ApplicationServiceTests {
         }
     }
 
+    @Test func nemotronGateProgressUsesExistingTwoSourceRoute() {
+        let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: .init(parakeet: false, echoCancellation: false))
+        var snapshot = ProcessingProgressSnapshot(job: job)
+        #expect(ProcessingProgressSnapshot.Station.vad.model == "Nemotron (отбор окон)")
+        snapshot.receive(.init(stage: .vad, channel: "host", completed: 0, total: 0, state: .completed), jobID: job.id)
+        #expect(snapshot.states[.vad] == .current)
+        snapshot.receive(.init(stage: .vad, channel: "remote", completed: 0, total: 0, warning: "Нет интервалов; обработаем все окна.", state: .skipped), jobID: job.id)
+        #expect(snapshot.states[.vad] == .skipped)
+        #expect(snapshot.localFraction == nil && snapshot.route.count == 5)
+        #expect(snapshot.reasons[.vad] == "Нет интервалов; обработаем все окна.")
+    }
+
     @Test func processingLocalTruthAndSavingAcceptance() {
         let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: .init(parakeet: true, echoCancellation: true))
         var snapshot = ProcessingProgressSnapshot(job: job)
