@@ -14,13 +14,27 @@ public func boundedVAD(
     var samples: [Float] = []
     var context = Array(repeating: Float(0), count: 64)
     var frames = FeedFrames()
+    let compiledStep = compile(inputs: [model]) { (arrays: [MLXArray]) -> [MLXArray] in
+        // Fixed supported sample rate; first nil-state call stays on the original path.
+        let (p, s) = try! model(arrays[0], state: arrays[1], sampleRate: 16000)
+        return [p, s]
+    }
 
     func flush() throws {
         guard !samples.isEmpty else { return }
         let a = MLXArray(context + samples, [1, 64 + samples.count])
         var pending: [MLXArray] = []
         for pos in stride(from: 0, to: samples.count, by: 512) {
-            let (p, s) = try model(a[0..., pos..<pos + 576], state: state, sampleRate: 16000)
+            let window = a[0..., pos..<pos + 576]
+            let p: MLXArray
+            let s: MLXArray
+            if let state {
+                let result = compiledStep([window, state])
+                p = result[0]
+                s = result[1]
+            } else {
+                (p, s) = try model(window, state: nil, sampleRate: 16000)
+            }
             pending.append(p)
             state = s
             if pending.count % 16 == 0 { asyncEval([p, s]) }
