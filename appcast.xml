@@ -5,6 +5,17 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.0.0-beta.40</title>
+            <description><![CDATA[<p>Публичная бета 2.0.0-beta.40 (build 78): ускорена коррекция терминов и убран отдельный проход Silero.</p><ul><li>Целые окна распознавания выбираются по уже найденным интервалам Nemotron без фильтра минимальной длительности 250 мс.</li><li>При недоступной или пустой диаризации обрабатываются все окна дорожки.</li><li>Silero больше не требуется при подготовке; существующие файлы и ручные правки сохраняются.</li></ul><p>На четырёх контрольных записях сохранились короткие реплики; общая точность и стабильное ускорение не установлены. Предварительная версия без Apple notarization, macOS 15+, Apple Silicon.</p>]]></description>
+            <pubDate>Wed, 11 Nov 2026 18:45:10 +0300</pubDate>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>78</sparkle:version>
+            <sparkle:shortVersionString>2.0.0-beta.40</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.0.0-beta.40/Meeting-Companion-2.0.0-beta.40-arm64.zip" length="17041283" type="application/octet-stream" sparkle:edSignature="6Lzl6ylJE0H5BqZU6eseKQ54BPNndzqqvDysx7GfzEBTnqkOQaZL+Md7OrZNtOWXB35zmc0ZcnJcZnfv2WXECw=="/>
+        </item>
+        <item>
             <title>2.0.0-beta.36</title>
             <description><![CDATA[<p>Публичная бета 2.0.0-beta.36 (build 74) объединяет изменения beta.33-beta.36.</p><ul><li>Перенос встречи в Корзину с подтверждением и клавиатурой. Стрелки продолжают выбор после удаления.</li><li>Обновление библиотеки по кнопке, меню или ⌘R убирает исчезнувшие встречи и возвращает восстановленные. Работа и ввод защищены.</li><li>Ошибки и предупреждения относятся к нужной встрече.</li><li>Капсула показывает весь маршрут обработки и открывает подробности текущего этапа.</li><li>Исправлены повторное открытие текста и микс аудиодорожек при разнице хвостов ровно в один отсчёт. Исходные файлы сохраняются.</li></ul><p>Apple Silicon, macOS 15+. Предварительная версия без Apple notarization.</p>]]></description>
             <pubDate>Tue, 10 Nov 2026 21:06:33 +0300</pubDate>
