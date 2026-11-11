@@ -67,6 +67,10 @@ public enum PipelineLogic {
     public static func phoneticDistance(_ a: String, _ b: String) -> Double {
         let left = Array(norm(a))
         let right = Array(norm(b))
+        return phoneticDistance(left, right)
+    }
+
+    private static func phoneticDistance(_ left: [Character], _ right: [Character]) -> Double {
         if left.isEmpty || right.isEmpty {
             return left == right ? 0.0 : 1.0
         }
@@ -102,26 +106,67 @@ public enum PipelineLogic {
     ) -> ([PipelineWord], [Suggestion]) {
         let g = gigaam.sorted { $0.start < $1.start }
         let p = parakeet.sorted { $0.start < $1.start }
+        guard !g.isEmpty && !p.isEmpty else { return (g, []) }
+        struct Fragment {
+            let text: String
+            let tokens: [String]
+            let tokenCharacters: [[Character]]
+            let normalized: [Character]
+            let latinTokens: [Bool]
+            let latinPhrase: Bool
+
+            init(_ words: ArraySlice<PipelineWord>) {
+                text = words.map(\.text).joined(separator: " ")
+                tokens = text.split(whereSeparator: \.isWhitespace).map { PipelineLogic.norm(String($0)) }
+                // Token similarity normalizes the already-normalized tokens again.
+                tokenCharacters = tokens.map { Array(PipelineLogic.norm($0)) }
+                normalized = Array(PipelineLogic.norm(text))
+                latinTokens = tokens.map { $0.range(of: "^[a-z0-9_-]+$", options: .regularExpression) != nil }
+                latinPhrase = text.range(of: "^[a-zA-Z0-9_ -]+$", options: .regularExpression) != nil
+            }
+        }
+        let donors = p.indices.map { j in
+            (1...min(4, p.count - j)).map { Fragment(p[j..<(j + $0)]) }
+        }
+        // Ends need not be monotonic; a donor may end up to three words after its start.
+        var prefixEnds: [Double] = []
+        for word in p { prefixEnds.append(max(prefixEnds.last ?? -.infinity, word.end)) }
         let stop = stopWords
         var rows: [Suggestion] = []
+        var similarities: [Double] = []
 
         for i in 0..<g.count {
             for n in 1...min(4, g.count - i) {
-                let source = Array(g[i..<(i + n)])
-                guard source.allSatisfy({ $0.speaker == source[0].speaker }) else { continue }
-                let original = source.map(\.text).joined(separator: " ")
-                for j in 0..<p.count {
+                let source = g[i..<(i + n)]
+                guard source.allSatisfy({ $0.speaker == g[i].speaker }) else { continue }
+                let fragment = Fragment(source)
+                let original = fragment.text
+                if original.range(of: "\\d", options: .regularExpression) != nil { continue }
+                let protected = fragment.tokens.contains { stop.contains($0) }
+                var low = 0, high = p.count
+                while low < high {
+                    let mid = (low + high) / 2
+                    if prefixEnds[mid] <= g[i].start { low = mid + 1 } else { high = mid }
+                }
+                let first = max(0, low - 3)
+                low = 0; high = p.count
+                while low < high {
+                    let mid = (low + high) / 2
+                    if p[mid].start < source.last!.end { low = mid + 1 } else { high = mid }
+                }
+                guard first < low else { continue }
+                for j in first..<low {
                     for m in 1...min(4, p.count - j) {
-                        let donor = Array(p[j..<(j + m)])
-                        let overlap = min(source.last!.end, donor.last!.end) - max(source[0].start, donor[0].start)
+                        let donorEnd = p[j + m - 1].end
+                        let overlap = min(source.last!.end, donorEnd) - max(g[i].start, p[j].start)
                         if overlap > 0.05 {
-                            let proposed = donor.map(\.text).joined(separator: " ")
-                            let originalTokens = original.split(whereSeparator: \.isWhitespace).map { norm(String($0)) }
-                            let proposedTokens = proposed.split(whereSeparator: \.isWhitespace).map { norm(String($0)) }
+                            let donor = donors[j][m - 1]
+                            let proposed = donor.text
                             var allowed = true
-                            if originalTokens.count == proposedTokens.count {
-                                for (o, pr) in zip(originalTokens, proposedTokens) {
-                                    if !stop.contains(o) && (pr.range(of: "^[a-z0-9_-]+$", options: .regularExpression) != nil || similarity(o, pr) >= 0.5) {
+                            if fragment.tokens.count == donor.tokens.count {
+                                for k in fragment.tokens.indices {
+                                    let o = fragment.tokens[k], pr = donor.tokens[k]
+                                    if !stop.contains(o) && (donor.latinTokens[k] || max(0.0, 1.0 - phoneticDistance(fragment.tokenCharacters[k], donor.tokenCharacters[k])) >= 0.5) {
                                         continue
                                     }
                                     if o == pr { continue }
@@ -129,36 +174,38 @@ public enum PipelineLogic {
                                     break
                                 }
                             } else {
-                                allowed = proposed.range(of: "^[a-zA-Z0-9_ -]+$", options: .regularExpression) != nil
+                                allowed = donor.latinPhrase
                             }
-                            if !allowed || original.range(of: "\\d", options: .regularExpression) != nil || similarity(original, proposed) < 0.4 {
-                                continue
-                            }
-                            let union = max(source.last!.end, donor.last!.end) - min(source[0].start, donor[0].start)
-                            let protected = original.split(whereSeparator: \.isWhitespace).contains { stop.contains(norm(String($0))) }
+                            if !allowed { continue }
+                            let similarity = max(0.0, 1.0 - phoneticDistance(fragment.normalized, donor.normalized))
+                            if similarity < 0.4 { continue }
+                            let union = max(source.last!.end, donorEnd) - min(g[i].start, p[j].start)
                             rows.append(Suggestion(
-                                start: source[0].start,
+                                start: g[i].start,
                                 end: source.last!.end,
                                 original: original,
                                 proposed: proposed,
-                                score: round3(similarity(original, proposed)),
-                                donor_start: donor[0].start,
-                                donor_end: donor.last!.end,
+                                score: round3(similarity),
+                                donor_start: p[j].start,
+                                donor_end: donorEnd,
                                 source_indices: [i, i + n],
                                 donor_indices: [j, j + m],
                                 time_overlap: round3(overlap / union),
                                 applied: false,
                                 reason: protected ? "protected_word" : "candidate"
                             ))
+                            similarities.append(similarity)
                         }
                     }
                 }
             }
         }
-        func key(_ r: Suggestion) -> [Double] {
-            [similarity(r.original, r.proposed), r.time_overlap, Double(r.source_indices[0]), Double(r.source_indices[1] - r.source_indices[0]), Double(r.donor_indices[0]), Double(r.donor_indices[1] - r.donor_indices[0])]
+        func key(_ index: Int) -> [Double] {
+            let r = rows[index]
+            return [similarities[index], r.time_overlap, Double(r.source_indices[0]), Double(r.source_indices[1] - r.source_indices[0]), Double(r.donor_indices[0]), Double(r.donor_indices[1] - r.donor_indices[0])]
         }
-        let candidates = rows.indices.filter { rows[$0].reason == "candidate" }.sorted { key(rows[$1]).lexicographicallyPrecedes(key(rows[$0])) }
+        let keys = rows.indices.map(key)
+        let candidates = rows.indices.filter { rows[$0].reason == "candidate" }.sorted { keys[$1].lexicographicallyPrecedes(keys[$0]) }
         var selected: [Int] = []
         for index in candidates {
             let row = rows[index]
