@@ -42,7 +42,7 @@ editor sessions и window state. Это исходные места раздел
 | `MeetingCompanionCore` | Контракты записей, JSON v1 и progress; валидация; версии, edits/CAS/undo, speaker assignment, interval index, экспорт и файловые правила хранения | Нет |
 | `MeetingCompanionApplication` | Сценарии записи/остановки, последовательная очередь export→transcription, подготовка, retry/cancel, состояние истории, review session и playback controller; интерфейсы внешних операций | Core |
 | `MeetingCompanionPlatform` | macOS capture/permissions/devices, audio export, `Process` client worker, AVPlayer transport; разрешение bundle/resource paths | Application, Core |
-| `MeetingTranscriptionPipeline` | PCM readers, модели и их adapters, VAD/ASR/diarization/correction/merge, producer и атомарная публикация результата, manifest/download; MLX dependencies | Core |
+| `MeetingTranscriptionPipeline` | PCM readers, модели и их adapters, speech gate/ASR/diarization/correction/merge, producer и атомарная публикация результата, manifest/download; MLX dependencies | Core |
 | `MeetingTranscriptionWorker` | CLI arguments, сборка pipeline, progress stdout, exit/cancellation | Pipeline, Core |
 | `MeetingCompanionApp` | SwiftUI/AppKit, окна, view models, отображение ошибок/прогресса, calendar/reminders/updater; сборка зависимостей | Application, Platform, Core |
 | `MeetingCompanionCLI` | Разбор пользовательских команд и вывод; сборка тех же сценариев записи/обработки | Application, Platform, Core |
@@ -176,7 +176,7 @@ Weights, MLX/Metal и их ресурсы находятся только у wor
 
 ```text
 Nemotron: host → remote → освободить
-VAD:      host → remote → освободить
+speech gate:      host → remote → освободить
 GigaAM:   host → remote → освободить
 Назначить спикеров и сохранить исходный GigaAM в staging
 Parakeet: host → remote → освободить (если включён)
@@ -186,7 +186,7 @@ Parakeet: host → remote → освободить (если включён)
 На успешном запуске с двумя непустыми дорожками и всеми этапами нужны четыре
 загрузки вместо восьми. Отключённый или не требующий inference этап не загружает
 модель. Веса переиспользуются; inference state создаётся заново для каждого
-источника. Для Nemotron это включает историю голосов/cache, для VAD состояние
+источника. Для Nemotron это включает историю голосов/cache, для speech gate состояние
 и аудиоконтекст. Остальные adapters также не переносят decoder state между
 источниками. Способ reset/new session подтверждается исходниками и проверками
 двух дорожек, а не предположением о stateless API. Аудиопотоки не смешиваются,
@@ -247,17 +247,17 @@ Parakeet PoC использует `@testable import`/`-enable-testing` ради 
 public adapter в pinned source, без переписывания decoder. Обычный release build
 должен собираться без test visibility и сохранять полные token/journal checks.
 
-### Ограниченная память VAD и измерения ресурсов
+### Ограниченная память speech gate и измерения ресурсов
 
-Сохранённые полные часовые runs: Python RSS достигает1.933GiB на VAD, Swift
-F16+FFT —2.076GiB; MLX allocator cache после VAD около724MiB у обоих. Active
+Сохранённые полные часовые runs: Python RSS достигает1.933GiB на speech gate, Swift
+F16+FFT —2.076GiB; MLX allocator cache после speech gate около724MiB у обоих. Active
 allocations после прохода порядка1.2MiB сверх Python harness baseline. Это
 указывает на необходимость profiling временных copies/graphs/cache, но не
 идентифицирует конкретную утечку. `ru_maxrss` — high-water всего процесса;
 уменьшение MLX weights не означает снижения этого peak. Исходники/raw metrics
 и раздельная трактовка сведены в verification.
 
-Сначала VAD-only probe и profiling checkpoints, затем bounded PCM reader и
+Сначала speech gate-only probe и profiling checkpoints, затем bounded PCM reader и
 усиленная detection copy только текущего блока. Оригинал читается неизменным;
 не хранить две полные decoded PCM-дорожки, усиленные копии и графы всей записи.
 
@@ -282,14 +282,14 @@ RSS. Это выбор исследовательской пробы, не вн�
 методика, ablation и исторические ограничения — в verification.
 
 GigaAM/Parakeet читают из того же неизменного WAV только нужные исходные ASR
-окна по absolute offset, с прежним overlap; усиление VAD туда не попадает.
+окна по absolute offset, с прежним overlap; усиление speech gate туда не попадает.
 Перечитывание окна с диска допустимо ради ограниченной памяти. Nemotron сохраняет
 прежний offline preset и непрерывную историю голосов: независимый запуск модели
 на каждом файловом куске не заменяет существующую диаризацию всей дорожки.
 
 Состояние 512-sample feed,64 context, hysteresis, sample indices и EOF сохранять
 между блоками одного источника; сбрасывать только на смене источника. Оконная
-сетка ASR не становится сеткой независимых VAD-запусков. После обработки хранить
+сетка ASR не становится сеткой независимых speech gate-запусков. После обработки хранить
 компактные masks/intervals; полные probabilities нужны диагностическому harness,
 а не в рабочей памяти продукта. Их можно писать последовательно в evidence.
 
@@ -331,7 +331,7 @@ URLSession downloader для фиксированного manifest, без от�
 
 ### Перенос управляющей логики
 
-Публичные границы для TDD: PCM reader/window plan, VAD mask, model word adapters,
+Публичные границы для TDD: PCM reader/window plan, speech gate mask, model word adapters,
 speaker assignment, correction cascade, chronological merge/paragraphs, artifacts,
 process lifecycle. Проверки используют синтетические fixtures, перед портом
 выводы Python фиксируются в differential oracle. Golden fixtures не заменяют
@@ -342,7 +342,7 @@ process lifecycle. Проверки используют синтетическ�
 архитектуры нейросетей остаются upstream. Настройки моделей берутся из pinned
 профиля и baseline.md, правила группировки/артефактов — из текущего master.
 
-При сбое VAD проходят все окна с warning; сбой Nemotron сохраняет baseline ASR
+При сбое speech gate проходят все окна с warning; сбой Nemotron сохраняет baseline ASR
 с placeholder attribution и warning; Parakeet или journal failure возвращает
 GigaAM. Fatal ASR не публикует успешную версию, но сохраняет audio/log и retry.
 Не сбрасывать количество голосов при исключении молча в подтверждённый ноль.
@@ -483,7 +483,7 @@ Python/Swift чередуется по повтору. Отдельная сер
 после подготовки; OS page cache не объявлять cold. Не выполнять варианты
 параллельно; отсутствие других ML jobs фиксируется в run manifest.
 
-Измерять wall launch-to-exit, model load с принудительным MLX eval/sync, VAD,
+Измерять wall launch-to-exit, model load с принудительным MLX eval/sync, speech gate,
 diarization, ASR, speakers, Parakeet, correction, merge/persistence и total.
 До импорта MLX фиксировать process start. Parent monotonic clock включает spawn.
 Между этапами синхронизировать lazy GPU work. `ru_maxrss`/`time -l` на macOS в
@@ -529,7 +529,7 @@ identity сохраняется в dist, installed app не заменяется
 
 - Поэтапное выделение модулей из существующих Core/App по принятому ADR-0003.
 - Поддерживаемый public Parakeet timing API и его регрессии без test visibility.
-- Перенос bounded VAD/ASR reader с fallback/cancellation и измерениями на доступном Mac.
+- Перенос bounded speech gate/ASR reader с fallback/cancellation и измерениями на доступном Mac.
 - При замене Nemotron frontend — exact BF16 сравнение; оптимизация frontend
   не блокирует первый worker с прежним whole-file путём.
 - Source/license/provenance inventory и notices для поставляемых зависимостей/весов.

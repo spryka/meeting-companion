@@ -154,6 +154,16 @@ private final class PresentationLevels: AudioLevelMonitoring, @unchecked Sendabl
         try await wait { self.model.isRecording && self.model.lastFileURL == capture.outputURL }
         return capture
     }
+
+    func startWhenReady() async throws -> Bool {
+        for _ in 0..<500 {
+            // Queued session snapshots can change admission before this task runs.
+            if model.canStartRecording { return await model.startRecordingIntent() }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        Issue.record("Bounded synthetic start admission timed out")
+        return false
+    }
 }
 
 @Suite @MainActor struct RecordingPresentationTests {
@@ -453,15 +463,38 @@ private final class PresentationLevels: AudioLevelMonitoring, @unchecked Sendabl
         #expect(await f.model.cancelRecordingIntent(sessionID: f.model.activeSessionID))
         #expect(f.model.recordingCancelled)
         try await f.wait { !f.model.isRecording && !f.model.sessionStopping }
-        let start = Task { await f.model.startRecordingIntent() }
+        let start = Task { try await f.startWhenReady() }
         for _ in 0..<500 { if await gate.waiting { break }; try await Task.sleep(for: .milliseconds(2)) }
         #expect(await gate.waiting)
         try await Task.sleep(for: .milliseconds(2200))
         #expect(!f.model.capsuleDismissed, "A feedback timeout must not dismiss B admission")
         #expect(f.model.sessionStarting)
         #expect(panel.isVisible)
-        await gate.open(); #expect(await start.value)
+        await gate.open(); #expect(try await start.value)
         _ = try await f.session.stop(elapsed: 15, expectedSessionID: f.model.activeSessionID)
+    }
+
+    @Test func handoffStartFixtureWaitsForPendingStopObservation() async throws {
+        let f = try RecordingFixture(); defer { f.cleanup() }
+        try await f.wait { f.model.isAttached }
+        let capture = try await f.start("pending-stop")
+        let stopGate = CaptureGate()
+        capture.suspendStop = { await stopGate.wait() }
+        let oldSession = try #require(f.model.activeSessionID)
+        let stop = Task { try await f.session.stop(elapsed: 15, expectedSessionID: oldSession) }
+        for _ in 0..<500 { if await stopGate.waiting { break }; try await Task.sleep(for: .milliseconds(2)) }
+        try #require(await stopGate.waiting)
+        try await f.wait { f.model.sessionStopping }
+        var attempted = false
+        let start = Task { attempted = true; return try await f.startWhenReady() }
+        try await f.wait { attempted }
+        #expect(!f.model.canStartRecording)
+        await stopGate.open()
+        _ = try await stop.value
+        #expect(try await start.value)
+        if await f.session.isRecording {
+            _ = try await f.session.stop(elapsed: 15, expectedSessionID: f.model.activeSessionID)
+        }
     }
 
     @Test func independentCapsulePanelPropertiesAndCoexistence() async throws {

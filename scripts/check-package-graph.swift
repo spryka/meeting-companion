@@ -53,7 +53,7 @@ do {
     let expected: Set<String> = ["AVFoundation", "CoreAudio", "CoreMedia", "ScreenCaptureKit"]
     let found = frameworks(required("MeetingCompanionPlatform"))
     if !expected.isSubset(of: found) { fail("PLATFORM_FRAMEWORKS_MISSING: expected \(expected.sorted()), found \(found.sorted())") }
-    let isolated: Set<String> = ["MLX", "MeetingTranscriptionPipeline", "GigaAMKit", "Nemotron", "PipelineSilero"]
+    let isolated: Set<String> = ["MLX", "MeetingTranscriptionPipeline", "GigaAMKit", "Nemotron"]
     for name in ["MeetingCompanionApp", "MeetingCompanionCLI"] {
         guard let target = targets[name] else { continue }
         for dependency in dependencies(target) {

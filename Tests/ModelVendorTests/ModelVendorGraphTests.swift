@@ -3,7 +3,6 @@ import Testing
 @preconcurrency import MLX
 import GigaAMKit
 import Nemotron
-import PipelineSilero
 import MLXAudioSTT
 import CryptoKit
 
@@ -108,9 +107,11 @@ import CryptoKit
             return (name, deps)
         })
 
+        #expect(!targetMap.keys.contains("PipelineSilero"), "The removed detector must not remain in the build graph")
+
         let forbiddenTargetNames: Set<String> = [
             "MLX", "MLXNN", "MLXFast", "MLXFFT", "MLXRandom",
-            "GigaAMKit", "Nemotron", "PipelineSilero", "MLXAudioSTT",
+            "GigaAMKit", "Nemotron", "MLXAudioSTT",
             "MLXAudioCore", "MLXAudioCodecs", "MLXAudioTTS", "MLXAudioVAD", "MLXAudioUI"
         ]
 

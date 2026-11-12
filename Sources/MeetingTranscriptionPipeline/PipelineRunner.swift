@@ -185,8 +185,22 @@ public final class PipelineRunner: @unchecked Sendable {
         ))
 
         // ----------------------------------------------------
-        // Stage 1: Nemotron Diarization
+        // Stage 1: Nemotron diarization and speech-window selection
         // ----------------------------------------------------
+        func completeDiarization(_ index: Int) {
+            let channel = channels[index]
+            channels[index].windowMask = PipelineLogic.speechMask(
+                channel.frameCount, channel.intervals, status: channel.diarizationStatus
+            )
+            var reasons = channel.warnings.map(\.message)
+            if channel.diarizationStatus == .disabled { reasons.append("Модель Nemotron недоступна.") }
+            if channel.diarizationStatus != .completed || channel.intervals.isEmpty {
+                reasons.append("Нет интервалов речи Nemotron; распознаются все окна.")
+            }
+            let state: TranscriptionProgress.State = channel.diarizationStatus == .completed ? .completed
+                : channel.diarizationStatus == .failed ? .failed : .skipped
+            station(.diarization, channel.id.rawValue, state, reasons.joined(separator: "\n"))
+        }
         try checkCancellation(checkCancel)
         station(.diarization, "host", .started)
         let nemotronDir = modelPath("nemotron")
@@ -238,8 +252,7 @@ public final class PipelineRunner: @unchecked Sendable {
                             message: "Сбой диаризации: \(error.localizedDescription)"
                         ))
                     }
-                    station(.diarization, channels[i].id.rawValue, channels[i].diarizationStatus == .completed ? .completed : .failed,
-                            channels[i].warnings.map(\.message).joined(separator: "\n"))
+                    completeDiarization(i)
 
                 }
             } catch {
@@ -251,32 +264,17 @@ public final class PipelineRunner: @unchecked Sendable {
                         sourceID: channels[i].id,
                         message: "Не удалось загрузить модель диаризации: \(error.localizedDescription)"
                     ))
+                    completeDiarization(i)
                 }
-            }
-            for channel in channels where channel.diarizationStatus == .failed {
-                station(.diarization, channel.id.rawValue, .failed, channel.warnings.map(\.message).joined(separator: "\n"))
             }
             MLX.Stream.gpu.synchronize()
             Memory.clearCache()
         } else {
-            for channel in channels { station(.diarization, channel.id.rawValue, .skipped, "Модель Nemotron недоступна.") }
+            for i in channels.indices { completeDiarization(i) }
         }
 
         // ----------------------------------------------------
-        // Stage 2: Reuse Nemotron speech intervals
-        // ----------------------------------------------------
-        for i in channels.indices {
-            try checkCancellation(checkCancel)
-            let usable = channels[i].diarizationStatus == .completed && !channels[i].intervals.isEmpty
-            channels[i].windowMask = PipelineLogic.speechMask(
-                channels[i].frameCount, channels[i].intervals, status: channels[i].diarizationStatus
-            )
-            station(.vad, channels[i].id.rawValue, usable ? .completed : .skipped,
-                    usable ? nil : "Нет интервалов речи Nemotron; распознаются все окна.")
-        }
-
-        // ----------------------------------------------------
-        // Stage 3: GigaAM (Mandatory ASR)
+        // Stage 2: GigaAM (Mandatory ASR)
         // ----------------------------------------------------
         try checkCancellation(checkCancel)
         station(.gigaam, "host", .started)
@@ -341,7 +339,7 @@ public final class PipelineRunner: @unchecked Sendable {
         Memory.clearCache()
 
         // ----------------------------------------------------
-        // Stage 4: Parakeet Cascade (Optional)
+        // Stage 3: Parakeet Cascade (Optional)
         // ----------------------------------------------------
         var allSuggestions: [Suggestion] = []
         if parakeetEnabled {
@@ -426,7 +424,7 @@ public final class PipelineRunner: @unchecked Sendable {
         }
 
         // ----------------------------------------------------
-        // Stage 5: Audio Mixing
+        // Stage 4: Audio Mixing
         // ----------------------------------------------------
         station(.mix, nil, .started)
         let stagingMixURL = aecTempDir.appendingPathComponent("mix.m4a")
@@ -455,7 +453,7 @@ public final class PipelineRunner: @unchecked Sendable {
         }
 
         // ----------------------------------------------------
-        // Stage 6: Turns & Document Serialization
+        // Stage 5: Turns & Document Serialization
         // ----------------------------------------------------
         try checkCancellation(checkCancel)
         onProgress?(PipelineProgressEvent(stage: .merge, completed: 0, total: 1))

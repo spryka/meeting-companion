@@ -52,13 +52,13 @@ SHALL не считаться подтверждением работоспос�
 ### Requirement: Semantic and timing comparison
 
 Отчёт SHALL включать raw GigaAM token IDs/pieces/frames/text, words/start/end,
-VAD probabilities/intervals/window masks, Nemotron probabilities/intervals/count,
+speech gate probabilities/intervals/window masks, Nemotron probabilities/intervals/count,
 Parakeet tokens/words/text, suggestions/changes и полный merged transcript.
 
 #### Scenario: Default acceptance gates
 - **GIVEN** одинаковые веса, настройки и corpus зафиксированы до Swift inference
 - **WHEN** сравниваются результаты
-- **THEN** GigaAM text/token sequence, VAD masks, donor text, correction decisions и final text совпадают
+- **THEN** GigaAM text/token sequence, speech gate masks, donor text, correction decisions и final text совпадают
 - **AND** GigaAM/Parakeet token timing отличается не более одного 40/80 ms encoder frame соответственно, без смены принятого окна/замены/спикера
 - **AND** Nemotron count и overlap topology совпадают после одной перестановки labels на всю дорожку, отклонения границ не превышают один 10 ms output frame
 - **AND** все pure-logic fixtures совпадают точно, включая tie order и word ends
@@ -125,7 +125,7 @@ SHALL проверяться по одному, затем вместе. F32 exp
 
 #### Scenario: Adopt an optimization
 - **WHEN** меняется только способ выполнения при прежнем inference profile
-- **THEN** все GigaAM words/tokens/frames/times, VAD masks/intervals, diarization, donor, journal и final artifacts совпадают с соответствующим Swift control на всём frozen corpus и held-out
+- **THEN** все GigaAM words/tokens/frames/times, speech gate masks/intervals, diarization, donor, journal и final artifacts совпадают с соответствующим Swift control на всём frozen corpus и held-out
 - **AND** performance проверена последовательной warm-up+3 серией, metadata/timing clocks исключаются только из exact content comparison, не из отчёта времени
 
 #### Scenario: Single full-length PoC comparison
@@ -142,29 +142,29 @@ SHALL проверяться по одному, затем вместе. F32 exp
 - **AND** показаны RSS, MLX active/cache/peak и pressure/swap отдельно; одинаковый full peak из-за Parakeet не считается отсутствием дополнительных GigaAM allocations
 - **AND** смена product profile явно согласована и отражена в pinned profile/design до реализации; до этого F32 остаётся control вне поставки
 
-### Requirement: Attribute VAD memory with independent probes
+### Requirement: Attribute speech gate memory with independent probes
 
-Memory report SHALL включать свежие процессы `VAD-only` на 5/30/60-minute
+Memory report SHALL включать свежие процессы `speech gate-only` на 5/30/60-minute
 префиксах одних и тех же WAV и full model-first pipeline, при неизменных
 weights/settings. Он SHALL сохранять process RSS current/peak до чтения WAV,
 до/после модели и каждого источника; MLX active/cache/peak отдельно, с одинаковыми
 sync/reset points. При reset MLX peak SHALL явно указываться его область.
 
 #### Scenario: Locate the peak
-- **WHEN** RSS максимум достигнут между checkpoints Nemotron и VAD
-- **THEN** это описывается как пик процесса во время VAD, а не размер весов или доказательство конкретной утечки
-- **AND** размер PCM/boost copies, retained arrays/graphs, state и allocator cache проверяются отдельным profiling trace; разница двух cumulative peaks не называется точным расходом VAD
+- **WHEN** RSS максимум достигнут между checkpoints Nemotron и speech gate
+- **THEN** это описывается как пик процесса во время speech gate, а не размер весов или доказательство конкретной утечки
+- **AND** размер PCM/boost copies, retained arrays/graphs, state и allocator cache проверяются отдельным profiling trace; разница двух cumulative peaks не называется точным расходом speech gate
 
 #### Scenario: Include file reading and hashing in measurements
-- **GIVEN** VAD-only probe получает исходные WAV paths, а не заранее загруженный PCM
+- **GIVEN** speech gate-only probe получает исходные WAV paths, а не заранее загруженный PCM
 - **WHEN** сравниваются5/30/60min и разные размеры read block, включая не кратные512
 - **THEN** elapsed и memory measurement начинаются до чтения/header/hash/decode, проверены bounded read requests и отсутствие полной waveform allocation перед slices
 - **AND** masks/intervals совпали с control, state непрерывен между чтениями, padding только на EOF; temp WAV chunks не создаются и input hashes сохранены
 
 #### Scenario: Release cached blocks
-- **WHEN** VAD и его state освобождены до следующей модели
-- **THEN** в VAD-only probe MLX active и cache после teardown не превышают значения до модели более чем на 1 MiB каждое
-- **AND** full pipeline не сохраняет VAD model/boost buffers; RSS high-water не обязан уменьшаться, live allocations проверены отдельно
+- **WHEN** speech gate и его state освобождены до следующей модели
+- **THEN** в speech gate-only probe MLX active и cache после teardown не превышают значения до модели более чем на 1 MiB каждое
+- **AND** full pipeline не сохраняет speech gate model/boost buffers; RSS high-water не обязан уменьшаться, live allocations проверены отдельно
 
 ### Requirement: Resource measurements on the validation Mac
 

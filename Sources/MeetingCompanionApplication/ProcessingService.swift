@@ -561,13 +561,12 @@ private final class ProcessingWarnings: @unchecked Sendable {
 /// Presentation state is transient and belongs to the accepted job, never live Settings.
 public struct ProcessingProgressSnapshot: Equatable, Sendable {
     public enum Station: String, CaseIterable, Sendable {
-        case audio, echo, diarization, vad, recognition, correction, saving
+        case audio, echo, diarization, recognition, correction, saving
         public var title: String {
             switch self {
             case .audio: "Сборка аудио"
             case .echo: "Подавление эха"
             case .diarization: "Разделение голосов"
-            case .vad: "Поиск речи"
             case .recognition: "Распознавание"
             case .correction: "Уточнение терминов"
             case .saving: "Сохранение"
@@ -577,13 +576,12 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
             switch self {
             case .echo: "WebRTC AEC"
             case .diarization: "Nemotron"
-            case .vad: "Nemotron (отбор окон)"
             case .recognition: "GigaAM"
             case .correction: "Parakeet"
             default: nil
             }
         }
-        public var hasSources: Bool { [.diarization, .vad, .recognition, .correction].contains(self) }
+        public var hasSources: Bool { [.diarization, .recognition, .correction].contains(self) }
     }
     public enum State: String, Sendable { case future, current, completed, warning, skipped, failed }
     public let jobID: UUID
@@ -619,7 +617,6 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
         case .audio: station = .audio
         case .echo: station = .echo
         case .diarization: station = .diarization
-        case .vad: station = .vad
         case .gigaam, .speakers: station = .recognition
         case .parakeet, .correction: station = .correction
         case .merge, .mix, .publication: station = .saving
@@ -639,7 +636,7 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
         case .started: state = .current
         case nil:
             // Older start/end-only producers report the two model sources independently.
-            state = [.diarization, .vad].contains(station) && event.total > 0 && event.completed == event.total ? .completed : .current
+            state = station == .diarization && event.total > 0 && event.completed == event.total ? .completed : .current
         }
         if state == .completed, reasons[station] != nil { state = .warning }
         if station == .saving { states[station] = .current; return }

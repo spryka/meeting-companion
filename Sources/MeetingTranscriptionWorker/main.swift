@@ -23,7 +23,7 @@ func printHelp() {
       --help, -h              Show this help message
 
     Options:
-      --model-root <path>     Directory containing model subdirectories (gigaam, nemotron, vad, parakeet)
+      --model-root <path>     Directory containing model subdirectories (gigaam, nemotron, parakeet)
       --source-root <path>    Source directory with verified models for initial preparation
       --parakeet              Enable Parakeet phonetic cascade
       --echo-cancel           Enable WebRTC AEC3 echo cancellation on microphone

@@ -11,7 +11,7 @@ Production beta.38 использует Nemotron, затем отдельный 
 
 - Общий чистый helper PipelineLogic принимает frameCount, интервалы и статус диаризации. Строгое пересечение вычисляется в Double seconds, как в исследованном candidate; перевод интервалов в целые samples мог бы изменить границы.
 - При status != completed или пустых интервалах допускать все окна. Production уже считает пустой результат failed. Это сохраняет исследованный fail-open путь; тишина при пустой диаризации может стоить полного ASR, но полнота приоритетна.
-- Runner заменяет только Stage 2, проверяет cancellation до каждой дорожки, сохраняет masks для обоих ASR. Station vad сообщает completed или skipped; wire protocol, station IDs и маршрут не меняются; подпись модели в подробностях меняется с Silero VAD на Nemotron (отбор окон). Усиление detection copy больше не требуется.
+- Runner заменяет только Stage 2, проверяет cancellation до каждой дорожки, сохраняет masks для обоих ASR. Station vad сообщает completed или skipped; wire protocol, station IDs и маршрут не меняются; подпись модели в подробностях меняется с Silero speech gate на Nemotron (отбор окон). Усиление detection copy больше не требуется.
 - Исключить vadSpec из двух списков обязательных моделей ModelAssets; manifest/vendor/BoundedVAD оставить для существующих тестов и исторического воспроизведения. Не требовать неиспользуемую модель и не удалять её кеш. Альтернатива сохранять обязательную подготовку добавляла бы ненужные загрузки.
 - ADR0001/0003 действуют с частичными supersessions ADR0004, ADR0004 с ADR0005, ADR0006 с ADR0007; ADR0002 сохраняет worker/model ownership. Нового долговременного архитектурного решения нет.
 

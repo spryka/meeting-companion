@@ -1,8 +1,7 @@
 # Сторонние компоненты
 
 В приложение входят нативный Swift/MLX-конвейер, Sparkle и компонент
-эхоподавления. Веса моделей хранятся отдельно; в локальной бете используются
-уже подготовленные файлы.
+эхоподавления. Веса моделей скачиваются при явной подготовке и хранятся отдельно от приложения.
 
 - [Sparkle 2.9.6](https://github.com/sparkle-project/Sparkle/releases/tag/2.9.6),
   MIT, встроенная проверка и установка обновлений. Лицензия включена в приложение
@@ -10,8 +9,7 @@
 - [MLX Swift](https://github.com/ml-explore/mlx-swift), MIT — вычисления на Apple GPU.
 - [GigaAMKit](https://github.com/kruatech/gigaam-v3-mlx), MIT — распознавание речи.
 - [Speech Swift](https://github.com/soniqo/speech-swift), Apache-2.0 — Nemotron.
-- [MLX Audio Swift](https://github.com/Blaizzy/mlx-audio-swift), MIT — Silero VAD
-  и Parakeet; вложенные компоненты имеют отдельные лицензии и уведомления.
+- [MLX Audio Swift](https://github.com/Blaizzy/mlx-audio-swift), MIT — Parakeet; вложенные компоненты имеют отдельные лицензии и уведомления.
 - Часть DSP перенесена из [mlx-audio](https://github.com/Blaizzy/mlx-audio)
   с сохранением MIT-лицензии исходного кода.
 

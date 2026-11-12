@@ -80,7 +80,7 @@ final class ProgressProbe: @unchecked Sendable {
         precondition(finished.completedSteps == 13 && finished.stageFraction == 1)
         let started = TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"gigaam\",\"completed\":0,\"total\":32,\"step\":1,\"steps\":13}".utf8))!
         precondition(started.completedSteps == 0 && started.stageFraction == 0)
-        let unknown = TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"vad\",\"completed\":0,\"total\":0}".utf8))!
+        let unknown = TranscriptionProgress(line: Data("MEETING_PROGRESS {\"stage\":\"diarization\",\"completed\":0,\"total\":0}".utf8))!
         precondition(unknown.stageFraction == nil && unknown.completedSteps == nil)
         print("Progress: partial lines, invalid events, bounded parsing, full log and processing state passed")
     }

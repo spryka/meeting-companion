@@ -86,7 +86,7 @@ uv и shell launcher. Модели и MLX SHALL находиться тольк�
 
 ### Requirement: Model-scoped lifetime and independent source state
 
-Worker SHALL выполнять Nemotron → отбор окон → GigaAM → необязательный Parakeet,
+Worker SHALL выполнять Nemotron с отбором окон → GigaAM → необязательный Parakeet,
 последовательно обрабатывая host и remote одной загруженной моделью на этапе.
 Worker SHALL создавать чистое inference state для каждого источника, сохранять
 раздельные метки голосов и освобождать модель/state/tensors до следующей модели.
@@ -95,7 +95,7 @@ Worker SHALL создавать чистое inference state для каждог
 #### Scenario: One load per enabled model
 - **GIVEN** две непустые дорожки и все три модели требуются для inference
 - **WHEN** запись успешно обработана
-- **THEN** каждая модель загружена один раз, всего три загрузки; Silero не загружается
+- **THEN** каждая модель загружена один раз, всего три загрузки, без дополнительной модели определения речи
 - **AND** отключённый Parakeet не загружается, inference разных источников не выполняется одновременно
 
 #### Scenario: Source state isolation
@@ -136,11 +136,11 @@ Inference SHALL использовать local directory API без сетевы
 - **THEN** staging не считается готовой моделью, исправный snapshot сохраняется и retry возможен
 - **AND** paths manifest не могут выйти из snapshot через traversal или symlink
 
-#### Scenario: Silero is not required
-- **GIVEN** необходимые GigaAM/Nemotron и выбранный Parakeet подготовлены
-- **WHEN** файлов Silero нет или они повреждены
-- **THEN** готовность не зависит от Silero, подготовка его не скачивает
-- **AND** существующие файлы Silero остаются нетронутыми
+#### Scenario: Only active model assets are prepared
+- **GIVEN** чистая изолированная папка моделей
+- **WHEN** выполняются проверка и явная подготовка с Parakeet on/off
+- **THEN** manifest, file counts и запросы загрузки содержат только GigaAM, Nemotron и выбранный Parakeet
+- **AND** посторонние ранее сохранённые файлы не читаются, не скачиваются и не удаляются
 
 ### Requirement: Preserve source timeline and window plan
 
@@ -151,14 +151,14 @@ Worker SHALL принимать раздельные host/remote PCM16 mono WAV 
 #### Scenario: Speech at a seam
 - **WHEN** слово пересекает overlap соседних окон
 - **THEN** сохранено прежнее правило `[lower, upper)` по началу слова без дубля или потери
-- **AND** абсолютные start/end не сдвигаются из-за VAD или удаления тишины
+- **AND** абсолютные start/end не сдвигаются из-за отбора окон или удаления тишины
 
 #### Scenario: Empty and invalid input
 - **WHEN** вход пуст, короче окна frontend, повреждён или имеет неверный PCM format
 - **THEN** пустой/короткий допустимый вход обрабатывается как baseline, включая необходимый padding копии
 - **AND** неверный формат получает явную ошибку без изменения исходника
 
-### Requirement: Whole-window VAD gate
+### Requirement: Nemotron speech-window selection
 
 Worker SHALL использовать объединение интервалов всех голосов Nemotron соответствующей дорожки для отбора прежних целых ASR-окон. Любое строгое пересечение в секундах SHALL допускать окно без padding и фильтра минимальной длительности. GigaAM и Parakeet SHALL получать одну маску и исходные samples на прежней абсолютной шкале; состояние другой дорожки не участвует.
 
@@ -173,15 +173,15 @@ Worker SHALL использовать объединение интервало�
 - **THEN** целое окно допускается; одно касание границы и нулевой интервал не допускают окно
 - **AND** порядок окон, хвост и midpoint ownership слов остаются прежними
 
-#### Scenario: VAD failure
+#### Scenario: Missing speech intervals
 - **WHEN** диаризация недоступна, завершилась ошибкой либо не вернула интервалов
 - **THEN** распознаются все исходные окна этой дорожки; существующее предупреждение/статус диаризации сохраняется
 - **AND** пустой аудиовход имеет пустую маску, cancellation останавливает обработку
 
 #### Scenario: Gate progress
 - **WHEN** рассчитана маска дорожки
-- **THEN** существующая station vad получает terminal completed при пригодных интервалах либо skipped с объяснением допуска всех окон
-- **AND** отдельный inference Silero не выполняется
+- **THEN** terminal-событие разделения голосов отправляется после расчёта маски; предупреждения о причине допуска всех окон сохраняются на этом этапе
+- **AND** отдельная модель определения речи, её manifest/download и отдельное progress-событие отсутствуют
 
 ### Requirement: Pinned product inference profile
 
@@ -403,3 +403,12 @@ Full recording operations SHALL require canonical folder basename equal to recor
 - **WHEN** raw appears or processing, editing, playback/export, context or metadata mutation is attempted
 - **THEN** those operations are denied; root metadata remains at the exact read path and unchanged
 - **AND** discovery performs no writes or migration
+
+### Requirement: Active detector-free dependency closure
+
+The shipped worker and its executable dependency closure SHALL contain no obsolete standalone speech detector implementation, target, model specification or download entry point. Vendor adaptations SHALL retain applicable licenses and reproducible provenance.
+
+#### Scenario: Inspect shipped model closure
+- **WHEN** the release worker is built from the task source and the structured package graph and linked model code are inspected
+- **THEN** the direct and transitive obsolete detector implementations and their obsolete tests/patches are absent; required Nemotron/GigaAM/Parakeet functionality remains buildable
+- **AND** the existing model/window/timeline, result publication and cancellation regressions pass

@@ -61,7 +61,7 @@ tensor, 222,519,937 parameters. Нейросеть и upstream source не ме�
 Обе дорожки одного пятиминутного фрагмента обработаны последовательно с запретом
 сети для процесса: 154/216 слов, 432/546 raw токенов, 13 окон на дорожку. Все слова
 и start/end точно совпали с сохранёнными GigaAM словами Python. Это sanity check
-одного фрагмента: baseline применял VAD, PoC обрабатывает все окна; Python token
+одного фрагмента: baseline применял speech gate, PoC обрабатывает все окна; Python token
 trace и численная эквивалентность весов/compute dtype не проверены. Пройдены empty,
 short, silence и ошибки input/model/existing output; входные hashes сохранены.
 Этот probe не подтверждает общий dependency graph 0.32.3 или полный паритет.
@@ -121,7 +121,7 @@ MIT. Проверены `ParakeetModel`, quantization parser, alignment, Silero 
   checkpoint содержит только 16 kHz. Прямую совместимость не заявляем.
   Нужна минимальная правка loader/branch selection с проверкой полноты 16 kHz
   весов. Нельзя скрыть missing tensors через нестрогую загрузку.
-- `feed` работает с 512 samples и 64 context. VAD segmentation и перевод
+- `feed` работает с 512 samples и 64 context. speech gate segmentation и перевод
   интервалов в samples сверяются отдельно с Python; whole-window gate принадлежит
   Meeting Companion. Усиление, пороги и padding берутся из baseline.
 - В MLXAudio найденные Nemotron ASR/voice-chat модели не являются Nemotron-3
@@ -182,7 +182,7 @@ Strict Silero 16k load проходит после выключения отсу
 разрешать model symlinks до передачи каталога в loader. Нет нестрогой загрузки
 или заполнения недостающих weights случайными значениями.
 
-На этом фрагменте совпали VAD masks, все 978 GigaAM token IDs/pieces/frames/times,
+На этом фрагменте совпали speech gate masks, все 978 GigaAM token IDs/pieces/frames/times,
 370 слов GigaAM вместе с start/end/speaker и итоговые исправленные слова и
 временные реплики объединённого транскрипта. Arithmetic regression word end
 исправлена с RED/GREEN: сохранён Python порядок `absolute_emission + .1`.
@@ -243,12 +243,12 @@ GREEN: strict load и inference на прежних двух 300s WAV успеш
 copy и без лишнего lazy reshape. В полном корпусе все outputs до/после
 сохранились точно. Изменения и memory trade-off отражены в verification.
 
-## Текущий вывод и будущие VAD-кандидаты — 2026-10-31
+## Текущий вывод и будущие speech gate-кандидаты — 2026-10-31
 
 Последующая F16/F32 пара изменила выбор PoC: оставлены исходные F16 GigaAM
 weights с F32 FFT frontend/activations и shared CPU selection. Model-only MLX
 peak ниже примерно на399MiB, но full hour RSS не уменьшился. Он достигает пика
-уже на VAD и в Python тоже близок к2GiB. Подробные числа и границы — в verification;
+уже на speech gate и в Python тоже близок к2GiB. Подробные числа и границы — в verification;
 причина временной памяти по этим snapshots не установлена. Поэтому текущая
 реализация сохраняет Silero v6 и сначала исследует bounded processing.
 
@@ -342,7 +342,7 @@ F32 binary сохранён вне репозитория для последо�
 и описание экспериментального профиля; приложение и ADR остаются прежними.
 
 
-## Проверка F32 и chunking после VAD PoC (2026-10-31)
+## Проверка F32 и chunking после speech gate PoC (2026-10-31)
 
 Исследовательский CLI получил отдельные `--bounded-audio` и `--gigaam-f32`.
 Первый переиспользует проверенный Silero reader/graph и читает прежние ASR
