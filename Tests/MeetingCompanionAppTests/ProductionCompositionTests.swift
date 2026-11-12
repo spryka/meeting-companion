@@ -80,7 +80,7 @@ private actor Capsule28OpenGate {
         let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/queued/queued.m4a"), settings: .init(parakeet: true, echoCancellation: true))
         let snapshot = ProcessingProgressSnapshot(job: job)
         let details = ProcessingDetailsView(snapshot: snapshot, entry: RecordingEntry.load(recording: job.recordingURL), retry: {})
-        #expect(snapshot.countText == "В очереди · 7 этапов")
+        #expect(snapshot.countText == "В очереди · 6 этапов")
         #expect(details.phaseTitle == "В очереди" && details.activityText == "Ожидает начала обработки.")
         #expect(snapshot.current == nil && snapshot.localFraction == nil)
     }
@@ -144,7 +144,7 @@ private actor Capsule28OpenGate {
         model.echoCancellation = false
         await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 52, total: 153))
         try await settle { model.capsuleProgress?.local?.completed == 52 }
-        #expect(model.selectedHistoryURL == other && model.capsuleProgress?.route.count == 7)
+        #expect(model.selectedHistoryURL == other && model.capsuleProgress?.route.count == 6)
         #expect(model.presentSettings())
         model.showProcessingDetails()
         #expect(model.selectedHistoryURL == other && presentations == 0 && model.processingNavigationNotice != nil)

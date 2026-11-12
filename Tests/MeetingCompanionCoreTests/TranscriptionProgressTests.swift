@@ -9,7 +9,7 @@ struct TranscriptionProgressTests {
             let value = try #require(TranscriptionProgress(line: Data(line.utf8)))
             #expect(value.state == .started && value.stageFraction == nil)
         }
-        let invalid = "MEETING_PROGRESS {\"stage\":\"vad\",\"completed\":0,\"total\":0,\"state\":\"invented\"}"
+        let invalid = "MEETING_PROGRESS {\"stage\":\"diarization\",\"completed\":0,\"total\":0,\"state\":\"invented\"}"
         #expect(TranscriptionProgress(line: Data(invalid.utf8)) == nil)
     }
 

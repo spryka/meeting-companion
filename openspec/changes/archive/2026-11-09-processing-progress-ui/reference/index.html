@@ -255,7 +255,6 @@ body{padding-bottom:160px}.app{height:calc(100dvh - 228px);min-height:560px}.pip
    <details class="settings-advanced"><summary>Технические подробности</summary><pre class="settings-log" id="modelsLog">Демонстрация состояния
 GigaAM — распознавание речи
 Nemotron — разделение голосов
-Silero VAD — поиск речевых фрагментов
 Фактическое окружение не проверялось.</pre></details>
    <div class="settings-section"><h4>Обслуживание</h4><div class="settings-group"><div class="settings-line"><div class="od-field od-fill"><span class="setting-label">Сбросить кэш моделей</span><small>Модели и окружение потребуется скачать снова.</small></div><button class="btn danger" id="resetModels" data-action="reset-models" data-settings-lock>Сбросить…</button></div></div><p class="settings-helper">Записи и транскрипты сохраняются. В макете меняется только демонстрационный статус.</p></div>
   </section>
@@ -564,7 +563,6 @@ const processingStages=[
  {key:'audio',name:'Сборка аудио',detail:'Подготовка сохранённой записи',channels:false,measured:false},
  {key:'echo',name:'Подавление эха',detail:'WebRTC AEC · микрофон',channels:false,measured:true,option:'aec'},
  {key:'voices',name:'Разделение голосов',detail:'Nemotron · определение голосов',channels:true,measured:false},
- {key:'vad',name:'Поиск речи',detail:'Silero VAD · поиск окон с речью',channels:true,measured:false},
  {key:'gigaam',name:'Распознавание',detail:'GigaAM · преобразование речи в текст',channels:true,measured:true},
  {key:'parakeet',name:'Уточнение терминов',detail:'Parakeet · дополнительный проход',channels:true,measured:true,option:'parakeet'},
  {key:'save',name:'Сохранение',detail:'Аудио для плеера, объединение текста и публикация',channels:false,measured:false}
@@ -601,7 +599,7 @@ function syncProcessingControls(){
  $('demoStage').innerHTML=s.route.map(v=>`<option value="${v.key}">${esc(v.name)}</option>`).join('');$('demoStage').value=s.stageKey;
  $('demoSource').value=s.source;$('demoPercent').value=s.percent;$('demoPercentValue').textContent=s.percent+'%';$('demoUnknown').checked=s.unknown;
  const p=processPresentation(s);$('demoSource').disabled=!p.stage.channels||p.done;$('demoPercent').disabled=!p.measured;$('demoUnknown').disabled=!p.stage.measured||p.done;
- document.querySelector('[data-action="demo-skip"]').disabled=p.done||!['echo','voices','vad','parakeet'].includes(p.stage.key);
+ document.querySelector('[data-action="demo-skip"]').disabled=p.done||!['echo','voices','parakeet'].includes(p.stage.key);
  document.querySelector('[data-action="demo-next"]').disabled=p.done;
 }
 function startProcessingDemo(){
@@ -636,7 +634,7 @@ $('demoSource').addEventListener('change',()=>{if(state.session?.route){state.se
 $('demoUnknown').addEventListener('change',()=>{if(state.session?.route){state.session.unknown=$('demoUnknown').checked;renderProcessingViews();}});
 $('demoPercent').addEventListener('input',()=>{if(state.session?.route){state.session.percent=Number($('demoPercent').value);renderProcessingViews();}});
 // Optional stages change the route, never the percentage of the current stage.
-console.assert(processingStages.filter(v=>!v.option).length===5&&processingStages.length===7,'Processing route contains five required and two optional stations');
+console.assert(processingStages.filter(v=>!v.option).length===4&&processingStages.length===6,'Processing route contains four required and two optional stations');
 
 hydrate();applyTheme('system');renderList();renderDetail();startProcessingDemo();
 </script>

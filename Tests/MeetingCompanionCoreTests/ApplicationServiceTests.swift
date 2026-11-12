@@ -139,11 +139,11 @@ struct ApplicationServiceTests {
         while let update = await iterator.next() {
             guard case .snapshot(let value) = update, value.queued.contains(where: { $0.id == second.id }),
                   let queued = value.routes[b] else { continue }
-            #expect(queued.route.count == 7 && queued.jobID == second.id)
+            #expect(queued.route.count == 6 && queued.jobID == second.id)
             #expect(queued.current == nil, "Queued B has no current station before any actual start")
             #expect(!queued.states.values.contains(.current))
             #expect(queued.local == nil && queued.localFraction == nil)
-            #expect(queued.countText == "В очереди · 7 этапов", "Capsule/details must report waiting")
+            #expect(queued.countText == "В очереди · 6 этапов", "Capsule/details must report waiting")
             break
         }
         await runner.finish(a)
@@ -153,7 +153,7 @@ struct ApplicationServiceTests {
                   started.local?.stage == .audio, started.local?.state == .started else { continue }
             #expect(value.active?.id == second.id)
             #expect(started.current == .audio && started.states[.audio] == .current)
-            #expect(started.countText == "Этап 1 из 7")
+            #expect(started.countText == "Этап 1 из 6")
             sawActualStart = true
             break
         }
@@ -164,7 +164,7 @@ struct ApplicationServiceTests {
     }
 
     @Test func processingRouteFrozenSourcesAndIdentity() {
-        for (aec, parakeet, count) in [(false, false, 5), (true, false, 6), (false, true, 6), (true, true, 7)] {
+        for (aec, parakeet, count) in [(false, false, 4), (true, false, 5), (false, true, 5), (true, true, 6)] {
             let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: .init(parakeet: parakeet, echoCancellation: aec))
             var snapshot = ProcessingProgressSnapshot(job: job)
             #expect(snapshot.route.count == count)
@@ -178,16 +178,21 @@ struct ApplicationServiceTests {
         }
     }
 
-    @Test func nemotronGateProgressUsesExistingTwoSourceRoute() {
+    @Test func nemotronCompletionIncludesSpeechWindowDiagnostics() {
         let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: .init(parakeet: false, echoCancellation: false))
         var snapshot = ProcessingProgressSnapshot(job: job)
-        #expect(ProcessingProgressSnapshot.Station.vad.model == "Nemotron (отбор окон)")
-        snapshot.receive(.init(stage: .vad, channel: "host", completed: 0, total: 0, state: .completed), jobID: job.id)
-        #expect(snapshot.states[.vad] == .current)
-        snapshot.receive(.init(stage: .vad, channel: "remote", completed: 0, total: 0, warning: "Нет интервалов; обработаем все окна.", state: .skipped), jobID: job.id)
-        #expect(snapshot.states[.vad] == .skipped)
-        #expect(snapshot.localFraction == nil && snapshot.route.count == 5)
-        #expect(snapshot.reasons[.vad] == "Нет интервалов; обработаем все окна.")
+        #expect(snapshot.route.map(\.rawValue) == ["audio", "diarization", "recognition", "saving"])
+        #expect(ProcessingProgressSnapshot.Station.diarization.model == "Nemotron")
+        snapshot.receive(.init(stage: .diarization, channel: "host", completed: 0, total: 0, state: .completed), jobID: job.id)
+        #expect(snapshot.states[.diarization] == .current)
+        let warning = "Нет интервалов речи Nemotron; распознаются все окна."
+        snapshot.receive(.init(stage: .diarization, channel: "remote", completed: 0, total: 0, warning: warning, state: .failed), jobID: job.id)
+        #expect(snapshot.states[.diarization] == .failed)
+        #expect(snapshot.localFraction == nil && snapshot.route.count == 4)
+        #expect(snapshot.reasons[.diarization] == warning)
+        snapshot.receive(.init(stage: .gigaam, channel: "host", completed: 0, total: 1), jobID: job.id)
+        #expect(snapshot.countText == "Этап 3 из 4")
+        #expect(snapshot.warnings.contains(warning))
     }
 
     @Test func processingLocalTruthAndSavingAcceptance() {
@@ -201,22 +206,22 @@ struct ApplicationServiceTests {
         snapshot.receive(.init(stage: .diarization, channel: "host", completed: 0, total: 1), jobID: job.id)
         #expect(snapshot.localFraction == nil, "Start/end sentinel is not measured work")
         for source in ["host", "remote"] {
-            snapshot.receive(.init(stage: .vad, channel: source, completed: 0, total: 0, warning: "Synthetic VAD unavailable", state: .skipped), jobID: job.id)
+            snapshot.receive(.init(stage: .diarization, channel: source, completed: 0, total: 0, warning: "Synthetic speech intervals unavailable", state: .skipped), jobID: job.id)
         }
-        #expect(snapshot.states[.vad] == .skipped && snapshot.reasons[.vad] == "Synthetic VAD unavailable")
+        #expect(snapshot.states[.diarization] == .skipped && snapshot.reasons[.diarization] == "Synthetic speech intervals unavailable")
         snapshot.receive(.init(stage: .gigaam, channel: "host", completed: 1, total: 1), jobID: job.id)
         #expect(snapshot.localFraction == 1 && snapshot.states[.recognition] == .current)
-        #expect(snapshot.currentIndex == 4 && snapshot.countText == "Этап 5 из 7")
+        #expect(snapshot.currentIndex == 3 && snapshot.countText == "Этап 4 из 6")
         snapshot.receive(.init(stage: .speakers, channel: "host", completed: 0, total: 0, state: .completed), jobID: job.id)
         #expect(snapshot.states[.recognition] == .current)
         snapshot.receive(.init(stage: .gigaam, channel: "remote", completed: 0, total: 0), jobID: job.id)
-        #expect(snapshot.localFraction == nil && snapshot.currentIndex == 4)
+        #expect(snapshot.localFraction == nil && snapshot.currentIndex == 3)
         snapshot.receive(.init(stage: .speakers, channel: "remote", completed: 0, total: 0, state: .completed), jobID: job.id)
         #expect(snapshot.states[.recognition] == .completed)
         snapshot.receive(.init(stage: .parakeet, channel: "remote", completed: 4, total: 4), jobID: job.id)
         #expect(snapshot.states[.correction] == .current, "Cascade has not finished")
         snapshot.receive(.init(stage: .publication, completed: 1, total: 1, state: .completed), jobID: job.id)
-        #expect(snapshot.countText == "Этап 7 из 7")
+        #expect(snapshot.countText == "Этап 6 из 6")
         #expect(snapshot.states[.saving] == .current && !snapshot.terminal && snapshot.localFraction == nil)
         snapshot.finish(success: false, reason: "Synthetic publication rejected")
         #expect(snapshot.states[.saving] == .failed && snapshot.failure == "Synthetic publication rejected")
@@ -244,7 +249,7 @@ struct ApplicationServiceTests {
                     #expect(route.states[.recognition] == .current)
                 }
                 if route.terminal {
-                    #expect(route.jobID == job.id && route.route.count == 5)
+                    #expect(route.jobID == job.id && route.route.count == 4)
                     #expect(route.states[.recognition] == .completed && route.states[.saving] == .warning)
                     #expect(delivered == Array(0...100), "No callback reordering or terminal loss")
                     #expect(sawHostOnly && route.warnings.contains("Synthetic committed warning"))

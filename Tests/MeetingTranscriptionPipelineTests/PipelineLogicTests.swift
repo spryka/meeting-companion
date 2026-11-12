@@ -209,53 +209,56 @@ struct SubprocessRunnerCancellationTests {
         #expect(process.isRunning == false)
     }
 
-    @Test func testRunningChildIgnoringSIGTERMIsKilledWithinTwoSeconds() async throws {
+    @Test func testRunningChildIgnoringSIGTERMIsKilledWithinTwoSeconds() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         let pipe = Pipe()
         process.standardOutput = pipe
-        // Trap and ignore SIGTERM, then write READY to pipe to ensure trap is active
-        process.arguments = ["-c", "trap \"\" TERM; echo READY; while true; do sleep 0.05; done"]
+        // exec preserves ignored SIGTERM and the PID, without leaving grandchildren after SIGKILL.
+        process.arguments = ["-c", "trap \"\" TERM; echo READY; exec /bin/sleep 60"]
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        var observedExit = false
         let runner = SubprocessRunner(process: process)
 
         try runner.start()
         #expect(process.isRunning == true)
+        let pid = process.processIdentifier
 
         defer {
-            // Cleanup even on assertion failure
-            if process.isRunning {
-                Darwin.kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
+            if !observedExit {
+                if process.isRunning { Darwin.kill(pid, SIGKILL) }
+                #expect(exited.wait(timeout: .now() + 2) == .success, "Child cleanup must complete")
             }
+            runner.cancelTerminationTimer()
         }
 
         // Bounded readiness handshake AFTER trap installation
         let handle = pipe.fileHandleForReading
         var readyData = Data()
         let handshakeDeadline = ContinuousClock.now + .seconds(2)
+        var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
         while ContinuousClock.now < handshakeDeadline {
-            let available = handle.availableData
-            if !available.isEmpty {
+            let ready = Darwin.poll(&descriptor, 1, 10)
+            try #require(ready >= 0, "Readiness poll failed: \(errno)")
+            if descriptor.revents & Int16(POLLIN) != 0 {
+                let available = handle.availableData
                 readyData.append(available)
                 if let str = String(data: readyData, encoding: .utf8), str.contains("READY") {
                     break
                 }
             }
-            try await Task.sleep(nanoseconds: 10_000_000)
         }
         let readyString = String(data: readyData, encoding: .utf8) ?? ""
-        #expect(readyString.contains("READY"))
+        try #require(readyString.contains("READY"))
 
         let startTime = ContinuousClock.now
         // Terminate with 0.5s timeout: will send SIGTERM, wait 0.5s, then escalate to SIGKILL
         runner.terminate(timeoutSeconds: 0.5)
 
-        // Wait for process to exit
-        let deadline = ContinuousClock.now + .seconds(3)
-        while process.isRunning && ContinuousClock.now < deadline {
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        process.waitUntilExit()
+        // Observe completion directly: waitUntilExit can hang after an async test changes threads.
+        observedExit = exited.wait(timeout: .now() + 3) == .success
+        try #require(observedExit, "Child termination must be observed within the deadline")
 
         let elapsed = ContinuousClock.now - startTime
         #expect(process.isRunning == false)
@@ -264,6 +267,8 @@ struct SubprocessRunnerCancellationTests {
         #expect(process.terminationReason == .uncaughtSignal)
         #expect(process.terminationStatus == SIGKILL)
         #expect(runner.cancelled == true)
+        #expect(process.processIdentifier == pid)
+        #expect(Darwin.kill(pid, 0) == -1 && errno == ESRCH)
     }
 
     @Test func testAsyncPublicAPICancellationPropagatesError() async throws {

@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public enum Stage: String, Decodable, Sendable {
-        case gigaam, diarization, speakers, vad, parakeet, correction, merge, warning, echo, audio, mix, publication
+        case gigaam, diarization, speakers, parakeet, correction, merge, warning, echo, audio, mix, publication
     }
 
     public enum State: String, Decodable, Sendable { case started, completed, skipped, failed }
@@ -56,7 +56,6 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         case .publication: label = "Публикация результата"
         case .echo: label = "Подавление эха"
         case .gigaam: label = "Распознавание GigaAM"
-        case .vad: label = "Поиск речи"
         case .parakeet: label = "Распознавание Parakeet"
         case .correction: label = "Уточнение терминов"
         case .warning: label = warning ?? "Предупреждение"

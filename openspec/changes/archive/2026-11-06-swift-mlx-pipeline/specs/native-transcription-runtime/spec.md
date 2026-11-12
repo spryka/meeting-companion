@@ -78,7 +78,7 @@ uv и shell launcher. Модели и MLX SHALL находиться тольк�
 
 ### Requirement: Model-scoped lifetime and independent source state
 
-Worker SHALL выполнять Nemotron → VAD → GigaAM → необязательный Parakeet,
+Worker SHALL выполнять Nemotron → speech gate → GigaAM → необязательный Parakeet,
 последовательно обрабатывая host и remote одной загруженной моделью на этапе.
 Worker SHALL создавать чистое inference state для каждого источника, сохранять
 раздельные метки голосов и освобождать модель/state/tensors до следующей модели.
@@ -93,10 +93,10 @@ Worker SHALL создавать чистое inference state для каждог
 #### Scenario: Source state isolation
 - **WHEN** источники обработаны одной моделью в прямом и обратном порядке
 - **THEN** результат каждого источника проходит те же parity gates относительно отдельного запуска со свежей моделью
-- **AND** история голосов, VAD context и decoder state другой дорожки не влияют на результат
+- **AND** история голосов, speech gate context и decoder state другой дорожки не влияют на результат
 
 #### Scenario: Failure before the second source
-- **WHEN** inference первого источника завершается допустимым для продолжения сбоем VAD, Nemotron или Parakeet
+- **WHEN** inference первого источника завершается допустимым для продолжения сбоем speech gate, Nemotron или Parakeet
 - **THEN** warning/fallback привязаны к затронутому источнику, второй получает чистое состояние
 - **AND** исходный GigaAM сохранён при сбое Parakeet, fatal ASR не публикует успешную версию
 
@@ -137,16 +137,16 @@ Worker SHALL принимать раздельные host/remote PCM16 mono WAV 
 #### Scenario: Speech at a seam
 - **WHEN** слово пересекает overlap соседних окон
 - **THEN** сохранено прежнее правило `[lower, upper)` по началу слова без дубля или потери
-- **AND** абсолютные start/end не сдвигаются из-за VAD или удаления тишины
+- **AND** абсолютные start/end не сдвигаются из-за speech gate или удаления тишины
 
 #### Scenario: Empty and invalid input
 - **WHEN** вход пуст, короче окна frontend, повреждён или имеет неверный PCM format
 - **THEN** пустой/короткий допустимый вход обрабатывается как baseline, включая необходимый padding копии
 - **AND** неверный формат получает явную ошибку без изменения исходника
 
-### Requirement: Whole-window VAD gate
+### Requirement: Whole-window speech gate
 
-VAD SHALL получать только detection copy с +6 dB/clipping, threshold 0.5,
+speech gate SHALL получать только detection copy с +6 dB/clipping, threshold 0.5,
 min speech/silence 250/250 ms, padding 150 ms и прежней hysteresis.
 Любое строгое пересечение speech interval SHALL допускать целое ASR окно.
 
@@ -155,8 +155,8 @@ min speech/silence 250/250 ms, padding 150 ms и прежней hysteresis.
 - **THEN** проверена точная маска окон относительно Python при тех же весах
 - **AND** GigaAM, Parakeet и сохранённое аудио получают исходные samples
 
-#### Scenario: VAD failure
-- **WHEN** загрузка или inference VAD не выполнены
+#### Scenario: speech gate failure
+- **WHEN** загрузка или inference speech gate не выполнены
 - **THEN** сохранено предупреждение и распознаются все исходные окна
 
 ### Requirement: Pinned product inference profile
@@ -173,9 +173,9 @@ FFT frontend/activations, Nemotron исходного BF16 checkpoint, Silero v6
 - **AND** stored dtype, effective compute/promotion, frontend assets и patches записаны раздельно; Parakeet waveform приводится к F16 до frontend
 - **AND** GigaAM selection через public API сохраняет score, blank и первый максимум при равных scores
 
-### Requirement: Bounded VAD working memory
+### Requirement: Bounded speech gate working memory
 
-VAD SHALL обрабатывать detection copy ограниченными блоками с прежними +6 dB
+speech gate SHALL обрабатывать detection copy ограниченными блоками с прежними +6 dB
 и clipping, сохраняя 512-sample/64-context feed protocol, recurrent state,
 hysteresis, padding и окончание потока внутри каждой дорожки. Полная PCM-копия
 обеих дорожек, их усиленные копии или граф на всю запись SHALL не удерживаться
@@ -184,7 +184,7 @@ hysteresis, padding и окончание потока внутри каждой
 
 #### Scenario: Read audio in bounded portions from disk
 - **GIVEN** часовой WAV и настроенный фиксированный размер PCM read block
-- **WHEN** VAD обрабатывает источник
+- **WHEN** speech gate обрабатывает источник
 - **THEN** WAV читается и декодируется порциями с диска, detection gain применяется только к текущей порции; SHA-256 также считается инкрементально
 - **AND** полная загрузка WAV/decoded PCM перед нарезкой запрещена; live decoded/boost buffers ограничены block size и model context независимо от длины записи
 - **AND** временные WAV-фрагменты не создаются, исходный файл не изменяется, абсолютные sample offsets сохраняются
@@ -193,7 +193,7 @@ hysteresis, padding и окончание потока внутри каждой
 - **GIVEN** речь пересекает границу блока или overlap окон 25/24 s
 - **WHEN** размер блока изменён при неизменных weights/settings/samples
 - **THEN** маска и sample intervals совпадают с исходным Silero v6 проходом, raw probabilities сохранены для сравнения
-- **AND** ASR windows не становятся границами сброса VAD state, EOF/padding применяются один раз на источник
+- **AND** ASR windows не становятся границами сброса speech gate state, EOF/padding применяются один раз на источник
 - **AND** хвост порции короче 512 samples переносится к следующей; внутренний read boundary не вызывает zero padding или повторную обработку overlap
 
 #### Scenario: Long track and source reset
@@ -211,10 +211,10 @@ SHA-256 SHALL вычисляться порциями. Диагностичес�
 могут расти с длительностью; весь worker SHALL не объявляться O(1).
 
 #### Scenario: Read an accepted window
-- **GIVEN** VAD выбрал окно на прежней сетке, включая overlap или последний короткий хвост
+- **GIVEN** speech gate выбрал окно на прежней сетке, включая overlap или последний короткий хвост
 - **WHEN** GigaAM или Parakeet читает его с диска
 - **THEN** samples, абсолютные offsets, frontend padding и midpoint seams совпадают с control, который выделяет окно из полной PCM
-- **AND** режимы VAD failure и Parakeet off сохраняют прежний window plan и fallback; исходники не изменяются
+- **AND** режимы speech gate failure и Parakeet off сохраняют прежний window plan и fallback; исходники не изменяются
 
 ### Requirement: Preserve BF16 frontend when chunking Nemotron input
 

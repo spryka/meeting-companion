@@ -46,17 +46,6 @@ public enum ModelAssets {
         ]
     )
 
-    /// Pinned specification for Silero VAD v6 MLX
-    public static let vadSpec = ModelSpec(
-        name: "vad",
-        repo: "mlx-community/silero-vad-v6",
-        revision: "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
-        files: [
-            ModelFileSpec(filename: "config.json", sha256: "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b"),
-            ModelFileSpec(filename: "model.safetensors", sha256: "65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff")
-        ]
-    )
-
     /// Pinned specification for Nemotron-3 Diarization MLX
     public static let nemotronSpec = ModelSpec(
         name: "nemotron",

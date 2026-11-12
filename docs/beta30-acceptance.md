@@ -29,7 +29,7 @@ recording overlay, chronological transcript и workspace keyboard navigation.
 Контракты single-current, Python-free и model-check-progress сохранены.
 
 Исследовательское предложение `transcription-parity-evaluation` архивировано
-без добавления основного контракта. Отложенные оптимизации памяти VAD/ASR,
+без добавления основного контракта. Отложенные оптимизации памяти отбора речи и распознавания,
 chunking Nemotron и timing API также не входят в поставленное поведение.
 Обычный офлайн-просмотр и нативные команды ввода сохранены.
 

@@ -7,8 +7,8 @@
 
 ## Установка
 
-**Актуальная версия — 2.0.0.**
-[Скачать DMG для Apple Silicon](https://github.com/spryka/meeting-companion/releases/download/v2.0.0/Meeting-Companion-2.0.0-arm64.dmg)
+**Актуальная версия — 2.0.1.**
+[Скачать DMG для Apple Silicon](https://github.com/spryka/meeting-companion/releases/download/v2.0.1/Meeting-Companion-2.0.1-arm64.dmg)
 · [Все версии](https://github.com/spryka/meeting-companion/releases)
 · [История изменений](CHANGELOG.md)
 

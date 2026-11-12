@@ -100,8 +100,11 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name + "-accessibility.json"))
             try JSONSerialization.data(withJSONObject: ["bounds": NSStringFromRect(host.bounds), "pixels": [bitmap.pixelsWide, bitmap.pixelsHigh], "scale": host.window?.backingScaleFactor ?? 1], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name + "-geometry.json"))
         }
-        for optional in [false, true] {
-            let folder = root.appendingPathComponent(optional ? "seven" : "five")
+        for (aec, parakeet) in [(false, false), (true, false), (false, true), (true, true)] {
+            let optional = aec && parakeet
+            let count = 4 + (aec ? 1 : 0) + (parakeet ? 1 : 0)
+            let variant = "\(count)-aec\(aec)-parakeet\(parakeet)"
+            let folder = root.appendingPathComponent(variant)
             try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
             let stem = folder.lastPathComponent, url = folder.appendingPathComponent(folder.lastPathComponent + ".m4a")
             for name in [stem + ".m4a", "raw/" + stem + ".host_record.wav", "raw/" + stem + ".remote_record.wav"] { try Data().write(to: folder.appendingPathComponent(name)) }
@@ -117,15 +120,17 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             let service = ProcessingService(transcriptionRunner: runner, audioExporter: SyntheticExporter(), historyRepository: repo)
             let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
             try await settle { model.isAttached }
-            _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: optional, echoCancellation: optional))
+            _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: parakeet, echoCancellation: aec))
             for _ in 0..<500 { if await runner.waiting { break }; try await Task.sleep(for: .milliseconds(5)) }
-            if optional { await runner.emit(.init(stage: .echo, channel: "host", completed: 0, total: 0, state: .completed)) }
-            for stage: TranscriptionProgress.Stage in [.diarization, .vad] {
-                for source in ["host", "remote"] { await runner.emit(.init(stage: stage, channel: source, completed: 0, total: 0, state: .completed)) }
+            if aec { await runner.emit(.init(stage: .echo, channel: "host", completed: 0, total: 0, state: .completed)) }
+            for source in ["host", "remote"] {
+                await runner.emit(.init(stage: .diarization, channel: source, completed: 0, total: 0, state: .completed))
             }
             await runner.emit(.init(stage: .speakers, channel: "host", completed: 0, total: 0, state: .completed))
             await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 96, total: 150))
             try await settle { model.capsuleProgress?.local?.completed == 96 }
+            #expect(model.capsuleProgress?.route.count == count)
+            #expect(model.capsuleProgress?.route.map(\.rawValue).contains("vad") == false)
             model.showProcessingDetails()
             let controller = RecordingCapsuleController(model: model, defaults: defaults)
             let panel = try #require(controller.panel)
@@ -134,9 +139,9 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             #expect(!controller.windowShouldClose(panel))
             for state in optional ? ["active", "warning", "failed", "success"] : ["active"] {
                 if state == "warning" {
-                    await runner.emit(.init(stage: .vad, channel: "remote", completed: 0, total: 0, warning: "Синтетическое замечание: VAD пропущен", state: .skipped))
+                    await runner.emit(.init(stage: .diarization, channel: "remote", completed: 0, total: 0, warning: "Синтетическое замечание: нет интервалов речи", state: .skipped))
                     await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 96, total: 150))
-                    try await settle { model.capsuleProgress?.reasons[.vad] != nil && model.capsuleProgress?.current == .recognition }
+                    try await settle { model.capsuleProgress?.reasons[.diarization] != nil && model.capsuleProgress?.current == .recognition }
                 } else if state == "failed" {
                     await runner.emit(.init(stage: .speakers, channel: "remote", completed: 0, total: 0, state: .completed))
                     for source in ["host", "remote"] { await runner.emit(.init(stage: .correction, channel: source, completed: 0, total: 0, state: .completed)) }
@@ -146,7 +151,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                 } else if state == "success" {
                     _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: true, echoCancellation: true))
                     for _ in 0..<500 { if await runner.waiting { break }; try await Task.sleep(for: .milliseconds(5)) }
-                    for stage: TranscriptionProgress.Stage in [.echo, .diarization, .vad, .speakers, .correction] {
+                    for stage: TranscriptionProgress.Stage in [.echo, .diarization, .speakers, .correction] {
                         for source in (stage == .echo ? ["host"] : ["host", "remote"]) { await runner.emit(.init(stage: stage, channel: source, completed: 0, total: 0, state: .completed)) }
                     }
                     await runner.emit(.init(stage: .publication, completed: 0, total: 0, state: .started))
@@ -154,7 +159,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                     try await settle { model.capsuleProgress?.terminal == true && model.capsuleProgress?.failure == nil }
                 }
                 for dark in [false, true] {
-                    let name = "\(optional ? 7 : 5)-\(state)-\(dark ? "dark" : "light")"
+                    let name = "\(variant)-\(state)-\(dark ? "dark" : "light")"
                     panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                     if let host = panel.contentView as? NSHostingView<RecordingCapsuleHostView> {
                         host.rootView = RecordingCapsuleHostView(viewModel: model)

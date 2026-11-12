@@ -44,7 +44,7 @@ and behavior-preserving changes do not need a new specification.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
-- `Sources/MeetingTranscriptionPipeline` and `Sources/MeetingTranscriptionWorker`: native Swift/MLX recognition, diarization, VAD, term correction and model preparation.
+- `Sources/MeetingTranscriptionPipeline` and `Sources/MeetingTranscriptionWorker`: native Swift/MLX recognition, diarization, term correction and model preparation.
 - `Sources/WebRTCAEC`: native C++ echo canceller; shell build preserves pinned WebRTC.
 - `Tests/Fixtures`: synthetic transcript JSON shared by Swift tests and editor checks.
 - `Resources/Info.plist`, `scripts/`: bundle metadata, build/install and checks.
@@ -69,7 +69,7 @@ artifact layout, failure behavior and evaluation method.
   there, intermediate files and source audio go in `raw/`. Full functionality requires
   canonical folder basename == recording stem (standard since 1.4.0). Legacy flat
   placement is list + contained saved TXT read-only; never process or write it.
-- VAD gates whole existing ASR windows; keep absolute timestamps and original audio.
+- Nemotron speech intervals gate whole existing ASR windows; keep absolute timestamps and original audio.
   Gate windows by existing Nemotron intervals; unavailable/empty diarization admits all windows.
   Preserve baseline GigaAM text with Parakeet enabled.
 - Keep processing UI event-driven and discrete; no continuous animation for transcription.

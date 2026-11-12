@@ -70,7 +70,7 @@ Parakeet 3e9a25e0f1c4cd866868e271601407b5a5c187ac1d4f7324a4867120775204eb
 ## Settings
 
 - host и remote: исходные 16 kHz mono PCM16 WAV, тишина сохраняется.
-- На каждой дорожке: Nemotron -> VAD -> GigaAM -> speakers -> опциональные
+- На каждой дорожке: Nemotron -> speech gate -> GigaAM -> speakers -> опциональные
   Parakeet и correction. Затем merge слов дорожек до группировки реплик.
 - GigaAM: greedy RNNT, максимум 10 symbols/frame, blank 1024, log-mel 64,
   FFT/window 320, hop 160, center=false, subsampling 4, шаг эмиссии 40 ms.
@@ -78,7 +78,7 @@ Parakeet 3e9a25e0f1c4cd866868e271601407b5a5c187ac1d4f7324a4867120775204eb
   Это метки эмиссии, не forced alignment.
 - Окна 25 с, шаг 24 с. Шов: lower=0 у первого, иначе start+0.5 с;
   upper=start+24.5 с, у последнего end+0.1 с. Отбор по началу слова `[lower, upper)`.
-- VAD: только detection copy +6 dB с clipping [-1,1], threshold=0.5,
+- speech gate: только detection copy +6 dB с clipping [-1,1], threshold=0.5,
   negative threshold=0.35, min speech/silence=250/250 ms, pad=150 ms.
   Любое строгое пересечение speech interval с окном допускает целое окно.
   У v6 отсутствует ветка 8 kHz; Python удаляет её перед strict load.

@@ -412,7 +412,7 @@ Release build и compiled self-check прошли. Офлайн с запрет�
 обработаны две копии дорожек одного пятиминутного фрагмента: 154/216 слов,
 432/546 токенов с emission frames, 13 окон на дорожку. Слова/start/end точно
 совпали с сохранёнными GigaAM словами Python. Это не контроль compute dtype,
-тензоров весов, Python token trace или одинакового VAD; общий паритет не доказан.
+тензоров весов, Python token trace или одинакового speech gate; общий паритет не доказан.
 Проверены empty/short/silence, invalid stereo/missing model и existing output.
 Оригиналы, WAV copies и прежний output сохранили hashes. Raw логи/outputs и
 одиночные timing/RSS/MLX measurements находятся только во внешнем evidence.
@@ -457,7 +457,7 @@ huggingface-hub2.4.0. Frozen Python source hashes после прогонов н
 На двух копиях 300 s:
 
 - 370 GigaAM words/start/end/speaker и 978 token IDs/pieces/frames/times точно
-  совпали с Python. Маски VAD совпали (10/13 host, 11/13 remote окон).
+  совпали с Python. Маски speech gate совпали (10/13 host, 11/13 remote окон).
 - Итоговые исправленные слова и временные реплики merged transcript совпали
   и с новым reference, и с сохранённым Python baseline. Метаданные/JSON CLI
   исследовательские; продуктовые форматы этим не проверены.
@@ -477,7 +477,7 @@ assertions mask/token/seams/invalid timestamp/merge. Cascade прошёл RED/GR
 
 Реальные subprocess checks: fallback дополнительных моделей, неизменность
 GigaAM, existing-output rejection, retry в новый каталог, fatal GigaAM,
-Parakeet off, invalid stereo, empty/short, silence, quiet/noise VAD, одинаковые
+Parakeet off, invalid stereo, empty/short, silence, quiet/noise speech gate, одинаковые
 источники для Nemotron/Parakeet state reset, SIGINT/cancel exit130 и input hashes.
 Quiet/noise masks совпали с Python: `[true,true,false]` / `[false,false,false]`.
 Первый integration harness потребовал исправления сравнения NSError строк:
@@ -502,7 +502,7 @@ DSP и dtype/mask/RoPE adapters описаны в README эксперимент�
 Полный последовательный offline run обеих реализаций на копиях встреч
 3659.22/1763.54/747.86 s, шесть дорожек, 102.84 min общей временной шкалы:
 
-- Все 11 392 слова GigaAM и 29 063 token IDs/pieces совпали. Все 518 VAD
+- Все 11 392 слова GigaAM и 29 063 token IDs/pieces совпали. Все 518 speech gate
   window masks совпали. Отличаются три token frame/start и три word end;
   максимальный сдвиг конца слова240 ms. Остальные word timestamps совпали.
 - Совпали слова итогового исправленного текста и число применённых замен
@@ -568,7 +568,7 @@ readback0.0521/0.0240s входит в decoder и не суммируется п
 | meeting28 | 43.666/37.671 | 20.923/14.813 |
 
 На всех шести дорожках полностью совпали с прежним Swift:11 392 слова,
-29 063 token IDs/pieces/frames/timestamps GigaAM, VAD masks, Nemotron intervals,
+29 063 token IDs/pieces/frames/timestamps GigaAM, speech gate masks, Nemotron intervals,
 Parakeet donor, correction journals и final segments. Все три transcript.txt
 совпали побайтово. Прежние расхождения с Python не устранялись и не скрывались.
 Идентичность прочитанных weight files проверена SHA-256; checkpoint/quantization
@@ -607,7 +607,7 @@ Release build,257 logic fixtures и12 CLI checks прошли повторно. 
 
 Один Mac, те же локальные checkpoints/settings/audio copies, сеть запрещена,
 PATH=/nonexistent, последовательные новые процессы. OS cache тёплый. Короткая
-серия: warm-up+3 на каждый вариант, порядок чередуется;2x300s,26 окон без VAD.
+серия: warm-up+3 на каждый вариант, порядок чередуется;2x300s,26 окон без speech gate.
 
 | Метрика | F32 cache | Native F16 cache |
 |---|---:|---:|
@@ -632,16 +632,16 @@ Readback входит в decoder и повторно не складываетс
 | Full RSS peak, MiB | 2120.5 | 2125.7 |
 | Full MLX peak, MiB | 1130.4 | 1130.4 |
 
-В обоих runs RSS уже достигает указанного peak после VAD, до GigaAM.
+В обоих runs RSS уже достигает указанного peak после speech gate, до GigaAM.
 Отказ от F32 не уменьшил полный RSS: прежний рост нельзя приписывать F32 weights.
-Причина high-water RSS внутри VAD требует отдельного профилирования; здесь
+Причина high-water RSS внутри speech gate требует отдельного профилирования; здесь
 это не диагностируется по одному getrusage. GigaAM active allocations после
 обеих дорожек848.9/424.5MiB; model-only peak ниже на399.2MiB. Full MLX peak
 остаётся у Parakeet. F16 выбран для PoC как профиль с меньшими GigaAM allocations,
 с явной ценой ~9% на коротком ASR и ~11s на GigaAM часовой встречи; весь run
 дольше на~16s, включая вариацию других этапов.
 
-Все7565 GigaAM words и19083 tokens, времена/спикеры, VAD masks/probabilities,
+Все7565 GigaAM words и19083 tokens, времена/спикеры, speech gate masks/probabilities,
 Nemotron intervals/count, donor, corrections/suggestions, final segments,
 baseline и итоговый TXT совпали точно. Это не WER/DER и не устранение прежних
 различий Python/Swift. Современный F32 output также совпал с прежним F32 run.
@@ -650,7 +650,7 @@ SHA-25621 original files,6 corpus WAV copies и2 micro WAV сохранены.
 Внешний evidence: `gigaam-f16-fft-20261031/REPORT.md`, `runs.json`, `comparison.json`,
 RED/GREEN logs, binaries/resources и validation/source manifests. App, installed
 bundle, capture/AEC не менялись; empty cache, packaging/signing/UI UAT и причины
-RSS внутри VAD не проверены. Product acceptance gates и proposed ADR не закрыты.
+RSS внутри speech gate не проверены. Product acceptance gates и proposed ADR не закрыты.
 
 ## Пересмотр SDD по PoC — 2026-10-31
 
@@ -658,22 +658,22 @@ RSS внутри VAD не проверены. Product acceptance gates и propos
 design, обеих specs, ADR review и tasks закреплены F16+FFT GigaAM, исходный BF16
 Nemotron, Silero v6 F32 и опциональный Parakeet Q8/F16. Известные Python/Swift
 differences остаются blockers, exact Swift before/after не закрывает parity.
-Бюджеты Air/VAD — новые предлагаемые цели для review, не пройденные tests.
+Бюджеты Air/speech gate — новые предлагаемые цели для review, не пройденные tests.
 
 Дополнительно прочитаны сохранённые metrics, без повторных inference:
 
 | Часовая встреча, две дорожки | Python model-first | Swift F16+FFT |
 |---|---:|---:|
-| Process RSS peak до VAD, GiB | 0.963 | 1.028 |
-| Process RSS peak после VAD, GiB | 1.933 | 2.076 |
-| MLX active после VAD, MiB | 1.402 | 1.207 |
-| MLX allocator cache после VAD, MiB | 724.371 | 724.372 |
+| Process RSS peak до speech gate, GiB | 0.963 | 1.028 |
+| Process RSS peak после speech gate, GiB | 1.933 | 2.076 |
+| MLX active после speech gate, MiB | 1.402 | 1.207 |
+| MLX allocator cache после speech gate, MiB | 724.371 | 724.372 |
 
 Python source: внешний `corpus-20261030/reference-stages.py`, result
 `hour30/python-bf16-01/metrics.json`; Swift result
-`gigaam-f16-fft-20261031/full/0-f16/metrics.json`. Python harness до VAD имеет
+`gigaam-f16-fft-20261031/full/0-f16/metrics.json`. Python harness до speech gate имеет
 около0.195MiB active. Эти high-water process snapshots не измеряют размер весов,
-live RSS или VAD-only peak; значения RSS/MLX не складываются. Сброс allocator
+live RSS или speech gate-only peak; значения RSS/MLX не складываются. Сброс allocator
 cache подтверждён прежними release checkpoints, это не reset `ru_maxrss`.
 
 Для контекста INT8 прочитаны прежние Nemotron-only probes на2x300s: INT8 active
@@ -684,7 +684,7 @@ cache подтверждён прежними release checkpoints, это не r
 Parakeet уже Q8, это не предложение новой оптимизации.
 
 Просмотрен pinned Swift FSMN source: local loader и `.all` есть, но feature/score
-и waveform arrays полные; memory advantage не доказано. VAD alternatives и
+и waveform arrays полные; memory advantage не доказано. speech gate alternatives и
 источники/ограничения вынесены в research, tasks7 остаются backlog.
 Новых зависимостей/весов/запусков/продуктового кода в этом пересмотре нет.
 Проверка — согласованность требований/сценариев/задач и strict OpenSpec; новые
@@ -695,7 +695,7 @@ runtime tests/TDD не нужны для одной правки докумен�
 Численные бюджеты и PoC-факты разделены, задачи3.2a/3.2b/3.4a/4.5a/5.5a/7
 остаются открытыми; завершена только документационная задача6.9.
 
-Уточнение по комментарию пользователя: bounded VAD начинается с чтения исходного
+Уточнение по комментарию пользователя: bounded speech gate начинается с чтения исходного
 WAV и инкрементального hash с диска, не с нарезки заранее загруженной часовой
 waveform. Добавлены сценарии read/decode request limits, feed tail при размере
 порции не кратном512, непрерывный state/absolute samples и EOF-only padding.
@@ -703,9 +703,9 @@ Memory/time probe включает file I/O/hash/decode; временные WAV-
 Оконный доступ GigaAM/Parakeet и прежний Nemotron preset сохраняются. Это
 уточнение спецификации, новая реализация и замеры не выполнялись;3.2b открыт.
 
-## Чтение WAV порциями: отдельный VAD PoC — 2026-10-31
+## Чтение WAV порциями: отдельный speech gate PoC — 2026-10-31
 
-Пользователь отдельно разрешил проверить память VAD в PoC. Добавлен executable
+Пользователь отдельно разрешил проверить память speech gate в PoC. Добавлен executable
 `vad-memory-poc`, без изменения основного `pipeline-poc`, приложения или vendor
 кода. Модель прежняя Silero v6 F32/strict16k; revision
 `2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06`, SHA-256 weights
@@ -749,7 +749,7 @@ wall 43.955 s. Пик RSS уже достигнут при полной PCM-по
 двух high-water значений не считается точной стоимостью отдельных буферов.
 
 Все 24 серийных запуска: probabilities, sample intervals и masks совпали точно
-в 12 парах. Полный hour control также точно совпал с VAD сохранённого прежнего
+в 12 парах. Полный hour control также точно совпал с speech gate сохранённого прежнего
 full run. На часе по 114351 probabilities на источник, accepted windows
 host 128/153, remote 139/153. Reader audit stream: полных PCM нет, read/decode
 buffer ≤160000 frames, feed buffer ≤160511 samples. Diagnostic probabilities
@@ -767,7 +767,7 @@ evidence, не ручная оценка распознавания, WER или 
 
 Первый диагностический hash через `FileHandle.read` удерживал autoreleased
 NSData: до модели RSS рос на объём прочитанных файлов. Добавлен autorelease pool
-на каждую порцию. Это ошибка новой пробы, а не доказанная причина старого VAD
+на каждую порцию. Это ошибка новой пробы, а не доказанная причина старого speech gate
 пика. Вариант sync readback каждые 16 feeds давал около 8.5 s против 4.3 s на
 5 min и отклонён; async eval16/drain320 устранил этот regression. Ранние варианты
 и неудачные preflights сохранены отдельно и исключены из итоговой статистики.
@@ -786,7 +786,7 @@ cold-cache/app UAT и нового Python comparison. Задача 6.10 выпо
 Пользователь разрешил совместную проверку F32 и порционной обработки в PoC.
 Добавлены исследовательские `--bounded-audio` и `--gigaam-f32`; default остаётся
 прежним. Веса/настройки неизменны: только optional GigaAM F16→F32 cache.
-Bounded VAD переиспользует проверенный reader/graph; GigaAM/Parakeet читают
+Bounded speech gate переиспользует проверенный reader/graph; GigaAM/Parakeet читают
 прежние25/24s окна с диска. Nemotron пока читает одну полную дорожку за раз,
 сохраняет все mel frames и прежний stateful340/40 offline network.
 
@@ -797,7 +797,7 @@ MLX full peak1130.4MiB у обоих. GigaAM active424.5/848.9MiB.
 
 Полный час, два источника, по одному проходу каждого варианта:
 
-| Вариант | Wall s | VAD s | GigaAM s | RSS peak MiB | MLX peak MiB |
+| Вариант | Wall s | speech gate s | GigaAM s | RSS peak MiB | MLX peak MiB |
 |---|---:|---:|---:|---:|---:|
 | whole F16 | 299.126 | 89.727 | 125.034 | 2128.5 | 1130.4 |
 | bounded F16 | 221.244 | 44.690 | 100.366 | 1046.0 | 1130.4 |
@@ -806,10 +806,10 @@ MLX full peak1130.4MiB у обоих. GigaAM active424.5/848.9MiB.
 F32 сократил wall ещё на5.1%, GigaAM total на12.8% в этой часовой паре.
 Это один полный проход, не повторная статистика. Снижение времени остальных
 этапов нельзя приписывать GigaAM dtype. Порционный вариант одновременно меняет
-полную PCM-подготовку, VAD graph и ASR disk I/O; весь выигрыш не является только
-эффектом VAD. На короткой серии median wall выигрыш3.7%.
+полную PCM-подготовку, speech gate graph и ASR disk I/O; весь выигрыш не является только
+эффектом speech gate. На короткой серии median wall выигрыш3.7%.
 
-Все source fields кроме window runtime, tokens/words/timings/VAD/diarization/
+Все source fields кроме window runtime, tokens/words/timings/speech gate/diarization/
 donor/journal и final files совпали точно во всех четырёх коротких парах и
 часовых вариантах. На часе7565слов/19083tokens; новый whole control совпал
 также с frozen full F16. Без warnings/fallback, по одной загрузке каждой модели.
@@ -827,7 +827,7 @@ NeMo-Speech.cpp@20999cc9 подтвердил cache-aware Nemotron. Готовы
 фактическая streaming model parity не проверена. Следующий шаг8.1 открыт.
 
 Release build; dtype RED/GREEN; повторные GigaAM frontend/selection, PCM/window,
-257logic fixtures и3CLI research guards прошли. Выделенная VAD probe после
+257logic fixtures и3CLI research guards прошли. Выделенная speech gate probe после
 извлечения общего helper точно совпала со frozen31s/block127 result по всем
 source fields, включая reader audit. Vendor46hashes подтверждены.
 
@@ -845,7 +845,7 @@ Evidence: внешний `f32-bounded-audit-20261031/REPORT.md`, `CHUNK-AUDIT.md
 По запросу пользователя повторена короткая и часовая серия с bounded audio,
 одним frozen binary/resource bundles и прежними весами/settings. Runtime не
 менялся/не пересобирался. Проверено по реальным progress events всех18процессов:
-Nemotron host→remote, VAD host→remote, GigaAM host→remote, Parakeet host→remote;
+Nemotron host→remote, speech gate host→remote, GigaAM host→remote, Parakeet host→remote;
 каждая модель загружена один раз. Внутри ASR этапа сначала все окна host,
 затем все окна remote, без параллельного inference. Model state сбрасывается
 между источниками, teardown до следующей модели. Nemotron wrapper пока сохраняет
@@ -870,7 +870,7 @@ F32 сокращает median full wall на1.67%, GigaAM total на12.57%; ко
 wall на4.51%. Парные long wall gains4.13/1.56/0.76%. Это3повтора на профиль,
 не универсальный выигрыш5%. Parakeet в длинных F32-проходах медленнее во всех
 трёх measured парах: median58.781s против54.557s у F16. Причина не профилирована;
-это не смена модели Parakeet и не доказанная фоновая помеха. VAD тоже имеет
+это не смена модели Parakeet и не доказанная фоновая помеха. speech gate тоже имеет
 разброс, хотя выполняется до GigaAM; нельзя приписывать его время GigaAM dtype.
 
 Max measured RSS близок, но individual peaks сильно меняются между процессами:

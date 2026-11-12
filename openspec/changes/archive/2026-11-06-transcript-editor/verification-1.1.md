@@ -33,7 +33,7 @@ rtk git diff --check
 Все шесть RED завершаются после успешного создания обычного TXT на assertion:
 `Structured transcript document result.json was not created by recording pipeline`.
 Это отсутствие требуемого результата, а не ImportError, ошибка окружения или stub.
-В тесте сбоя журнала выполняется настоящий `transcribe_file`, замоканы модели/VAD,
+В тесте сбоя журнала выполняется настоящий `transcribe_file`, замоканы модели/speech gate,
 внедрён OSError записи corrections.json. До RED проверены baseline host, успешная
 коррекция remote и предупреждение в TXT. Аудио синтетическое, модели не загружаются.
 

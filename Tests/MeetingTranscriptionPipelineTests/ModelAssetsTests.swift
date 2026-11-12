@@ -12,6 +12,20 @@ private final class AssetProgressLog: @unchecked Sendable {
 }
 
 final class ModelAssetsTests: XCTestCase {
+    func testEmptyCacheRequiresOnlyEnabledModels() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        for parakeet in [false, true] {
+            let log = AssetProgressLog()
+            let result = ModelAssets.checkAvailability(modelRoot: root, parakeet: parakeet, onProgress: { log.append($0) })
+            XCTAssertFalse(result.ready)
+            let names = Set(result.missingFiles.compactMap { $0.split(separator: "/").first.map(String.init) })
+            XCTAssertEqual(names, parakeet ? ["gigaam", "nemotron", "parakeet"] : ["gigaam", "nemotron"])
+            XCTAssertEqual(result.missingFiles.count, parakeet ? 13 : 8)
+            XCTAssertEqual(log.messages.count, result.missingFiles.count)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        }
+    }
+
     func testCheckReportsFileBeforeReadingAndStillRejectsCorruptChecksum() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let directory = root.appendingPathComponent("gigaam")
@@ -41,7 +55,7 @@ final class ModelAssetsTests: XCTestCase {
             "Initial checksum scan must be visible before preparation: \(log.messages)")
     }
 
-    func testSileroIsNotRequiredOrTouchedByPreparation() throws {
+    func testPreparationIgnoresUnrelatedFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         for spec in [ModelAssets.gigaamSpec, ModelAssets.nemotronSpec] {
@@ -50,20 +64,19 @@ final class ModelAssetsTests: XCTestCase {
             for file in spec.files { try Data([1]).write(to: directory.appendingPathComponent(file.filename)) }
         }
         XCTAssertTrue(ModelAssets.checkAvailability(modelRoot: root, parakeet: false, verifyChecksums: false).ready)
-        let vad = root.appendingPathComponent("vad")
-        try FileManager.default.createDirectory(at: vad, withIntermediateDirectories: true)
-        let marker = vad.appendingPathComponent("model.safetensors")
+        let unrelated = root.appendingPathComponent("unrelated")
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        let marker = unrelated.appendingPathComponent("model.safetensors")
         try Data([42]).write(to: marker)
         let log = AssetProgressLog()
         XCTAssertThrowsError(try ModelAssets.prepare(modelRoot: root, parakeet: false, allowDownload: false, onProgress: { log.append($0) }))
-        XCTAssertFalse(log.messages.contains { $0.contains("vad/") })
+        XCTAssertFalse(log.messages.contains { $0.contains("unrelated/") })
         XCTAssertEqual(try Data(contentsOf: marker), Data([42]))
     }
 
     func testModelSpecsPinnedIntegrity() {
         let specs = [
             ModelAssets.gigaamSpec,
-            ModelAssets.vadSpec,
             ModelAssets.nemotronSpec,
             ModelAssets.parakeetSpec
         ]

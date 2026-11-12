@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "total_files": 768,
+  "total_files": 762,
   "files": [
     {
       "path": "Vendor/GigaAMKit/Audio/AudioLoader.swift",
@@ -490,31 +490,14 @@
     },
     {
       "path": "Vendor/README.md",
-      "sha256": "8fe55f47a4b03965db2f088e960d9ad6b5ec9adc3bbd99bc7f9e0add17328565",
-      "size": 4209,
+      "sha256": "8c1623204aeb0df950fb1ea29cd33e7eca33effef0933d8f9ba0d5a0bee903bc",
+      "size": 3947,
       "status": "vendor_metadata"
     },
     {
-      "path": "Vendor/Silero/SileroVAD.swift",
-      "sha256": "0d44c93123af1bdd1671404243b7e09e56c30a0661917b46e005cee0e2a22dbd",
-      "size": 13711,
-      "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
-      "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "patch": "Vendor/patches/silero.patch",
-      "status": "adapted_offline_16k"
-    },
-    {
-      "path": "Vendor/Silero/SileroVADConfig.swift",
-      "sha256": "e0d7549343caa3b967121a080746929ea15dfae0085826ff9f1750a618bab81b",
-      "size": 3839,
-      "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
-      "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pristine"
-    },
-    {
       "path": "Vendor/dependency-licenses.json",
-      "sha256": "162ddb30ce5cae2cf199a9686e64703ddadf94031af5b69d20665cba73a6e69e",
-      "size": 6459,
+      "sha256": "2606b19a8a7017a7521a8fa25128f1fa56fbeef3790caf6db3b19ec1d437c973",
+      "size": 6478,
       "status": "vendor_metadata"
     },
     {
@@ -549,12 +532,15 @@
     },
     {
       "path": "Vendor/mlx-audio-swift/Package.swift",
-      "sha256": "c7ab0584f87c06f20d03ff7076cf8e40a93dadb14cf4dc8b6d7694c95f7f94e1",
-      "size": 12377,
+      "sha256": "f7aa350bc97c2476ae365c0d9136f49a3ad07eca8f6789a03f2c2d66e816577c",
+      "size": 12331,
       "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
       "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
       "patch": "Vendor/mlx-audio-manifest.patch",
-      "status": "patched_manifest"
+      "status": "patched",
+      "additional_patches": [
+        "Vendor/patches/remove-unused-detector.patch"
+      ]
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioCodecs/AudioCodecModel.swift",
@@ -1862,11 +1848,12 @@
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/CohereTranscribe/CohereTranscribe.swift",
-      "sha256": "7f31ceb9f8d2809f267bbd16653b215f6d92b9f3a1dd7ea3ca0266c8f979d53b",
-      "size": 38848,
+      "sha256": "1dc3e7a88f565d86e67b06cff74776a44febc8d4c95ed0150fe399c659a2ca52",
+      "size": 37456,
       "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
       "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
+      "status": "patched",
+      "patch": "Vendor/patches/remove-unused-detector.patch"
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/CohereTranscribe/CohereTranscribeAudio.swift",
@@ -1910,11 +1897,12 @@
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/CohereTranscribe/README.md",
-      "sha256": "88c685eb73af415f32564169c711b8f9f2fa244f28ff59b39607c580f57aa5da",
-      "size": 3231,
+      "sha256": "6e8ff362d552bd7d6d9cd6c0ed53588e21f098bf3593d4788381c9513ba42de9",
+      "size": 1293,
       "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
       "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
+      "status": "patched",
+      "patch": "Vendor/patches/remove-unused-detector.patch"
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/FireRedASR2/FireRedASR2Audio.swift",
@@ -2879,11 +2867,12 @@
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift",
-      "sha256": "11fd9116146c52a57b6f1e4238ed44d292e97e3510ce8a29c9d777f5450e58f5",
-      "size": 27253,
+      "sha256": "c7bca2197be7d4eeb26b795979be7c3a31a8ab7d50b6e73747bf4cf4cee1ff5d",
+      "size": 23736,
       "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
       "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
+      "status": "patched",
+      "patch": "Vendor/patches/remove-unused-detector.patch"
     },
     {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtimeAudio.swift",
@@ -5166,30 +5155,6 @@
       "status": "pinned_source"
     },
     {
-      "path": "Vendor/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/README.md",
-      "sha256": "ee25e41027910ce4c88dcc1519035f131e828be128782d945772087657437420",
-      "size": 1386,
-      "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
-      "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
-    },
-    {
-      "path": "Vendor/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/SileroVAD.swift",
-      "sha256": "1e833289702d439cac28f2563ff3b0e553053acace102a04688002dbaffee826",
-      "size": 14002,
-      "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
-      "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
-    },
-    {
-      "path": "Vendor/mlx-audio-swift/Sources/MLXAudioVAD/Models/SileroVAD/SileroVADConfig.swift",
-      "sha256": "e0d7549343caa3b967121a080746929ea15dfae0085826ff9f1750a618bab81b",
-      "size": 3839,
-      "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
-      "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
-    },
-    {
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioVAD/Models/SmartTurn/README.md",
       "sha256": "b51d0617601d88c1f17811226728b578dd2cdf4311194bdf9b154191b5c56878",
       "size": 930,
@@ -5249,14 +5214,6 @@
       "path": "Vendor/mlx-audio-swift/Sources/MLXAudioVAD/Models/Sortformer/SortformerFeatures.swift",
       "sha256": "c2db82bca9572e3b12e86a905c99f9bce996fd6e8da3d99e8906d42af3fc0c91",
       "size": 5474,
-      "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
-      "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
-    },
-    {
-      "path": "Vendor/mlx-audio-swift/Sources/MLXAudioVAD/SpeechSegmenter.swift",
-      "sha256": "109f194b7deafd4e6e43556c8b0ec8be79412192519cadc01b0d4893f0f2849f",
-      "size": 6678,
       "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
       "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
       "status": "pinned_source"
@@ -5607,11 +5564,12 @@
     },
     {
       "path": "Vendor/mlx-audio-swift/Tests/MLXAudioVADTests.swift",
-      "sha256": "0f5cb12b93443528ea882f1a460d4daf9ef17f4c4163875f1350acaeb35413ea",
-      "size": 41468,
+      "sha256": "886123fb40412dac54f8ab7f2455f4a00cc6fb1f93ebf7503da4ff5ca8dbbd38",
+      "size": 35452,
       "upstream_repo": "https://github.com/Blaizzy/mlx-audio-swift",
       "upstream_revision": "d4fa7be1c2fef65ed13a4f73bd58e0a23a0ba307",
-      "status": "pinned_source"
+      "status": "patched",
+      "patch": "Vendor/patches/remove-unused-detector.patch"
     },
     {
       "path": "Vendor/mlx-audio-swift/Tests/Mamba2Tests.swift",
@@ -6090,9 +6048,9 @@
       "status": "patch_text"
     },
     {
-      "path": "Vendor/patches/silero.patch",
-      "sha256": "50dbb7808198365445908b9cc104b59aaf609c7cc8f155c06dde351a3ef1a722",
-      "size": 4360,
+      "path": "Vendor/patches/remove-unused-detector.patch",
+      "sha256": "47a52c054c29240e8ba6c6afd01eb976ea344da56a0df2e24f4eb0f4ecb881b7",
+      "size": 44398,
       "status": "patch_text"
     }
   ]

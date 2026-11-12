@@ -62,22 +62,11 @@ let package = Package(
             path: "Vendor/Nemotron"
         ),
         .target(
-            name: "PipelineSilero",
-            dependencies: [
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "MLXFast", package: "mlx-swift"),
-                .product(name: "MLXAudioCore", package: "mlx-audio-swift")
-            ],
-            path: "Vendor/Silero"
-        ),
-        .target(
             name: "MeetingTranscriptionPipeline",
             dependencies: [
                 "MeetingCompanionCore",
                 "GigaAMKit",
                 "Nemotron",
-                "PipelineSilero",
                 .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
@@ -120,7 +109,6 @@ let package = Package(
             dependencies: [
                 "GigaAMKit",
                 "Nemotron",
-                "PipelineSilero",
                 .product(name: "MLXAudioSTT", package: "mlx-audio-swift")
             ],
             path: "Tests/ModelVendorTests"

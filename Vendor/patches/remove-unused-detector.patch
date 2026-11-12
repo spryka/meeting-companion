@@ -1,0 +1,1158 @@
+diff --git a/Package.swift b/Package.swift
+index cd3dcc6..8d85c0f 100644
+--- a/Package.swift
++++ b/Package.swift
+@@ -205,7 +205,6 @@ let package = Package(
+             ],
+             path: "Sources/MLXAudioVAD",
+             exclude: [
+-                "Models/SileroVAD/README.md",
+                 "Models/SmartTurn/README.md",
+                 "Models/Sortformer/README.md",
+             ]
+diff --git a/Sources/MLXAudioSTT/Models/CohereTranscribe/CohereTranscribe.swift b/Sources/MLXAudioSTT/Models/CohereTranscribe/CohereTranscribe.swift
+index 2ecf818..02e21ed 100644
+--- a/Sources/MLXAudioSTT/Models/CohereTranscribe/CohereTranscribe.swift
++++ b/Sources/MLXAudioSTT/Models/CohereTranscribe/CohereTranscribe.swift
+@@ -3,7 +3,6 @@ import HuggingFace
+ import MLX
+ import MLXNN
+ import MLXAudioCore
+-import MLXAudioVAD
+ 
+ private struct CoherePrefillContext {
+     let adapterOut: MLXArray
+@@ -310,49 +309,16 @@ public final class CohereTranscribeModel: Module, STTGenerationModel {
+     public func generate(
+         audio: MLXArray,
+         generationParameters: STTGenerateParameters
+-    ) -> STTOutput {
+-        return generate(audio: audio, generationParameters: generationParameters, vad: nil)
+-    }
+-
+-    public func generate(
+-        audio: MLXArray,
+-        generationParameters: STTGenerateParameters,
+-        vad: (model: SileroVAD, config: SpeechSegmentConfig)?
+     ) -> STTOutput {
+         let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+-        let chunks: [(MLXArray, Float)]
+-        if let vad {
+-            do {
+-                chunks = try segmentSpeech(
+-                    audio: audio1D,
+-                    sampleRate: config.sampleRate,
+-                    vadModel: vad.model,
+-                    config: vad.config
+-                )
+-            } catch {
+-                if generationParameters.verbose {
+-                    print("VAD pre-processing failed (\(error)); falling back to fixed chunking")
+-                }
+-                chunks = splitAudioIntoChunks(
+-                    audio1D,
+-                    sampleRate: config.sampleRate,
+-                    chunkDuration: generationParameters.chunkDuration,
+-                    minChunkDuration: generationParameters.minChunkDuration
+-                )
+-            }
+-        } else {
+-            chunks = splitAudioIntoChunks(
+-                audio1D,
+-                sampleRate: config.sampleRate,
+-                chunkDuration: generationParameters.chunkDuration,
+-                minChunkDuration: generationParameters.minChunkDuration
+-            )
+-        }
++        let chunks = splitAudioIntoChunks(
++            audio1D,
++            sampleRate: config.sampleRate,
++            chunkDuration: generationParameters.chunkDuration,
++            minChunkDuration: generationParameters.minChunkDuration
++        )
+ 
+         guard chunks.count > 1 else {
+-            // One chunk: transcribe it rather than the original buffer, so a single VAD
+-            // speech region keeps its leading/trailing-silence trim. `chunks` is never
+-            // empty, but fall back to `audio1D` defensively.
+             return generateSingleChunk(audio: chunks.first?.0 ?? audio1D, generationParameters: generationParameters)
+         }
+ 
+diff --git a/Sources/MLXAudioSTT/Models/CohereTranscribe/README.md b/Sources/MLXAudioSTT/Models/CohereTranscribe/README.md
+index 51bffaf..992c767 100644
+--- a/Sources/MLXAudioSTT/Models/CohereTranscribe/README.md
++++ b/Sources/MLXAudioSTT/Models/CohereTranscribe/README.md
+@@ -36,50 +36,9 @@ for try await event in model.generateStream(audio: audio) {
+ }
+ ```
+ 
+-## Optional VAD Pre-processing
++## Long-form audio
+ 
+-Cohere's encoder has a positional-encoding limit of ≈ 6.7 minutes. Long-form audio is therefore split into chunks before transcription. Two strategies are available:
+-
+-| Strategy | When | Notes |
+-|---|---|---|
+-| Fixed-duration energy chunking (default) | Clean dense speech (audiobooks, narration) | Splits at low-energy points within each `chunkDuration` window |
+-| Silero VAD (opt-in) | Long-form audio with silences / non-speech (meetings, podcasts, interviews) | Trims silence, aligns chunks to natural pauses |
+-
+-```swift
+-import MLXAudioSTT
+-import MLXAudioVAD
+-
+-let model = try await CohereTranscribeModel.fromPretrained(
+-    "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
+-)
+-let vad = try await SileroVAD.fromPretrained("mlx-community/silero-vad")
+-
+-let output = model.generate(
+-    audio: audio,
+-    generationParameters: STTGenerateParameters(language: "en"),
+-    vad: (model: vad, config: SpeechSegmentConfig())
+-)
+-```
+-
+-`SpeechSegmentConfig` (from `MLXAudioVAD`) exposes `threshold`, `minSpeechMs`, `minSilenceMs`, `speechPadMs`, `mergeGapS`, `maxChunkS`. Defaults match Silero's recommendations and the encoder's 30 s safe chunk size.
+-
+-### Measured trade-offs
+-
+-10-min English meeting recording (silence + speech, M1 Max, Release):
+-
+-| | Wall | 3-gram repeats (>=3) | Notable |
+-|---|---|---|---|
+-| Fixed chunking | 26 s | 6 (incl. `'a very strong' x3` hallucinated on initial silence) | Hallucinations on silent leading audio |
+-| `vad: ...` | 30 s (+15 %) | 2 (natural meeting filler only) | Clean start, natural sentence boundaries |
+-
+-30-min concatenated LibriSpeech (clean audiobook reads, ground-truth WER):
+-
+-| | Wall | WER | Insertions |
+-|---|---|---|---|
+-| Fixed chunking | 107 s | **1.66 %** | 6 |
+-| `vad: ...` | 117 s (+9 %) | 2.39 % | 27 |
+-
+-Take-away: VAD pre-processing **is opt-in by design**. It improves long-form ASR on audio with silences or non-speech sections (meetings, podcasts), at a small wall-clock cost. On clean dense narration it produces no quality benefit and can add insertions at chunk boundaries — keep the default fixed chunking for that case.
++Long-form audio is split into fixed-duration chunks at low-energy points. Configure `chunkDuration` and `minChunkDuration` through `STTGenerateParameters`.
+ 
+ ## Notes
+ 
+diff --git a/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift b/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift
+index d02e9c9..0f99ed4 100644
+--- a/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift
++++ b/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift
+@@ -2,7 +2,6 @@ import Foundation
+ import MLX
+ import MLXNN
+ import MLXAudioCore
+-import MLXAudioVAD
+ import HuggingFace
+ 
+ private enum VoxtralRealtimeConstants {
+@@ -125,83 +124,6 @@ public final class VoxtralRealtimeModel: Module, STTGenerationModel {
+         )
+     }
+ 
+-    public func generate(
+-        audio: MLXArray,
+-        generationParameters: STTGenerateParameters,
+-        vad: (model: SileroVAD, config: SpeechSegmentConfig)?
+-    ) -> STTOutput {
+-        guard let vad else {
+-            return generate(audio: audio, generationParameters: generationParameters)
+-        }
+-        let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+-        let chunks: [(MLXArray, Float)]
+-        do {
+-            chunks = try segmentSpeech(
+-                audio: audio1D,
+-                sampleRate: VoxtralRealtimeConstants.sampleRate,
+-                vadModel: vad.model,
+-                config: vad.config
+-            )
+-        } catch {
+-            if generationParameters.verbose {
+-                print("VAD pre-processing failed (\(error)); falling back to single-pass generate")
+-            }
+-            return generate(audio: audio1D, generationParameters: generationParameters)
+-        }
+-        if chunks.count <= 1 {
+-            // One speech region: transcribe the trimmed chunk, not the original buffer
+-            // (keeps the VAD's leading/trailing-silence removal). `chunks` is never empty,
+-            // but fall back to `audio1D` defensively.
+-            return generate(audio: chunks.first?.0 ?? audio1D, generationParameters: generationParameters)
+-        }
+-
+-        var outputs: [STTOutput] = []
+-        outputs.reserveCapacity(chunks.count)
+-        var remainingTokens = generationParameters.maxTokens
+-        for (chunkAudio, offsetSeconds) in chunks {
+-            if remainingTokens <= 0 { break }
+-            if generationParameters.verbose {
+-                print("Voxtral VAD chunk at \(String(format: "%.1f", offsetSeconds))s")
+-            }
+-            let chunkParameters = STTGenerateParameters(
+-                maxTokens: remainingTokens,
+-                temperature: generationParameters.temperature,
+-                topP: generationParameters.topP,
+-                topK: generationParameters.topK,
+-                verbose: generationParameters.verbose,
+-                language: generationParameters.language,
+-                chunkDuration: generationParameters.chunkDuration,
+-                minChunkDuration: generationParameters.minChunkDuration
+-            )
+-            let out = generate(audio: chunkAudio, generationParameters: chunkParameters)
+-            outputs.append(out)
+-            remainingTokens = max(0, remainingTokens - out.generationTokens)
+-        }
+-
+-        let combinedText = outputs
+-            .map(\.text)
+-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+-            .filter { !$0.isEmpty }
+-            .joined(separator: "\n")
+-        let promptTokens = outputs.reduce(0) { $0 + $1.promptTokens }
+-        let generationTokens = outputs.reduce(0) { $0 + $1.generationTokens }
+-        let totalTokens = outputs.reduce(0) { $0 + $1.totalTokens }
+-        let totalTime = outputs.reduce(0.0) { $0 + $1.totalTime }
+-        let peakMemoryUsage = outputs.map(\.peakMemoryUsage).max() ?? 0
+-
+-        return STTOutput(
+-            text: combinedText,
+-            language: generationParameters.language,
+-            promptTokens: promptTokens,
+-            generationTokens: generationTokens,
+-            totalTokens: totalTokens,
+-            promptTps: totalTime > 0 ? Double(promptTokens) / totalTime : 0,
+-            generationTps: totalTime > 0 ? Double(generationTokens) / totalTime : 0,
+-            totalTime: totalTime,
+-            peakMemoryUsage: peakMemoryUsage
+-        )
+-    }
+-
+     public func generateStream(
+         audio: MLXArray,
+         generationParameters: STTGenerateParameters
+diff --git a/Sources/MLXAudioVAD/Models/SileroVAD/README.md b/Sources/MLXAudioVAD/Models/SileroVAD/README.md
+deleted file mode 100644
+index b5cc4a4..0000000
+--- a/Sources/MLXAudioVAD/Models/SileroVAD/README.md
++++ /dev/null
+@@ -1,43 +0,0 @@
+-# Silero VAD
+-
+-Swift / MLX port of the Silero voice activity detector (`silero_vad`).
+-
+-## Supported Models
+-
+-| Model | HuggingFace Repo |
+-|-------|------------------|
+-| Silero VAD v5 | [`mlx-community/silero-vad`](https://huggingface.co/mlx-community/silero-vad) |
+-| Silero VAD v6 | [`mlx-community/silero-vad-v6`](https://huggingface.co/mlx-community/silero-vad-v6) |
+-
+-Both ship the same `vad_16k.*` / `vad_8k.*` weight layout — the loader works for either.
+-
+-## Usage
+-
+-```swift
+-import MLXAudioVAD
+-import MLXAudioCore
+-
+-let model = try await SileroVAD.fromPretrained("mlx-community/silero-vad")
+-
+-let (sampleRate, audio) = try loadAudioArray(from: audioURL)
+-let timestamps = try model.getSpeechTimestamps(audio, sampleRate: sampleRate)
+-for ts in timestamps {
+-    let start = Float(ts.start) / Float(sampleRate)
+-    let end = Float(ts.end) / Float(sampleRate)
+-    print("[\(start)s - \(end)s]")
+-}
+-```
+-
+-## Streaming
+-
+-Feed 512 samples at 16 kHz (or 256 samples at 8 kHz) per call:
+-
+-```swift
+-var state = try model.initialState(sampleRate: 16000)
+-let (probability, newState) = try model.feed(chunk: chunk, state: state, sampleRate: 16000)
+-state = newState
+-```
+-
+-## Sample Rate
+-
+-Silero supports 16 kHz and 8 kHz. Other rates are rejected with `SileroVADError.unsupportedSampleRate`. The Swift port does not auto-resample — convert your audio with `MLXAudioCore.resampleAudio` first if needed.
+diff --git a/Sources/MLXAudioVAD/Models/SileroVAD/SileroVAD.swift b/Sources/MLXAudioVAD/Models/SileroVAD/SileroVAD.swift
+deleted file mode 100644
+index 4cd61d9..0000000
+--- a/Sources/MLXAudioVAD/Models/SileroVAD/SileroVAD.swift
++++ /dev/null
+@@ -1,379 +0,0 @@
+-import Foundation
+-import HuggingFace
+-@preconcurrency import MLX
+-import MLXAudioCore
+-import MLXNN
+-
+-public struct SileroVADTimestamp: Sendable, Equatable {
+-    public let start: Int
+-    public let end: Int
+-
+-    public init(start: Int, end: Int) {
+-        self.start = start
+-        self.end = end
+-    }
+-}
+-
+-/// Tensor state for sequential feed calls in the caller's isolation domain.
+-public struct SileroVADStreamingState {
+-    public var lstmState: MLXArray?
+-    public var context: MLXArray
+-    public var sampleRate: Int
+-
+-    public init(lstmState: MLXArray?, context: MLXArray, sampleRate: Int) {
+-        self.lstmState = lstmState
+-        self.context = context
+-        self.sampleRate = sampleRate
+-    }
+-}
+-
+-public enum SileroVADError: Error, LocalizedError {
+-    case invalidRepositoryID(String)
+-    case unsupportedSampleRate(Int)
+-    case stateSampleRateMismatch(expected: Int, got: Int)
+-    case unexpectedChunkSize(expected: Int, got: Int)
+-    case insufficientReflectPadInput(samples: Int, pad: Int)
+-
+-    public var errorDescription: String? {
+-        switch self {
+-        case .invalidRepositoryID(let r): return "Invalid repository ID: \(r)"
+-        case .unsupportedSampleRate(let s): return "Silero VAD supports 8000 Hz and 16000 Hz audio (got \(s))"
+-        case .stateSampleRateMismatch(let exp, let got):
+-            return "Streaming state is for \(exp) Hz, got \(got) Hz"
+-        case .unexpectedChunkSize(let exp, let got):
+-            return "Expected \(exp) samples per chunk, got \(got)"
+-        case .insufficientReflectPadInput(let s, let p):
+-            return "Reflect padding of \(p) requires more than \(p) samples (got \(s))"
+-        }
+-    }
+-}
+-
+-private func reflectPadRight(_ x: MLXArray, pad: Int) -> MLXArray {
+-    if pad <= 0 { return x }
+-    let n = x.dim(-1)
+-    precondition(n > pad, "reflect pad needs more than \(pad) samples (got \(n))")
+-    let indices = MLXArray(Array(stride(from: Int32(n - 2), to: Int32(n - pad - 2), by: -1)))
+-    let reflected = take(x, indices, axis: -1)
+-    return concatenated([x, reflected], axis: -1)
+-}
+-
+-private final class SileroVADBranch: Module {
+-    let config: SileroVADBranchConfig
+-
+-    @ModuleInfo(key: "stft_conv") var stftConv: Conv1d
+-    @ModuleInfo(key: "conv1") var conv1: Conv1d
+-    @ModuleInfo(key: "conv2") var conv2: Conv1d
+-    @ModuleInfo(key: "conv3") var conv3: Conv1d
+-    @ModuleInfo(key: "conv4") var conv4: Conv1d
+-    @ModuleInfo(key: "lstm") var lstm: LSTM
+-    @ModuleInfo(key: "final_conv") var finalConv: Conv1d
+-
+-    init(_ config: SileroVADBranchConfig) {
+-        self.config = config
+-        self._stftConv.wrappedValue = Conv1d(
+-            inputChannels: 1, outputChannels: config.cutoff * 2,
+-            kernelSize: config.filterLength, stride: config.hopLength,
+-            padding: 0, bias: false
+-        )
+-        self._conv1.wrappedValue = Conv1d(
+-            inputChannels: config.cutoff, outputChannels: 128,
+-            kernelSize: 3, padding: 1
+-        )
+-        self._conv2.wrappedValue = Conv1d(
+-            inputChannels: 128, outputChannels: 64,
+-            kernelSize: 3, stride: 2, padding: 1
+-        )
+-        self._conv3.wrappedValue = Conv1d(
+-            inputChannels: 64, outputChannels: 64,
+-            kernelSize: 3, stride: 2, padding: 1
+-        )
+-        self._conv4.wrappedValue = Conv1d(
+-            inputChannels: 64, outputChannels: 128,
+-            kernelSize: 3, padding: 1
+-        )
+-        self._lstm.wrappedValue = LSTM(inputSize: 128, hiddenSize: 128)
+-        self._finalConv.wrappedValue = Conv1d(
+-            inputChannels: 128, outputChannels: 1,
+-            kernelSize: 1
+-        )
+-    }
+-
+-    func callAsFunction(_ x: MLXArray, state: MLXArray?) -> (MLXArray, MLXArray) {
+-        var x = x
+-        if x.ndim == 1 { x = x[.newAxis, 0...] }
+-
+-        let (hidden, cell) = splitState(state)
+-        x = reflectPadRight(x, pad: config.pad)
+-        x = stftConv(x[.ellipsis, .newAxis])
+-        let real = x[.ellipsis, 0 ..< config.cutoff]
+-        let imag = x[.ellipsis, config.cutoff ..< (config.cutoff * 2)]
+-        x = sqrt(real * real + imag * imag)
+-
+-        x = MLXNN.relu(conv1(x))
+-        x = MLXNN.relu(conv2(x))
+-        x = MLXNN.relu(conv3(x))
+-        x = MLXNN.relu(conv4(x))
+-
+-        let (hSeq, cSeq) = lstm(x, hidden: hidden, cell: cell)
+-        let lastH = hSeq[0..., -1, 0...]
+-        let lastC = cSeq[0..., -1, 0...]
+-        let newState = stacked([lastH, lastC], axis: 0)
+-
+-        var out = MLXNN.relu(hSeq)
+-        out = sigmoid(finalConv(out))
+-        let prob = mean(out.squeezed(axis: -1), axis: 1, keepDims: true)
+-        return (prob, newState)
+-    }
+-
+-    private func splitState(_ s: MLXArray?) -> (MLXArray?, MLXArray?) {
+-        guard let s else { return (nil, nil) }
+-        precondition(s.ndim == 3 && s.dim(0) == 2, "expected state shape (2, batch, 128)")
+-        return (s[0], s[1])
+-    }
+-}
+-
+-public final class SileroVAD: Module {
+-    public let config: SileroVADConfig
+-    fileprivate let branch16k: SileroVADBranch
+-    fileprivate let branch8k: SileroVADBranch
+-
+-    public init(_ config: SileroVADConfig) {
+-        self.config = config
+-        self.branch16k = SileroVADBranch(config.branch16k)
+-        self.branch8k = SileroVADBranch(config.branch8k)
+-    }
+-
+-    private func branch(forSampleRate sr: Int) throws -> SileroVADBranch {
+-        switch sr {
+-        case 16000: return branch16k
+-        case 8000: return branch8k
+-        default: throw SileroVADError.unsupportedSampleRate(sr)
+-        }
+-    }
+-
+-    public func callAsFunction(
+-        _ x: MLXArray,
+-        state: MLXArray? = nil,
+-        sampleRate: Int = 16000
+-    ) throws -> (MLXArray, MLXArray) {
+-        let b = try branch(forSampleRate: sampleRate)
+-        return b(x, state: state)
+-    }
+-
+-    public func initialState(batchSize: Int = 1, sampleRate: Int = 16000) throws -> sending SileroVADStreamingState {
+-        let b = try branch(forSampleRate: sampleRate)
+-        let context = MLXArray.zeros([batchSize, b.config.contextSize])
+-        return SileroVADStreamingState(lstmState: nil, context: context, sampleRate: sampleRate)
+-    }
+-
+-    public func feed(
+-        chunk: MLXArray,
+-        state: SileroVADStreamingState? = nil,
+-        sampleRate: Int = 16000
+-    ) throws -> (MLXArray, SileroVADStreamingState) {
+-        let b = try branch(forSampleRate: sampleRate)
+-        var c = chunk
+-        if c.ndim == 1 { c = c[.newAxis, 0...] }
+-        if c.dim(-1) != b.config.chunkSize {
+-            throw SileroVADError.unexpectedChunkSize(expected: b.config.chunkSize, got: c.dim(-1))
+-        }
+-
+-        var st = try state ?? initialState(batchSize: c.dim(0), sampleRate: sampleRate)
+-        if st.sampleRate != sampleRate {
+-            throw SileroVADError.stateSampleRateMismatch(expected: st.sampleRate, got: sampleRate)
+-        }
+-
+-        let window = concatenated([st.context, c], axis: -1)
+-        let (prob, lstmState) = b(window, state: st.lstmState)
+-        let newContext = c[0..., (c.dim(-1) - b.config.contextSize)...]
+-        st = SileroVADStreamingState(lstmState: lstmState, context: newContext, sampleRate: sampleRate)
+-        return (prob, st)
+-    }
+-
+-    public func predictProba(
+-        _ audio: MLXArray,
+-        sampleRate: Int = 16000,
+-        evalEvery: Int = 16
+-    ) throws -> MLXArray {
+-        let b = try branch(forSampleRate: sampleRate)
+-        let cs = b.config.chunkSize
+-        let ctx = b.config.contextSize
+-        var a = audio
+-        let originalNDim = a.ndim
+-        if originalNDim == 1 { a = a[.newAxis, 0...] }
+-
+-        if a.dim(-1) == 0 {
+-            return originalNDim == 1
+-                ? MLXArray.zeros([0])
+-                : MLXArray.zeros([a.dim(0), 0])
+-        }
+-
+-        let pad = (cs - a.dim(-1) % cs) % cs
+-        if pad > 0 {
+-            a = padded(a, widths: [.init((0, 0)), .init((0, pad))])
+-        }
+-        let preCtx = MLXArray.zeros([a.dim(0), ctx])
+-        a = concatenated([preCtx, a], axis: -1)
+-
+-        var outputs: [MLXArray] = []
+-        var state: MLXArray? = nil
+-        var step = 0
+-        var pos = ctx
+-        while pos < a.dim(-1) {
+-            let window = a[0..., (pos - ctx) ..< (pos + cs)]
+-            let (out, newState) = b(window, state: state)
+-            outputs.append(out)
+-            state = newState
+-            step += 1
+-            pos += cs
+-            if step % evalEvery == 0 {
+-                asyncEval([out, newState])
+-            }
+-        }
+-        if !outputs.isEmpty, outputs.count % evalEvery != 0 {
+-            asyncEval([outputs.last!, state!])
+-        }
+-
+-        var probs = concatenated(outputs, axis: 1)
+-        if originalNDim == 1 {
+-            probs = probs[0]
+-        }
+-        return probs
+-    }
+-
+-    public func getSpeechTimestamps(
+-        _ audio: MLXArray,
+-        sampleRate: Int = 16000,
+-        threshold: Float? = nil,
+-        minSpeechDurationMs: Int? = nil,
+-        minSilenceDurationMs: Int? = nil,
+-        speechPadMs: Int? = nil
+-    ) throws -> [SileroVADTimestamp] {
+-        let probs = try predictProba(audio, sampleRate: sampleRate)
+-        eval(probs)
+-        let audioLen = audio.ndim == 1 ? audio.dim(0) : audio.dim(-1)
+-        return SileroVAD.probsToTimestamps(
+-            probs,
+-            audioLen: audioLen,
+-            sampleRate: sampleRate,
+-            threshold: threshold ?? config.threshold,
+-            minSpeechDurationMs: minSpeechDurationMs ?? config.minSpeechDurationMs,
+-            minSilenceDurationMs: minSilenceDurationMs ?? config.minSilenceDurationMs,
+-            speechPadMs: speechPadMs ?? config.speechPadMs
+-        )
+-    }
+-
+-    public static func probsToTimestamps(
+-        _ probabilities: MLXArray,
+-        audioLen: Int,
+-        sampleRate: Int,
+-        threshold: Float,
+-        minSpeechDurationMs: Int,
+-        minSilenceDurationMs: Int,
+-        speechPadMs: Int
+-    ) -> [SileroVADTimestamp] {
+-        let probsRow = probabilities.ndim == 2 ? probabilities[0] : probabilities
+-        let probs = probsRow.asArray(Float.self)
+-        let chunkSize = sampleRate == 16000 ? 512 : 256
+-        let minSpeechSamples = Float(sampleRate) * Float(minSpeechDurationMs) / 1000
+-        let minSilenceSamples = Float(sampleRate) * Float(minSilenceDurationMs) / 1000
+-        let speechPadSamples = Int(Float(sampleRate) * Float(speechPadMs) / 1000)
+-        let negThreshold = max(threshold - 0.15, 0.01)
+-
+-        struct Run { var start: Int; var end: Int }
+-        var speeches: [Run] = []
+-        var triggered = false
+-        var currentStart = 0
+-        var tempEnd = 0
+-
+-        for (idx, p) in probs.enumerated() {
+-            let chunkStart = idx * chunkSize
+-            if p >= threshold && !triggered {
+-                triggered = true
+-                currentStart = chunkStart
+-                tempEnd = 0
+-                continue
+-            }
+-            if triggered && p >= threshold {
+-                tempEnd = 0
+-                continue
+-            }
+-            if triggered && p < negThreshold {
+-                if tempEnd == 0 { tempEnd = chunkStart }
+-                if Float(chunkStart - tempEnd) >= minSilenceSamples {
+-                    if Float(tempEnd - currentStart) >= minSpeechSamples {
+-                        speeches.append(Run(start: currentStart, end: tempEnd))
+-                    }
+-                    triggered = false
+-                    tempEnd = 0
+-                }
+-            }
+-        }
+-        if triggered {
+-            let end = min(audioLen, probs.count * chunkSize)
+-            if Float(end - currentStart) >= minSpeechSamples {
+-                speeches.append(Run(start: currentStart, end: end))
+-            }
+-        }
+-
+-        var padded: [Run] = []
+-        for s in speeches {
+-            let start = max(0, s.start - speechPadSamples)
+-            let end = min(audioLen, s.end + speechPadSamples)
+-            if !padded.isEmpty, start <= padded[padded.count - 1].end {
+-                padded[padded.count - 1].end = max(padded[padded.count - 1].end, end)
+-            } else {
+-                padded.append(Run(start: start, end: end))
+-            }
+-        }
+-        return padded.map { SileroVADTimestamp(start: $0.start, end: $0.end) }
+-    }
+-
+-    public static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+-        var out: [String: MLXArray] = [:]
+-        for (k, v) in weights {
+-            if k.hasPrefix("val_") { continue }
+-            var key = k
+-            if key.hasPrefix("vad_16k.") {
+-                key = "branch16k." + String(key.dropFirst("vad_16k.".count))
+-            } else if key.hasPrefix("vad_8k.") {
+-                key = "branch8k." + String(key.dropFirst("vad_8k.".count))
+-            }
+-            out[key] = v
+-        }
+-        return out
+-    }
+-
+-    public static func fromPretrained(_ repoId: String) async throws -> SileroVAD {
+-        guard let repoID = Repo.ID(rawValue: repoId) else {
+-            throw SileroVADError.invalidRepositoryID(repoId)
+-        }
+-        let modelURL = try await ModelUtils.resolveOrDownloadModel(
+-            repoID: repoID,
+-            requiredExtension: "safetensors"
+-        )
+-        return try fromModelDirectory(modelURL)
+-    }
+-
+-    public static func fromModelDirectory(_ modelURL: URL) throws -> SileroVAD {
+-        let configURL = modelURL.appendingPathComponent("config.json")
+-        let configData = try Data(contentsOf: configURL)
+-        let config = try JSONDecoder().decode(SileroVADConfig.self, from: configData)
+-
+-        let model = SileroVAD(config)
+-        let weightFiles = try FileManager.default.contentsOfDirectory(
+-            at: modelURL,
+-            includingPropertiesForKeys: nil
+-        ).filter { $0.pathExtension == "safetensors" }
+-        var allWeights: [String: MLXArray] = [:]
+-        for url in weightFiles {
+-            let w = try MLX.loadArrays(url: url)
+-            for (k, v) in w { allWeights[k] = v }
+-        }
+-        let sanitized = sanitize(weights: allWeights)
+-        let parameters = ModuleParameters.unflattened(sanitized)
+-        try model.update(parameters: parameters, verify: [.all])
+-        eval(model)
+-        return model
+-    }
+-}
+diff --git a/Sources/MLXAudioVAD/Models/SileroVAD/SileroVADConfig.swift b/Sources/MLXAudioVAD/Models/SileroVAD/SileroVADConfig.swift
+deleted file mode 100644
+index 3e754b6..0000000
+--- a/Sources/MLXAudioVAD/Models/SileroVAD/SileroVADConfig.swift
++++ /dev/null
+@@ -1,109 +0,0 @@
+-import Foundation
+-
+-public struct SileroVADBranchConfig: Codable, Sendable {
+-    public var sampleRate: Int
+-    public var filterLength: Int
+-    public var hopLength: Int
+-    public var pad: Int
+-    public var cutoff: Int
+-    public var contextSize: Int
+-    public var chunkSize: Int
+-
+-    public init(
+-        sampleRate: Int = 16000,
+-        filterLength: Int = 256,
+-        hopLength: Int = 128,
+-        pad: Int = 64,
+-        cutoff: Int = 129,
+-        contextSize: Int = 64,
+-        chunkSize: Int = 512
+-    ) {
+-        self.sampleRate = sampleRate
+-        self.filterLength = filterLength
+-        self.hopLength = hopLength
+-        self.pad = pad
+-        self.cutoff = cutoff
+-        self.contextSize = contextSize
+-        self.chunkSize = chunkSize
+-    }
+-
+-    enum CodingKeys: String, CodingKey {
+-        case sampleRate = "sample_rate"
+-        case filterLength = "filter_length"
+-        case hopLength = "hop_length"
+-        case pad
+-        case cutoff
+-        case contextSize = "context_size"
+-        case chunkSize = "chunk_size"
+-    }
+-
+-    public static let default16k = SileroVADBranchConfig()
+-    public static let default8k = SileroVADBranchConfig(
+-        sampleRate: 8000,
+-        filterLength: 128,
+-        hopLength: 64,
+-        pad: 32,
+-        cutoff: 65,
+-        contextSize: 32,
+-        chunkSize: 256
+-    )
+-}
+-
+-public struct SileroVADConfig: Codable, Sendable {
+-    public var modelType: String
+-    public var architecture: String
+-    public var dtype: String
+-    public var threshold: Float
+-    public var minSpeechDurationMs: Int
+-    public var minSilenceDurationMs: Int
+-    public var speechPadMs: Int
+-    public var branch16k: SileroVADBranchConfig
+-    public var branch8k: SileroVADBranchConfig
+-
+-    public init(
+-        modelType: String = "silero_vad",
+-        architecture: String = "silero_vad",
+-        dtype: String = "float32",
+-        threshold: Float = 0.5,
+-        minSpeechDurationMs: Int = 250,
+-        minSilenceDurationMs: Int = 100,
+-        speechPadMs: Int = 30,
+-        branch16k: SileroVADBranchConfig = .default16k,
+-        branch8k: SileroVADBranchConfig = .default8k
+-    ) {
+-        self.modelType = modelType
+-        self.architecture = architecture
+-        self.dtype = dtype
+-        self.threshold = threshold
+-        self.minSpeechDurationMs = minSpeechDurationMs
+-        self.minSilenceDurationMs = minSilenceDurationMs
+-        self.speechPadMs = speechPadMs
+-        self.branch16k = branch16k
+-        self.branch8k = branch8k
+-    }
+-
+-    enum CodingKeys: String, CodingKey {
+-        case modelType = "model_type"
+-        case architecture
+-        case dtype
+-        case threshold
+-        case minSpeechDurationMs = "min_speech_duration_ms"
+-        case minSilenceDurationMs = "min_silence_duration_ms"
+-        case speechPadMs = "speech_pad_ms"
+-        case branch16k = "branch_16k"
+-        case branch8k = "branch_8k"
+-    }
+-
+-    public init(from decoder: Decoder) throws {
+-        let c = try decoder.container(keyedBy: CodingKeys.self)
+-        modelType = try c.decodeIfPresent(String.self, forKey: .modelType) ?? "silero_vad"
+-        architecture = try c.decodeIfPresent(String.self, forKey: .architecture) ?? "silero_vad"
+-        dtype = try c.decodeIfPresent(String.self, forKey: .dtype) ?? "float32"
+-        threshold = try c.decodeIfPresent(Float.self, forKey: .threshold) ?? 0.5
+-        minSpeechDurationMs = try c.decodeIfPresent(Int.self, forKey: .minSpeechDurationMs) ?? 250
+-        minSilenceDurationMs = try c.decodeIfPresent(Int.self, forKey: .minSilenceDurationMs) ?? 100
+-        speechPadMs = try c.decodeIfPresent(Int.self, forKey: .speechPadMs) ?? 30
+-        branch16k = try c.decodeIfPresent(SileroVADBranchConfig.self, forKey: .branch16k) ?? .default16k
+-        branch8k = try c.decodeIfPresent(SileroVADBranchConfig.self, forKey: .branch8k) ?? .default8k
+-    }
+-}
+diff --git a/Sources/MLXAudioVAD/SpeechSegmenter.swift b/Sources/MLXAudioVAD/SpeechSegmenter.swift
+deleted file mode 100644
+index 02b3723..0000000
+--- a/Sources/MLXAudioVAD/SpeechSegmenter.swift
++++ /dev/null
+@@ -1,183 +0,0 @@
+-import Foundation
+-@preconcurrency import MLX
+-
+-/// Configuration for VAD-based speech segmentation — model-agnostic chunking of an
+-/// audio buffer into speech regions for downstream transcription.
+-public struct SpeechSegmentConfig: Sendable {
+-    public var threshold: Float
+-    public var minSpeechMs: Int
+-    public var minSilenceMs: Int
+-    public var speechPadMs: Int
+-    public var mergeGapS: Float
+-    public var maxChunkS: Float
+-
+-    public init(
+-        threshold: Float = 0.5,
+-        minSpeechMs: Int = 250,
+-        minSilenceMs: Int = 100,
+-        speechPadMs: Int = 30,
+-        mergeGapS: Float = 1.0,
+-        maxChunkS: Float = 30.0
+-    ) {
+-        self.threshold = threshold
+-        self.minSpeechMs = minSpeechMs
+-        self.minSilenceMs = minSilenceMs
+-        self.speechPadMs = speechPadMs
+-        self.mergeGapS = mergeGapS
+-        self.maxChunkS = maxChunkS
+-    }
+-}
+-
+-private struct SpeechRun {
+-    var startSample: Int
+-    var endSample: Int
+-}
+-
+-private let BLOCKS_PER_256MS = 8
+-
+-private func detectSpeechRuns(
+-    audio: MLXArray,
+-    sampleRate: Int,
+-    vadModel: SileroVAD,
+-    config: SpeechSegmentConfig
+-) throws -> [SpeechRun] {
+-    // One Silero probability spans `chunkSamples` audio samples (512 @ 16 kHz,
+-    // 256 @ 8 kHz). We group BLOCKS_PER_256MS of them into ~256 ms decision blocks,
+-    // so a block stays 256 ms at either sample rate.
+-    let chunkSamples = sampleRate == 16000 ? 512 : 256
+-    let blockSamples = chunkSamples * BLOCKS_PER_256MS
+-    let blockDurS = Float(blockSamples) / Float(sampleRate)
+-
+-    let probsMx = try vadModel.predictProba(audio, sampleRate: sampleRate)
+-    let probs32 = probsMx.asArray(Float.self)   // asArray forces evaluation of the lazy graph
+-    let n = (probs32.count / BLOCKS_PER_256MS) * BLOCKS_PER_256MS
+-    if n == 0 { return [] }
+-
+-    var probs256 = [Float](repeating: 0, count: n / BLOCKS_PER_256MS)
+-    for i in 0 ..< probs256.count {
+-        var product: Float = 1
+-        for k in 0 ..< BLOCKS_PER_256MS {
+-            product *= (1.0 - probs32[i * BLOCKS_PER_256MS + k])
+-        }
+-        probs256[i] = 1.0 - product
+-    }
+-
+-    let speechPadBlocks = max(0, Int(Float(config.speechPadMs) / 1000 / blockDurS))
+-    // Round the minimum-duration thresholds UP: a min of 500 ms must require ≥ 2 blocks
+-    // (≈ 512 ms), not 1 (≈ 256 ms), so sub-threshold bursts are actually filtered.
+-    let minSpeechBlocks = max(1, Int((Float(config.minSpeechMs) / 1000 / blockDurS).rounded(.up)))
+-    let minSilenceBlocks = max(1, Int((Float(config.minSilenceMs) / 1000 / blockDurS).rounded(.up)))
+-
+-    let actualLen = audio.shape[0]
+-    var runs: [SpeechRun] = []
+-    var inSpeech = false
+-    var segStart = 0
+-    var lastSpeech = -1
+-    var silentRun = 0
+-    for (idx, p) in probs256.enumerated() {
+-        if p >= config.threshold {
+-            if !inSpeech {
+-                segStart = max(0, idx - speechPadBlocks)
+-                inSpeech = true
+-            }
+-            lastSpeech = idx
+-            silentRun = 0
+-        } else if inSpeech {
+-            silentRun += 1
+-            if silentRun >= minSilenceBlocks {
+-                let segEnd = min(lastSpeech + 1 + speechPadBlocks, probs256.count)
+-                if segEnd - segStart >= minSpeechBlocks {
+-                    let s = segStart * blockSamples
+-                    let e = min(segEnd * blockSamples, actualLen)
+-                    if s < e {
+-                        runs.append(SpeechRun(startSample: s, endSample: e))
+-                    }
+-                }
+-                inSpeech = false
+-                silentRun = 0
+-                lastSpeech = -1
+-            }
+-        }
+-    }
+-    if inSpeech {
+-        let endIdx = min(probs256.count, lastSpeech + 1 + speechPadBlocks)
+-        if endIdx - segStart >= minSpeechBlocks {
+-            let s = segStart * blockSamples
+-            let e = min(endIdx * blockSamples, actualLen)
+-            if s < e {
+-                runs.append(SpeechRun(startSample: s, endSample: e))
+-            }
+-        }
+-    }
+-    return runs
+-}
+-
+-private func splitLong(start: Int, end: Int, maxChunkSamples: Int) -> [(Int, Int)] {
+-    if end - start <= maxChunkSamples { return [(start, end)] }
+-    var parts: [(Int, Int)] = []
+-    var cur = start
+-    while cur < end {
+-        let nxt = min(cur + maxChunkSamples, end)
+-        parts.append((cur, nxt))
+-        cur = nxt
+-    }
+-    return parts
+-}
+-
+-private func mergeRuns(
+-    _ runs: [SpeechRun],
+-    sampleRate: Int,
+-    mergeGapS: Float,
+-    maxChunkS: Float
+-) -> [SpeechRun] {
+-    if runs.isEmpty { return runs }
+-    // Clamp to ≥ 1 sample: a non-positive maxChunkS would make `splitLong` never advance
+-    // (nxt == cur) and hang. 1 sample is degenerate but terminates.
+-    let maxChunkSamples = max(1, Int(maxChunkS * Float(sampleRate)))
+-    let maxGapSamples = Int(mergeGapS * Float(sampleRate))
+-    var merged: [(Int, Int)] = splitLong(
+-        start: runs[0].startSample, end: runs[0].endSample, maxChunkSamples: maxChunkSamples
+-    )
+-    for r in runs.dropFirst() {
+-        var prev = merged[merged.count - 1]
+-        let gap = r.startSample - prev.1
+-        let newDur = r.endSample - prev.0
+-        if gap <= maxGapSamples && newDur <= maxChunkSamples {
+-            prev.1 = r.endSample
+-            merged[merged.count - 1] = prev
+-        } else {
+-            merged.append(contentsOf: splitLong(
+-                start: r.startSample, end: r.endSample, maxChunkSamples: maxChunkSamples
+-            ))
+-        }
+-    }
+-    return merged.map { SpeechRun(startSample: $0.0, endSample: $0.1) }
+-}
+-
+-/// Split an audio buffer into speech segments with a Silero VAD, returning each segment
+-/// paired with its start offset (seconds). Silence is dropped; adjacent runs within
+-/// `mergeGapS` are merged and long runs are split at `maxChunkS`. If no speech is found
+-/// the whole buffer is returned as a single segment. Model-agnostic — reuse across STT
+-/// models instead of per-model VAD wrappers.
+-public func segmentSpeech(
+-    audio: MLXArray,
+-    sampleRate: Int,
+-    vadModel: SileroVAD,
+-    config: SpeechSegmentConfig = SpeechSegmentConfig()
+-) throws -> [(MLXArray, Float)] {
+-    let audio1D = audio.ndim > 1 ? audio.mean(axis: -1) : audio
+-    let raw = try detectSpeechRuns(
+-        audio: audio1D, sampleRate: sampleRate, vadModel: vadModel, config: config
+-    )
+-    let runs = mergeRuns(
+-        raw, sampleRate: sampleRate, mergeGapS: config.mergeGapS, maxChunkS: config.maxChunkS
+-    )
+-    if runs.isEmpty {
+-        return [(audio1D, 0)]
+-    }
+-    return runs.map { run in
+-        let chunk = audio1D[run.startSample ..< run.endSample]
+-        let offsetS = Float(run.startSample) / Float(sampleRate)
+-        return (chunk, offsetS)
+-    }
+-}
+diff --git a/Tests/MLXAudioVADTests.swift b/Tests/MLXAudioVADTests.swift
+index fd05c9b..22dff0c 100644
+--- a/Tests/MLXAudioVADTests.swift
++++ b/Tests/MLXAudioVADTests.swift
+@@ -963,182 +963,3 @@ struct SmartTurnNetworkTests {
+         #expect(resultFalse.probability >= 0.0 && resultFalse.probability < 0.5)
+     }
+ }
+-
+-// MARK: - Silero VAD Tests
+-
+-struct SileroVADConfigTests {
+-
+-    @Test func branchDefaults16k() {
+-        let c = SileroVADBranchConfig.default16k
+-        #expect(c.sampleRate == 16000)
+-        #expect(c.filterLength == 256)
+-        #expect(c.hopLength == 128)
+-        #expect(c.pad == 64)
+-        #expect(c.cutoff == 129)
+-        #expect(c.contextSize == 64)
+-        #expect(c.chunkSize == 512)
+-    }
+-
+-    @Test func branchDefaults8k() {
+-        let c = SileroVADBranchConfig.default8k
+-        #expect(c.sampleRate == 8000)
+-        #expect(c.filterLength == 128)
+-        #expect(c.hopLength == 64)
+-        #expect(c.pad == 32)
+-        #expect(c.cutoff == 65)
+-        #expect(c.contextSize == 32)
+-        #expect(c.chunkSize == 256)
+-    }
+-
+-    @Test func modelConfigDecodesEmptyJSON() throws {
+-        let json = "{}".data(using: .utf8)!
+-        let config = try JSONDecoder().decode(SileroVADConfig.self, from: json)
+-        #expect(config.modelType == "silero_vad")
+-        #expect(config.threshold == 0.5)
+-        #expect(config.branch16k.chunkSize == 512)
+-        #expect(config.branch8k.chunkSize == 256)
+-    }
+-
+-    @Test func modelConfigDecodesUpstreamFormat() throws {
+-        let json = #"""
+-        {
+-          "model_type": "silero_vad",
+-          "architecture": "silero_vad",
+-          "dtype": "float32",
+-          "threshold": 0.5,
+-          "min_speech_duration_ms": 250,
+-          "min_silence_duration_ms": 100,
+-          "speech_pad_ms": 30,
+-          "branch_16k": {
+-            "sample_rate": 16000,
+-            "filter_length": 256,
+-            "hop_length": 128,
+-            "pad": 64,
+-            "cutoff": 129,
+-            "context_size": 64,
+-            "chunk_size": 512
+-          }
+-        }
+-        """#.data(using: .utf8)!
+-        let config = try JSONDecoder().decode(SileroVADConfig.self, from: json)
+-        #expect(config.minSpeechDurationMs == 250)
+-        #expect(config.branch16k.cutoff == 129)
+-        #expect(config.branch8k.chunkSize == 256)
+-    }
+-}
+-
+-struct SileroVADModelTests {
+-
+-    @Test func initialStateShape16k() throws {
+-        let model = SileroVAD(SileroVADConfig())
+-        let st = try model.initialState(sampleRate: 16000)
+-        #expect(st.sampleRate == 16000)
+-        #expect(st.context.shape == [1, 64])
+-        #expect(st.lstmState == nil)
+-    }
+-
+-    @Test func initialStateShape8k() throws {
+-        let model = SileroVAD(SileroVADConfig())
+-        let st = try model.initialState(sampleRate: 8000)
+-        #expect(st.sampleRate == 8000)
+-        #expect(st.context.shape == [1, 32])
+-    }
+-
+-    @Test func unsupportedSampleRateThrows() {
+-        let model = SileroVAD(SileroVADConfig())
+-        #expect(throws: SileroVADError.self) {
+-            _ = try model.initialState(sampleRate: 22050)
+-        }
+-    }
+-
+-    @Test func feedRejectsWrongChunkSize() throws {
+-        let model = SileroVAD(SileroVADConfig())
+-        let chunk = MLXArray.zeros([1, 256], type: Float.self)
+-        #expect(throws: SileroVADError.self) {
+-            _ = try model.feed(chunk: chunk, sampleRate: 16000)
+-        }
+-    }
+-
+-    @Test func probsToTimestampsAllSpeech() {
+-        let probs = MLXArray((0 ..< 100).map { _ in Float(0.9) })
+-        let ts = SileroVAD.probsToTimestamps(
+-            probs,
+-            audioLen: 100 * 512,
+-            sampleRate: 16000,
+-            threshold: 0.5,
+-            minSpeechDurationMs: 250,
+-            minSilenceDurationMs: 100,
+-            speechPadMs: 30
+-        )
+-        #expect(ts.count == 1)
+-        #expect(ts.first?.start == 0)
+-        #expect(ts.first?.end == 100 * 512)
+-    }
+-
+-    @Test func probsToTimestampsAllSilence() {
+-        let probs = MLXArray((0 ..< 100).map { _ in Float(0.01) })
+-        let ts = SileroVAD.probsToTimestamps(
+-            probs,
+-            audioLen: 100 * 512,
+-            sampleRate: 16000,
+-            threshold: 0.5,
+-            minSpeechDurationMs: 250,
+-            minSilenceDurationMs: 100,
+-            speechPadMs: 30
+-        )
+-        #expect(ts.isEmpty)
+-    }
+-
+-    @Test func probsToTimestampsTwoSegments() {
+-        var values = [Float](repeating: 0.01, count: 100)
+-        for i in 5 ..< 30 { values[i] = 0.9 }
+-        for i in 50 ..< 80 { values[i] = 0.9 }
+-        let probs = MLXArray(values)
+-        let ts = SileroVAD.probsToTimestamps(
+-            probs,
+-            audioLen: 100 * 512,
+-            sampleRate: 16000,
+-            threshold: 0.5,
+-            minSpeechDurationMs: 250,
+-            minSilenceDurationMs: 100,
+-            speechPadMs: 30
+-        )
+-        #expect(ts.count == 2)
+-    }
+-
+-    @Test func sanitizeDropsValPrefixAndRemapsBranchKeys() {
+-        let weights: [String: MLXArray] = [
+-            "vad_16k.lstm.Wx": MLXArray.zeros([4]),
+-            "vad_8k.conv1.bias": MLXArray.zeros([4]),
+-            "val_loss": MLXArray.zeros([1]),
+-            "val_acc": MLXArray.zeros([1]),
+-        ]
+-        let cleaned = SileroVAD.sanitize(weights: weights)
+-        #expect(cleaned.keys.contains("branch16k.lstm.Wx"))
+-        #expect(cleaned.keys.contains("branch8k.conv1.bias"))
+-        #expect(!cleaned.keys.contains("vad_16k.lstm.Wx"))
+-        #expect(!cleaned.keys.contains("vad_8k.conv1.bias"))
+-        #expect(!cleaned.keys.contains("val_loss"))
+-        #expect(!cleaned.keys.contains("val_acc"))
+-    }
+-}
+-
+-struct SileroVADNetworkTests {
+-
+-    @Test func loadV5AndPredictOnSilence() async throws {
+-        let env = ProcessInfo.processInfo.environment
+-        guard env["MLXAUDIO_ENABLE_NETWORK_TESTS"] == "1" else {
+-            print("Skipping network SileroVAD test. Set MLXAUDIO_ENABLE_NETWORK_TESTS=1 to enable.")
+-            return
+-        }
+-
+-        let repo = env["MLXAUDIO_SILEROVAD_REPO"] ?? "mlx-community/silero-vad"
+-        let model = try await SileroVAD.fromPretrained(repo)
+-        let silence = MLXArray.zeros([16000], type: Float.self)
+-        let probs = try model.predictProba(silence, sampleRate: 16000)
+-        eval(probs)
+-        let arr = probs.asArray(Float.self)
+-        #expect(arr.count > 0)
+-        #expect(arr.allSatisfy { $0 < 0.5 })
+-    }
+-}
