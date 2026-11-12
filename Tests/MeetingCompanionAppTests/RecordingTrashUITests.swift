@@ -112,7 +112,9 @@ private actor TrashUIOpenGate {
         let window = try #require(delegate.window as? WorkspaceWindow)
         window.isKeyboardTarget = { true }
         window.makeKeyAndOrderFront(nil)
-        try await Task.sleep(for: .milliseconds(30))
+        try await settle("library navigation mounts before keyboard input") {
+            views(window.contentView).contains { $0.identifier?.rawValue == "workspace-library-navigation" }
+        }
         return delegate
     }
     func views(_ view: NSView?) -> [NSView] {

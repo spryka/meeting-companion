@@ -64,8 +64,7 @@
    соблюдением защиты активной записи и обработки. Непроверенное оставить открытым.
 
 Команды финальной проверки определены в AGENTS.md: `swift build -c release`,
-`swift test`, `bash scripts/check-python-free.sh`,
-`bash scripts/check-module-boundaries.sh` и
+`swift test`, `bash scripts/check-module-boundaries.sh` и
 `swift skills/local-audio-transcriber/scripts/find-recording.swift --self-test`.
 Для change выполнить `openspec validate <name> --strict`, для упаковки использовать
 `./scripts/build-app.sh`. Этот пилот не отменяет обязательные проверки.

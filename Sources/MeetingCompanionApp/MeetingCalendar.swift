@@ -142,6 +142,12 @@ final class MeetingCalendar: ObservableObject {
     private var calendarSettingsVisible = false
     private var handled: [String: Double]
     var onMeeting: ((MeetingContext) -> Void)?
+    var eventsProviderForTesting: (() -> [MeetingContext])?
+
+    func setEventsForTesting(_ newEvents: [MeetingContext]) {
+        eventsProviderForTesting = { newEvents }
+        events = newEvents
+    }
 
     init(defaults: UserDefaults = .standard, calendarCatalogProvider: (() -> [EKCalendar])? = nil) {
         self.defaults = defaults
@@ -262,6 +268,11 @@ final class MeetingCalendar: ObservableObject {
         let now = Date()
         defer { scheduleRefresh() }
         suggestsCalendarSetup = false
+        if let eventsProviderForTesting {
+            events = eventsProviderForTesting()
+            message = events.isEmpty ? "В ближайшие 12 часов встреч нет." : ""
+            return
+        }
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             events = []
             calendars = []

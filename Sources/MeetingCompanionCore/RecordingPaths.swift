@@ -28,8 +28,15 @@ public struct RecordingPaths {
         let directory = outputDirectory.appendingPathComponent(formatter.string(from: date))
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let name = "meeting_\(formatter.string(from: date))"
-        let meetingDirectory = directory.appendingPathComponent(name)
+        let baseName = "meeting_\(formatter.string(from: date))"
+        var name = baseName
+        var meetingDirectory = directory.appendingPathComponent(name)
+        var suffix = 1
+        while FileManager.default.fileExists(atPath: meetingDirectory.path) {
+            name = "\(baseName)_\(suffix)"
+            meetingDirectory = directory.appendingPathComponent(name)
+            suffix += 1
+        }
         try FileManager.default.createDirectory(at: meetingDirectory, withIntermediateDirectories: false)
         return meetingDirectory.appendingPathComponent(name).appendingPathExtension(outputKind.fileExtension)
     }

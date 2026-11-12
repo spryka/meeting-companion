@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Meeting Companion — напоминание о встрече</title>
+<style>
+/* OD-LAYOUT-PRIMITIVES v1 — structure only: display, flex/grid, overflow, wrapping, ratio, geometry.
+   Put this @layer first; product CSS outside the layer wins ordinary layout rules.
+   Native hidden and closed-dialog states take precedence over component display rules. */
+@layer od-layout {
+  [hidden]:not([hidden="until-found" i]) { display: none !important; }
+  dialog:not([open]) { display: none !important; }
+
+  :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile) > :where(*) { min-width: 0; }
+
+  /* containers */
+  .od-stack   { display: flex; flex-direction: column; gap: var(--od-gap, 8px); }
+  .od-row     { display: flex; align-items: center; gap: var(--od-gap, 8px); }
+  .od-row-top { display: flex; align-items: flex-start; gap: var(--od-gap, 8px); }
+  .od-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--od-gap, 8px); }
+  .od-fill    { flex: 1 1 0; min-width: 0; }
+  .od-fixed   { flex: none; }
+  .od-grid    { display: grid; gap: var(--od-gap, 12px); grid-template-columns: repeat(var(--od-cols, 3), minmax(0, 1fr)); }
+
+  /* stacked information: each piece is its own line — never sibling inline spans */
+  .od-stat, .od-field, .od-cell { display: grid; gap: var(--od-gap, 2px); }
+  :where(.od-stat,.od-field,.od-cell) > :where(*) { display: block; }
+  .od-tile { display: grid; grid-template-rows: auto 1fr; }
+  :where(.od-tile) > :where(*) { display: block; }
+
+  /* media keeps its intrinsic ratio by default; never a distorted or cropped
+     cover by accident. height:auto lets the ratio win over an <img height="…">
+     attribute. Cropping to a uniform box is an explicit opt-in: set --od-ratio
+     AND add .od-media-cover together (per the core rule, only where a crop is
+     deliberate — tile thumbs, decorative fills — never on full-frame content). */
+  .od-media { display: block; width: 100%; height: auto; aspect-ratio: var(--od-ratio, auto); }
+  .od-media-cover { object-fit: cover; }
+
+  /* functional inline SVG icons opt into bounded geometry; content SVGs keep their own */
+  .od-icon { display: inline-block; inline-size: var(--od-icon-size, 1em); block-size: var(--od-icon-size, 1em); flex: none; }
+
+  /* data text only — authored copy is rewritten to its budget instead */
+  .od-truncate { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .od-clamp-2, .od-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .od-clamp-2 { -webkit-line-clamp: 2; }
+  .od-clamp-3 { -webkit-line-clamp: 3; }
+  .od-lines-2 { min-height: calc(2 * 1.4em); }   /* block-level reservation for a shared baseline */
+  .od-nowrap  { white-space: nowrap; }           /* 数字+单位 · 价格+起 · 日期+星期 */
+  .od-keep    { word-break: keep-all; overflow-wrap: anywhere; } /* CJK labels break at spaces / <wbr> first */
+
+  /* screen skeleton (optional): bars take their own space, the middle scrolls — no padding guessed for chrome */
+  .od-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+  .od-scroll { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+
+  /* horizontal rail: the next item peeks at the edge; trailing room survives overflow */
+  .od-rail { display: flex; gap: var(--od-gap, 8px); overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none;
+             padding-inline: var(--od-rail-pad, 16px); scroll-padding-inline: var(--od-rail-pad, 16px); }
+  .od-rail::-webkit-scrollbar { display: none; }
+  :where(.od-rail) > :where(*) { flex: none; scroll-snap-align: start; }
+  :where(.od-rail) > :where(:last-child) { margin-inline-end: var(--od-rail-pad, 16px); }
+
+  .od-spacer { flex: none; visibility: hidden; pointer-events: none; }
+  .od-touch  { min-width: 44px; min-height: 44px; }
+}
+:root [hidden]:where(:not([hidden="until-found" i])) { display: none; }
+/* /OD-LAYOUT-PRIMITIVES v1 */
+
+:root {
+ color-scheme: light dark;
+ --canvas:#e5e9ee; --surface:#fff; --ink:#202630; --muted:#626b79;
+ --line:#e3e7ed; --hover:#edf1f6; --accent:#1762cf; --accent-hover:#1055b8;
+ --primary-ink:#fff; --record:#b82d3d; --focus:#1762cf; --shadow:0 24px 80px #24344a1a,0 2px 8px #24344a0a;
+ --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+ --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s6:24px; --s8:32px;
+ --radius:24px; --button-radius:10px; --motion:180ms;
+}
+@media(prefers-color-scheme:dark) {
+ :root {--canvas:#101319;--surface:#20242b;--ink:#f0f2f6;--muted:#a4adbc;
+ --line:#353c47;--hover:#303844;--accent:#8ab9ff;--accent-hover:#a6caff;
+ --primary-ink:#15243b;--record:#ff9aa8;--focus:#8ab9ff;--shadow:0 24px 80px #0005,0 2px 8px #0003;}
+}
+*{box-sizing:border-box}
+body{margin:0;min-width:280px;min-height:100svh;display:grid;place-items:center;padding:var(--s6);background:var(--canvas);color:var(--ink);font-family:var(--font);font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer;border:0}
+button:focus-visible{outline:3px solid var(--focus);outline-offset:4px}
+button:disabled{cursor:wait}
+h1,h2,p{margin:0}
+.panel{width:min(100%,440px);padding:var(--s6);border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);animation:appear var(--motion) ease-out}
+.eyebrow{font-size:13px;font-weight:500;color:var(--muted);letter-spacing:.01em}
+.meeting{margin-top:var(--s3)}
+h1,h2{font-size:28px;line-height:1.2;letter-spacing:-.6px;font-weight:650;overflow-wrap:anywhere;text-wrap:pretty}
+.time{margin-top:var(--s2);color:var(--muted);font-size:16px;font-variant-numeric:tabular-nums}
+.choice-trigger{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);margin-top:var(--s4);margin-left:calc(-1 * var(--s3));background:transparent;border-radius:8px;font-size:13px;font-weight:500;min-height:36px}
+.od-icon{--od-icon-size:16px;vertical-align:middle;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.choice-trigger[aria-expanded="true"]{background:var(--hover)}
+/* Native top layer keeps the chooser out of the reminder's layout. */
+.choices{position:fixed;inset:auto;margin:0;padding:0;width:min(360px,calc(100vw - 32px));max-height:calc(100dvh - 32px);border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:clip}
+.choices:not(:popover-open){display:none!important}
+.choice-list{overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:var(--s1);scrollbar-gutter:stable;flex:1 1 auto}
+.choice-footer{padding:var(--s1);border-top:1px solid var(--line);flex:none}
+.option{width:100%;display:flex;align-items:center;gap:var(--s3);text-align:left;padding:var(--s3);border-radius:8px;background:transparent;min-height:60px;scroll-margin-block:4px}
+.option .od-field{--od-gap:var(--s1);font-size:14px;line-height:1.4}
+.option small{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.check-slot{width:20px;display:flex;justify-content:center;flex:none;color:var(--accent)}
+.option[aria-pressed="false"] .od-icon{visibility:hidden}
+.actions{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);margin-top:var(--s6);padding-top:var(--s4);border-top:1px solid var(--line)}
+.button{min-height:40px;display:flex;align-items:center;justify-content:center;gap:var(--s2);padding:var(--s2) var(--s4);border-radius:var(--button-radius);font-size:14px;font-weight:550;white-space:nowrap;transition:background var(--motion) ease-out,box-shadow var(--motion) ease-out}
+.secondary{background:transparent;color:var(--ink);margin-left:calc(-1 * var(--s3));padding-inline:var(--s3)}
+.primary{background:var(--accent);color:var(--primary-ink);box-shadow:0 1px 2px #0001}
+.primary:disabled{background:var(--hover);color:var(--muted);box-shadow:none}
+@media(hover:hover){.choice-trigger:hover,.option:hover,.secondary:hover{background:var(--hover)}.primary:not(:disabled):hover{background:var(--accent-hover);color:var(--primary-ink)}}
+.button:active:not(:disabled){box-shadow:inset 0 1px 3px #0002}
+.current-recording{margin-top:var(--s6);padding:var(--s3) 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);--od-gap:var(--s2)}
+.current-label{display:flex;align-items:center;gap:var(--s2);font-size:13px;color:var(--muted)}
+.record-dot{display:block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--record)}
+.current-name{font-size:15px;font-weight:550;overflow-wrap:anywhere}
+.handoff-copy{margin-top:var(--s3);font-size:14px;line-height:1.5;color:var(--muted)}
+.panel[data-recording="true"] .actions{flex-direction:column-reverse;align-items:stretch;border-top:0;padding-top:0;margin-top:var(--s6);gap:var(--s2)}
+.panel[data-recording="true"] .actions .button{min-height:44px;margin:0}
+.panel[data-recording="true"] .primary{font-size:14px;padding-inline:var(--s2)}
+.result-copy{margin-top:var(--s3);font-size:16px;color:var(--muted);overflow-wrap:anywhere}
+.result .button{margin-top:var(--s6);width:100%}
+.result h2{margin-top:var(--s3);font-size:24px}
+@keyframes appear{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:480px){body{padding:var(--s4)}.panel{padding:var(--s6)}.button,.choice-trigger{min-height:44px}.actions{gap:var(--s2)}h1{font-size:26px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<section class="panel" id="reminder" role="region" aria-labelledby="meetingTitle" aria-describedby="reminderLabel meetingTime">
+ <p class="eyebrow" id="reminderLabel">Встреча начинается</p>
+ <div class="meeting od-field">
+  <h1 id="meetingTitle">Агент B2C</h1>
+  <p class="time" id="meetingTime">Сегодня, 12:30–13:00</p>
+ </div>
+ <button class="choice-trigger" id="chooseMeeting" type="button" aria-expanded="false" aria-controls="meetingChoices">
+  <span>Другая встреча</span>
+  <svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+ </button>
+ 
+ <div id="currentRecording" class="current-recording od-field" hidden>
+  <p class="current-label"><span class="record-dot" aria-hidden="true"></span>Сейчас записывается</p>
+  <p class="current-name">Планирование · <span class="od-nowrap">42:18</span></p>
+ </div>
+ <p class="handoff-copy" id="handoffCopy" hidden>Завершим текущую запись и начнём новую. Обработка предыдущей продолжится в фоне.</p>
+ <div class="actions">
+  <button class="button secondary" id="skip" type="button">Пропустить</button>
+  <button class="button primary" id="start" type="button">Начать запись</button>
+ </div>
+</section>
+<section class="panel result" id="result" role="region" aria-labelledby="resultTitle" hidden>
+ <p class="eyebrow">Кликабельный макет</p>
+ <h2 id="resultTitle" tabindex="-1"></h2>
+ <p class="result-copy" id="resultCopy"></p>
+ <button class="button secondary" id="return" type="button">Вернуть напоминание</button>
+</section>
+<div class="choices" id="meetingChoices" popover="auto" role="dialog" aria-label="Выбрать встречу" hidden>
+ <div class="choice-list" id="choiceList" role="group" aria-label="Встречи из календаря"></div>
+ <div class="choice-footer" id="choiceFooter"></div>
+</div>
+<div id="announcement" role="status" aria-live="polite" class="sr-only"></div>
+<style>.sr-only{position:absolute;inline-size:1px;block-size:1px;padding:0;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}</style>
+<script>
+'use strict';
+// Sample calendar candidates only; no calendar, microphone or disk access.
+const meetings=[
+ {id:'b2c',title:'Агент B2C',time:'Сегодня, 12:30–13:00'},
+ {id:'team',title:'Командная встреча',time:'Сегодня, 12:30–13:00'},
+ {id:'project',title:'Обсуждение проекта',time:'Сегодня, 12:30–13:30'},
+ {id:'sync',title:'Синхронизация',time:'Сегодня, 12:30–13:00'},
+ {id:'design',title:'Дизайн-ревью',time:'Сегодня, 12:30–13:30'},
+ {id:'research',title:'Разбор исследования',time:'Сегодня, 12:30–13:15'},
+ {id:'support',title:'Обратная связь от поддержки',time:'Сегодня, 12:30–13:00'},
+ {id:'release',title:'Подготовка релиза',time:'Сегодня, 12:30–13:00'},
+ {id:'architecture',title:'Архитектурное обсуждение',time:'Сегодня, 12:30–13:30'},
+ {id:'retro',title:'Ретроспектива',time:'Сегодня, 12:30–13:30'},
+ {id:'interview',title:'Интервью',time:'Сегодня, 12:30–13:30'},
+ {id:'roadmap',title:'Обсуждение приоритетов команды на следующий квартал',time:'Сегодня, 12:30–13:30'}
+];
+const withoutMeeting={id:'none',title:'Без встречи',time:'Новая запись без привязки к календарю'};
+const byId=id=>document.getElementById(id);
+// The default entry shows the ongoing-recording branch. ?recording=0 keeps the idle branch reachable.
+const ongoingRecording = new URLSearchParams(window.location.search).get('recording') !== '0';
+let selected=meetings[0], pending=false;
+const primaryLabel = ongoingRecording ? 'Завершить и начать новую' : 'Начать запись';
+byId('reminder').dataset.recording=String(ongoingRecording);
+byId('reminderLabel').textContent=ongoingRecording?'Начинается следующая встреча':'Встреча начинается';
+byId('currentRecording').hidden=!ongoingRecording;
+byId('handoffCopy').hidden=!ongoingRecording;
+byId('start').textContent=primaryLabel;
+const check='<span class="check-slot"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></span>';
+function closeChoices(restoreFocus=false){
+ const popover=byId('meetingChoices');
+ if(popover.matches(':popover-open'))popover.hidePopover();
+ popover.hidden=true;
+ byId('chooseMeeting').setAttribute('aria-expanded','false');
+ if(restoreFocus)byId('chooseMeeting').focus();
+}
+function meetingOption(meeting){
+ const option=document.createElement('button');
+ option.type='button';option.className='option';option.dataset.id=meeting.id;
+ option.setAttribute('aria-pressed',String(meeting.id===selected.id));
+ option.innerHTML=check;
+ const copy=document.createElement('span');copy.className='od-field od-fill';
+ const name=document.createElement('span');name.textContent=meeting.title;
+ const time=document.createElement('small');time.textContent=meeting.time;
+ copy.append(name,time);option.append(copy);
+ return option;
+}
+function renderChoices(){
+ byId('choiceList').replaceChildren(...meetings.map(meetingOption));
+ byId('choiceFooter').replaceChildren(meetingOption(withoutMeeting));
+}
+function renderMeeting(){
+ byId('meetingTitle').textContent=selected.title;
+ byId('meetingTime').textContent=selected.time;
+ byId('chooseMeeting').hidden=meetings.length<2;
+ renderChoices();
+}
+function positionChoices(){
+ const popover=byId('meetingChoices');
+ if(!popover.matches(':popover-open'))return;
+ const anchor=byId('chooseMeeting').getBoundingClientRect();
+ const viewportWidth=document.documentElement.clientWidth;
+ const viewportHeight=window.innerHeight;
+ const gap=8, edge=16;
+ const below=viewportHeight-anchor.bottom-gap-edge;
+ const above=anchor.top-gap-edge;
+ // Prefer the trigger's lower edge; use above it when that leaves more room.
+ const useBelow=below>=360||below>=above;
+ const available=Math.max(0,useBelow?below:above);
+ const height=Math.min(420,viewportHeight-edge*2,Math.max(260,available));
+ popover.style.height=height+'px';
+ const width=popover.getBoundingClientRect().width;
+ popover.style.left=Math.max(edge,Math.min(anchor.left,viewportWidth-width-edge))+'px';
+ let top=useBelow?anchor.bottom+gap:anchor.top-gap-height;
+ popover.style.top=Math.max(edge,Math.min(top,viewportHeight-height-edge))+'px';
+}
+byId('chooseMeeting').addEventListener('click',()=>{
+ if(pending)return;
+ const popover=byId('meetingChoices');
+ if(popover.matches(':popover-open')){closeChoices(true);return;}
+ renderChoices();
+ popover.hidden=false;popover.showPopover();
+ byId('chooseMeeting').setAttribute('aria-expanded','true');
+ positionChoices();
+ const selectedOption=byId('meetingChoices').querySelector('[aria-pressed="true"]')||byId('choiceList').querySelector('button');
+ if(selectedOption){selectedOption.focus({preventScroll:true});selectedOption.scrollIntoView({block:'nearest'});}
+});
+byId('meetingChoices').addEventListener('toggle',()=>{
+ const open=byId('meetingChoices').matches(':popover-open');
+ byId('meetingChoices').hidden=!open;
+ byId('chooseMeeting').setAttribute('aria-expanded',String(open));
+});
+byId('meetingChoices').addEventListener('click',event=>{
+ const button=event.target.closest('button[data-id]');
+ if(!button||pending)return;
+ const meeting=[...meetings,withoutMeeting].find(item=>item.id===button.dataset.id);
+ if(!meeting)return;
+ selected=meeting;renderMeeting();closeChoices(true);
+ byId('announcement').textContent='Выбрана встреча '+selected.title;
+});
+byId('meetingChoices').addEventListener('keydown',event=>{
+ if(event.key==='Escape'){event.stopPropagation();event.preventDefault();closeChoices(true);return;}
+ if(event.key!=='ArrowDown'&&event.key!=='ArrowUp')return;
+ event.preventDefault();
+ const options=[...byId('meetingChoices').querySelectorAll('button[data-id]')];
+ if(!options.length)return;
+ const index=options.indexOf(document.activeElement);
+ const next=index<0?(event.key==='ArrowDown'?0:options.length-1):(index+(event.key==='ArrowDown'?1:-1)+options.length)%options.length;
+ options[next].focus();options[next].scrollIntoView({block:'nearest'});
+});
+window.addEventListener('resize',positionChoices);
+window.addEventListener('scroll',positionChoices,{passive:true});
+function showResult(started){
+ closeChoices();
+ byId('reminder').hidden=true;
+ byId('resultTitle').textContent=started?(ongoingRecording?'Переход к следующей записи':'Запуск записи'):'Напоминание пропущено';
+ byId('resultCopy').textContent=started
+  ?(ongoingRecording?'В приложении запись «Планирование» завершится, затем начнётся «'+selected.title+'». Обработка предыдущей продолжится в фоне. Это демонстрация: аудио не записывается.':'В приложении здесь начнётся запись «'+selected.title+'». В этом макете микрофон не используется.')
+  :(ongoingRecording?'Запись «Планирование» продолжается. Новая запись не запускается.':'Запись «'+selected.title+'» не запускается. Остальные напоминания сохраняются.');
+ byId('result').hidden=false;byId('resultTitle').focus();
+}
+byId('skip').addEventListener('click',()=>{if(!pending)showResult(false);});
+byId('start').addEventListener('click',()=>{
+ if(pending)return;
+ pending=true;closeChoices();
+ for(const id of ['start','skip','chooseMeeting'])byId(id).disabled=true;
+ byId('reminder').setAttribute('aria-busy','true');
+ byId('start').textContent=ongoingRecording?'Завершаем текущую запись…':'Запускаем…';
+ window.setTimeout(()=>{pending=false;showResult(true);},600);
+});
+byId('return').addEventListener('click',()=>{
+ byId('result').hidden=true;byId('reminder').hidden=false;
+ byId('reminder').removeAttribute('aria-busy');
+ for(const id of ['start','skip','chooseMeeting'])byId(id).disabled=false;
+ byId('start').textContent=primaryLabel;byId('announcement').textContent='';
+ renderMeeting();closeChoices();byId('start').focus();
+});
+renderMeeting();
+</script>
+</body>
+</html>
