@@ -2,7 +2,7 @@
 
 ### Requirement: P03 Detailed recording screen
 
-Экран записи SHALL показывать полный маршрут, текущую модель/дорожку, один достоверный локальный прогресс и предупреждения по [design.md](../../changes/archive/2026-11-09-processing-progress-ui/design.md), используя тот же job snapshot, что капсула.
+Экран записи SHALL показывать полный маршрут, текущую модель/дорожку, один достоверный локальный прогресс и предупреждения по [design.md](../../../2026-11-09-processing-progress-ui/design.md), используя тот же job snapshot, что капсула.
 
 #### Scenario: Details and late completion
 - **WHEN** идёт распознавание системного звука, затем сборка/публикация результата

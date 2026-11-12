@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "meeting-reminder-ui-handoff/openspec/changes/meeting-reminder-ui/reference/index.html",
+  "entry": "meeting-reminder-ui-handoff/openspec/changes/meeting-reminder-ui/reference/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-11-11T12:01:50.637Z",
+  "updatedAt": "2026-11-11T12:01:50.637Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

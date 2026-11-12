@@ -1,7 +1,7 @@
 schema: intent-driven
 context: |
   Meeting Companion: native Swift macOS 15+ / Apple Silicon application.
-  Python transcription runs locally and offline after model preparation.
+  Swift/MLX transcription runs in an isolated native worker and works offline after model preparation.
   Read AGENTS.md and CONTRIBUTING.md. Preserve recordings, original recognition,
   user edits, timestamps and overlapping speech. Parakeet remains optional.
   Nemotron supports up to 8 voices independently per source, not per meeting.

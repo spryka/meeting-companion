@@ -104,9 +104,10 @@ for that change.
 Durable ADR files are generated under the target repository's top-level `adr/`
 folder only when the change introduces a major architectural decision that
 should persist beyond the change. They are not written inside the OpenSpec
-change folder. Accepted ADRs are immutable. If a future decision changes a
-prior ADR, create a new ADR that supersedes the old one and leave the original
-file unchanged.
+change folder. New ADRs start as `proposed`; `accepted` requires explicit
+maintainer agreement. Accepted ADRs are immutable. To change a prior ADR,
+create a new proposal with `Supersedes:` and leave the original file unchanged.
+The new decision supersedes it only after acceptance.
 
 ## Validate
 

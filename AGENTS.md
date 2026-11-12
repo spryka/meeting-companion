@@ -1,7 +1,21 @@
 # Meeting Companion
 
-Standalone macOS 15+ / Apple Silicon meeting recorder. No agent or skill is
-required to record or transcribe. Keep changes small; use existing platform APIs.
+Standalone Swift 6 application for macOS 15+ on Apple Silicon. UI uses SwiftUI
+and AppKit; local recognition runs in an isolated Swift/MLX worker. Recording
+and transcription are complete app features, with no external agent or skill dependency.
+Keep changes small; use existing platform APIs.
+
+## Technology stack
+
+- Implement application logic and tests in Swift. Use the existing shell scripts
+  for build, packaging and checks; WebRTC AEC remains native C++.
+- Keep MLX/model ownership in MeetingTranscriptionPipeline and
+  MeetingTranscriptionWorker. App and CLI use shared application services and
+  the native worker protocol, without importing MLX or the pipeline.
+- Extend the existing native app and offline pipeline. A different runtime,
+  service or UI stack is an architectural change requiring explicit agreement.
+- Use full Xcode through DEVELOPER_DIR and its installed Metal Toolchain;
+  select TOOLCHAINS when needed instead of changing global xcode-select.
 
 ## Development workflow
 
@@ -24,8 +38,9 @@ and behavior-preserving changes do not need a new specification.
 
 - `Sources/MeetingCompanionCore`: Foundation contracts, progress, recording paths,
   transcript storage and existing editor components.
+- `Sources/MeetingCompanionApplication`: shared recording, processing and history services.
 - `Sources/MeetingCompanionPlatform`: ScreenCaptureKit / Core Audio Tap audio capture,
-  synchronized source WAV files, subprocess transcription and AVPlayer transport.
+  synchronized source WAV files, native worker subprocess and AVPlayer transport.
 - `Sources/MeetingCompanionApp`: menu bar UI, permissions/diagnostics, calendar,
   reminders and processing capsule.
 - `Sources/MeetingCompanionCLI`: optional recording CLI.
@@ -72,7 +87,6 @@ artifact layout, failure behavior and evaluation method.
 Run `swift build -c release`, `swift test`, then:
 
 ```sh
-bash scripts/check-python-free.sh
 bash scripts/check-module-boundaries.sh
 swift skills/local-audio-transcriber/scripts/find-recording.swift --self-test
 ```

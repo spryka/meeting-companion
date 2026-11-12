@@ -366,7 +366,6 @@ readable contained raw-паре. Flat WAV, mix и рекурсивный пои�
 для этой записи закрыто через admission/queue/worker teardown; terminal reopen заново
 разрешает current. Старые правки не переносятся на новый resultID. GUI history picker,
 selected-version persistence и async-switch path удалены. Обычная защита закрытия сохранена.
-Физический UAT этой beta остаётся `WAITING_UAT`.
 
 ### Пример документа (JSON v1)
 

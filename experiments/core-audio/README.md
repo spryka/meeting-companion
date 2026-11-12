@@ -10,8 +10,11 @@ The probe prefers the built-in MacBook microphone for this experiment.
 Compile with assertions enabled from the repository root:
 
 ```sh
-swiftc -swift-version 5 -parse-as-library experiments/core-audio/Probe.swift \
-  Sources/MeetingCompanionCore/SourceAudioFiles.swift -o /tmp/meeting-tap-probe
+swift build -c release --target MeetingCompanionCore
+BIN_DIR="$(swift build -c release --show-bin-path)"
+swiftc -swift-version 5 -parse-as-library -I "$BIN_DIR" \
+  experiments/core-audio/Probe.swift Sources/MeetingCompanionPlatform/SourceAudioFiles.swift \
+  "$BIN_DIR/MeetingCompanionCore.o" -o /tmp/meeting-tap-probe
 ```
 
 For the observed runs it was launched inside a separate signed application bundle
@@ -53,8 +56,8 @@ behavior, device-switch recovery, or speech recognition quality.
 
 ## Production implementation
 
-Version 1.3.0 adds a separate production backend in
-`Sources/MeetingCompanionCore/AudioCapture.swift`; this prototype remains isolated.
+The production backend introduced in 1.3.0 now lives in
+`Sources/MeetingCompanionPlatform/AudioCapture.swift`; this prototype remains isolated.
 The application copies audio into a bounded serial delivery queue, uses the selected
 microphone, preserves synchronized source WAVs and exports an audio-only M4A mix.
 

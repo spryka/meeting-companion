@@ -217,13 +217,13 @@ artifacts:
       persist across changes and MUST be written outside openspec/.
 
 
-      IRON RULE - ADRs are immutable once accepted. You MUST NOT edit a prior
-      ADR file under any circumstance, not its Status, not its body, not its
-      date. To change a previously accepted decision, record a NEW ADR whose
-      Status is "accepted, supersedes ADR-NNNN" and whose `Supersedes:` field
-      names the prior one. Design consumers derive what is currently in force
-      by walking Supersedes links across the folder. The prior ADR's contents
-      stay frozen as a historical record.
+      ADRs are immutable once accepted. Do not edit an accepted ADR's Status,
+      body or date. To change an accepted decision, create a NEW ADR with
+      Status "proposed" and a `Supersedes:` field naming the prior decision.
+      Only explicit maintainer agreement permits changing the proposal to
+      "accepted, supersedes ADR-NNNN". Design consumers derive what is in force
+      from accepted ADRs and their Supersedes links; an unaccepted proposal
+      does not supersede an accepted decision. The prior accepted ADR stays frozen.
 
 
       Process:
@@ -247,10 +247,12 @@ artifacts:
       <repo>/adr/NNNN-kebab-title.md, where NNNN is a 4-digit sequence one
       greater than the highest existing. Include title, Status, Date, optional
       Supersedes, and MADR-short sections: Context, Decision, and
-      Consequences. If this decision replaces a prior in-force ADR, set Status to
-      "accepted, supersedes ADR-NNNN", populate the `Supersedes:` field, and
-      explain in Context why the prior decision is being revisited. Do NOT
-      touch the prior ADR's file.
+      Consequences. Start with Status "proposed" unless explicit maintainer
+      agreement for this decision is already recorded. If it replaces a prior
+      in-force ADR, populate `Supersedes:` and explain in Context why the prior
+      decision is being revisited. Set Status to "accepted" or
+      "accepted, supersedes ADR-NNNN" only after that agreement. Do NOT touch
+      the prior accepted ADR's file.
 
       4. Write openspec/changes/<change>/adr.md using the template. The
       manifest MUST state that ADR review completed for this change, list the

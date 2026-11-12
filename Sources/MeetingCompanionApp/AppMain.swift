@@ -55,6 +55,24 @@ protocol AudioLevelMonitoring: AnyObject, Sendable {
 @available(macOS 15.0, *)
 extension AudioLevelMonitor: AudioLevelMonitoring {}
 
+enum StartMeetingOutcome: Equatable, Sendable {
+    case started
+    case rejected(reason: String)
+    case failed(reason: String)
+
+    var isStarted: Bool {
+        if case .started = self { return true }
+        return false
+    }
+
+    var reason: String? {
+        switch self {
+        case .started: return nil
+        case .rejected(let reason), .failed(let reason): return reason
+        }
+    }
+}
+
 @MainActor
 final class RecorderViewModel: ObservableObject {
     typealias AudioLevelMonitorFactory = @Sendable (
@@ -354,6 +372,8 @@ final class RecorderViewModel: ObservableObject {
     @Published var audioPreviewURL: URL?
     @Published var reminderMeeting: MeetingContext?
     @Published var mainWindowRequested = false
+    private var meetingTransitionInProgress = false
+    var onAfterStopRecordingInMeetingTransitionForTesting: (@MainActor () async -> Void)?
     private var historySubscription: AnyCancellable?
     private var capsuleTimer: Timer?
     typealias CapsuleTimerScheduler = @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Timer
@@ -626,6 +646,10 @@ final class RecorderViewModel: ObservableObject {
 
     func setIsAdmittingProcessingForTesting(_ admitting: Bool) {
         isAdmittingProcessing = admitting
+    }
+
+    func setRecordingMeetingIDForTesting(_ id: String?) {
+        recordingMeetingID = id
     }
 
     @discardableResult
@@ -1211,28 +1235,120 @@ final class RecorderViewModel: ObservableObject {
         enqueue(recording, stopped: nil)
     }
 
-    func startMeeting(_ meeting: MeetingContext?, expectedSessionID: UUID?) {
-        guard workspace.admitNavigation() else { return }
-        guard sessionAttached, processingAttached, !sessionStarting, !sessionStopping, !isBusy, !diagnosticRunning else { return }
+    @discardableResult
+    func startMeeting(
+        _ meeting: MeetingContext?,
+        expectedSessionID: UUID?,
+        onOutcome: (@MainActor @Sendable (StartMeetingOutcome) -> Void)? = nil
+    ) -> Task<StartMeetingOutcome, Never> {
+        guard !meetingTransitionInProgress else {
+            let reason = "Переход между записями уже выполняется."
+            errorMessage = reason
+            let outcome = StartMeetingOutcome.rejected(reason: reason)
+            onOutcome?(outcome)
+            return Task { outcome }
+        }
+        guard workspace.admitNavigation() else {
+            let reason = workspace.commandNotice ?? "Сохраните или отмените ввод перед этим действием."
+            errorMessage = reason
+            let outcome = StartMeetingOutcome.rejected(reason: reason)
+            onOutcome?(outcome)
+            return Task { outcome }
+        }
+        guard sessionAttached, processingAttached, !sessionStarting, !sessionStopping, !isBusy, !diagnosticRunning else {
+            let reason = "Meeting Companion занят выполнением операции."
+            errorMessage = reason
+            let outcome = StartMeetingOutcome.rejected(reason: reason)
+            onOutcome?(outcome)
+            return Task { outcome }
+        }
         guard expectedSessionID == activeSessionID, expectedSessionID != nil || !isRecording else {
-            errorMessage = RecordingSessionService.ServiceError.staleCommand.localizedDescription
-            return
+            let reason = RecordingSessionService.ServiceError.staleCommand.localizedDescription
+            errorMessage = reason
+            let outcome = StartMeetingOutcome.rejected(reason: reason)
+            onOutcome?(outcome)
+            return Task { outcome }
         }
         calendar.refresh()
-        let latest = meeting.flatMap { selected in calendar.events.first { $0.id == selected.id } }
-        if meeting != nil && latest == nil {
-            errorMessage = "Встреча изменилась или удалена. Выберите её заново; текущая запись продолжается."
-            return
-        }
-        let cancelShort = showsCancelRecording
-        isBusy = true
-        Task {
-            if let expectedSessionID {
-                guard await stopRecording(expectedSessionID: expectedSessionID, cancelShort: cancelShort) else { return }
-                isBusy = true
+        if let meeting {
+            guard calendar.events.contains(where: { $0.id == meeting.id && $0 == meeting }) else {
+                let reason = isRecording
+                    ? "Встреча изменилась или удалена. Выберите её заново; текущая запись продолжается."
+                    : "Встреча изменилась или удалена. Выберите её заново."
+                errorMessage = reason
+                let outcome = StartMeetingOutcome.rejected(reason: reason)
+                onOutcome?(outcome)
+                return Task { outcome }
             }
-            selectedMeeting = latest
-            await startRecording(meeting: latest)
+        }
+
+        meetingTransitionInProgress = true
+        isBusy = true
+        let cancelShort = showsCancelRecording
+
+        return Task { @MainActor [weak self] in
+            guard let self else {
+                return StartMeetingOutcome.rejected(reason: "Объект деинициализирован.")
+            }
+            defer {
+                self.meetingTransitionInProgress = false
+                self.isBusy = false
+            }
+            if let expectedSessionID {
+                let stopped = await self.stopRecording(expectedSessionID: expectedSessionID, cancelShort: cancelShort)
+                if !stopped {
+                    let reason = self.recordingSaveError ?? self.errorMessage ?? "Не удалось завершить предыдущую запись."
+                    self.errorMessage = reason
+                    let outcome = StartMeetingOutcome.failed(reason: reason)
+                    onOutcome?(outcome)
+                    return outcome
+                }
+            }
+            await self.onAfterStopRecordingInMeetingTransitionForTesting?()
+
+            guard self.workspace.admitNavigation() else {
+                let reason = self.workspace.commandNotice ?? "Сохраните или отмените ввод перед этим действием."
+                self.errorMessage = reason
+                let outcome = StartMeetingOutcome.rejected(reason: reason)
+                onOutcome?(outcome)
+                return outcome
+            }
+            guard self.sessionAttached, self.processingAttached, !self.sessionStarting, !self.sessionStopping, !self.diagnosticRunning, !self.isRecording, self.activeSessionID == nil else {
+                let reason = "Состояние сессии изменилось. Запуск новой записи отменён."
+                self.errorMessage = reason
+                let outcome = StartMeetingOutcome.rejected(reason: reason)
+                onOutcome?(outcome)
+                return outcome
+            }
+            self.calendar.refresh()
+            let freshMeeting: MeetingContext?
+            if let meeting {
+                guard let found = self.calendar.events.first(where: { $0.id == meeting.id && $0 == meeting }) else {
+                    let reason = "Встреча изменилась или удалена. Выберите её заново."
+                    self.errorMessage = reason
+                    let outcome = StartMeetingOutcome.rejected(reason: reason)
+                    onOutcome?(outcome)
+                    return outcome
+                }
+                freshMeeting = found
+            } else {
+                freshMeeting = nil
+            }
+
+            self.isBusy = true
+            self.selectedMeeting = freshMeeting
+            await self.startRecording(meeting: freshMeeting)
+            if self.isRecording {
+                let outcome = StartMeetingOutcome.started
+                onOutcome?(outcome)
+                return outcome
+            } else {
+                let reason = self.errorMessage ?? "Не удалось начать запись."
+                self.errorMessage = reason
+                let outcome = StartMeetingOutcome.failed(reason: reason)
+                onOutcome?(outcome)
+                return outcome
+            }
         }
     }
 
@@ -1386,8 +1502,11 @@ final class RecorderViewModel: ObservableObject {
                 prompt: nil,
                 controller: controller
             )
-            _ = try await recordingSessionService.start(configuration: sessionConfig)
+            let sessionSnapshot = try await recordingSessionService.start(configuration: sessionConfig)
             self.recorder = preparedRecorder
+            isRecording = true
+            sessionStarting = false
+            activeSessionID = sessionSnapshot.sessionID
 
             recordingMeetingID = meeting?.id
             activeRecordingURL = outputURL
@@ -1453,6 +1572,9 @@ final class RecorderViewModel: ObservableObject {
             recordingMeetingID = nil
             errorMessage = nil
             mutedMicrophoneActivity = false
+            isRecording = false
+            sessionStopping = false
+            activeSessionID = nil
 
             if stopResult.wasCancelledShort {
                 lastFileURL = nil

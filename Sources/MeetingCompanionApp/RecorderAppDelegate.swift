@@ -27,7 +27,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private weak var settingsReturnFocus: NSResponder?
     private weak var settingsFocusWindow: NSWindow?
     private var statusItem: NSStatusItem!
-    private var reminder: NSPanel?
+    private(set) var reminder: NSPanel?
     private var recordingObserver: AnyCancellable?
     private var busyObserver: AnyCancellable?
     private var updateObserver: AnyCancellable?
@@ -295,21 +295,37 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         return .terminateNow
     }
 
-    private func showReminder(_ meeting: MeetingContext) {
+    private func dismissReminder() {
+        guard let panel = reminder else { return }
+        panel.orderOut(nil)
+        panel.contentView = nil
+        reminder = nil
+    }
+
+    func showReminder(_ meeting: MeetingContext) {
         guard !model.isBusy, !model.diagnosticRunning else { return }
         if model.recordingMeetingID == meeting.id {
             model.calendar.acknowledge(meeting)
             return
         }
-        reminder?.orderOut(nil)
-        reminder = nil
+        dismissReminder()
         model.prepareForAutomaticReminder()
         let now = Date()
         for event in model.calendar.events where event.needsReminder(now: now, handled: []) {
             model.calendar.acknowledge(event)
         }
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 220),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let candidates = MeetingSelection.orderedCurrent(events: model.calendar.events, now: now)
+            .filter { $0.id != model.recordingMeetingID }
+        let initialMeeting = candidates.first ?? meeting
+        model.reminderMeeting = initialMeeting
+        let expectedSessionID = model.activeSessionID
+
+        let panel = ReminderPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -317,62 +333,64 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
-        let candidates = MeetingSelection.orderedCurrent(events: model.calendar.events, now: now)
-            .filter { $0.id != model.recordingMeetingID }
-        model.reminderMeeting = candidates.first ?? meeting
-        let expectedSessionID = model.activeSessionID
-        panel.contentView = NSHostingView(rootView: MeetingReminderView(model: model, calendar: model.calendar) { [weak self, weak panel] accept, selected in
-            guard let self, let panel, self.reminder === panel else { return }
-            panel.orderOut(nil)
-            self.reminder = nil
-            if accept { self.model.startMeeting(selected, expectedSessionID: expectedSessionID) }
-        })
-        let screen = window.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
-        let y = screen.maxY - 244 - (model.isRecording ? 96 : 0)
-        panel.setFrameOrigin(NSPoint(x: screen.maxX - 424, y: max(screen.minY, y)))
+
+        let presenter = MeetingReminderPresenter(
+            model: model,
+            calendar: model.calendar,
+            initialMeeting: initialMeeting,
+            expectedSessionID: expectedSessionID,
+            onDismiss: { [weak self, weak panel] in
+                guard let self, let panel, self.reminder === panel else { return }
+                self.dismissReminder()
+            }
+        )
+
+        let rootView = MeetingReminderView(presenter: presenter)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.sizingOptions = [.intrinsicContentSize]
+        panel.contentView = hostingView
+
+        let layoutPanel = { [weak self, weak panel, weak hostingView] in
+            guard let self, let panel, let hostingView else { return }
+            let targetSize = hostingView.fittingSize
+            let screen = self.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let width: CGFloat = 440
+            var height = max(200, min(screen.height - 32, targetSize.height))
+            let x = screen.maxX - width - 16
+            var y = screen.maxY - height - 16
+
+            if let capsulePanel = self.capsuleController?.panel, capsulePanel.isVisible {
+                let capsuleFrame = capsulePanel.frame
+                let reminderRect = NSRect(x: x, y: y, width: width, height: height)
+                if reminderRect.intersects(capsuleFrame) {
+                    let below = max(0, capsuleFrame.minY - screen.minY - 24)
+                    let above = max(0, screen.maxY - capsuleFrame.maxY - 24)
+                    if below >= height || below >= above {
+                        height = min(height, below)
+                        y = capsuleFrame.minY - height - 8
+                    } else {
+                        height = min(height, above)
+                        y = capsuleFrame.maxY + 8
+                    }
+                }
+            }
+            y = max(screen.minY + 16, min(screen.maxY - height - 16, y))
+            panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        }
+
+        layoutPanel()
+        presenter.onLayoutChanged = {
+            DispatchQueue.main.async { layoutPanel() }
+        }
+
         reminder = panel
         Timer.scheduledTimer(withTimeInterval: max(1, min(300, meeting.end.timeIntervalSinceNow)), repeats: false) { [weak self, weak panel] _ in
             Task { @MainActor in
                 guard let self, let panel, self.reminder === panel else { return }
-                panel.orderOut(nil)
-                self.reminder = nil
+                self.dismissReminder()
             }
         }
         panel.orderFrontRegardless()
     }
 
-}
-
-struct MeetingReminderView: View {
-    @ObservedObject var model: RecorderViewModel
-    @ObservedObject var calendar: MeetingCalendar
-    let respond: (Bool, MeetingContext?) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(model.isRecording ? "Начинается следующая встреча" : "Время встречи").font(.headline)
-            Picker("Встреча", selection: $model.reminderMeeting) {
-                Text("Без встречи").tag(Optional<MeetingContext>.none)
-                ForEach(calendar.events.filter { $0.id != model.recordingMeetingID }) { event in
-                    Text(event.start.formatted(date: .omitted, time: .shortened) + " · " + event.summary).tag(Optional(event))
-                }
-                if let selected = model.reminderMeeting, !calendar.events.contains(selected) { Text(selected.summary).tag(Optional(selected)) }
-            }
-            if model.isRecording {
-                Text("Закроем текущие дорожки и начнём новую запись. Обработка предыдущей продолжится в фоне.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                Button("Пропустить") { respond(false, nil) }.buttonStyle(.plain).foregroundStyle(.secondary)
-                Spacer()
-                Button(model.isRecording ? "Завершить и начать новую" : "Начать запись") { respond(true, model.reminderMeeting) }
-                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-                    .disabled(model.isBusy || model.diagnosticRunning)
-            }
-        }
-        .padding(20)
-        .frame(width: 392, height: 212)
-        .modifier(MeetingOverlaySurface())
-        .padding(4)
-    }
 }
