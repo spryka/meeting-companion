@@ -5,6 +5,16 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.0.1</title>
+            <description><![CDATA[<p>Meeting Companion 2.0.1, build 82.</p><ul><li>Удалены неиспользуемая модель определения речи и её зависимости.</li><li>Отбор окон входит в этап Nemotron: четыре основных этапа обработки, до шести с эхоподавлением и уточнением терминов.</li><li>Обновлены документация и тесты.</li></ul><p>Записи, исходный звук и ручные правки сохраняются. При отсутствующей, ошибочной или пустой диаризации распознаются все окна. macOS 15+, Apple Silicon. Без Apple notarization.</p>]]></description>
+            <pubDate>Thu, 12 Nov 2026 15:19:35 +0300</pubDate>
+            <sparkle:version>82</sparkle:version>
+            <sparkle:shortVersionString>2.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.0.1/Meeting-Companion-2.0.1-arm64.zip" length="17046760" type="application/octet-stream" sparkle:edSignature="npWY/kdnd1Tjir+P+H/BjH1brQwE+vhehldraTNHZ7oGK0YzQLfZ84UgohVR51qEl/t8eu0uCuyMYrDLutH9AQ=="/>
+        </item>
+        <item>
             <title>2.0.0</title>
             <description><![CDATA[<p>Meeting Companion 2.0.0: локальная запись и расшифровка встреч на Swift/MLX.</p><ul><li>Библиотека с поиском, редактором и плеером.</li><li>Напоминания с выбором встречи и защищённым переходом между записями.</li><li>Очередь обработки, отбор речи Nemotron и коррекция терминов Parakeet.</li></ul><p>Записи и ручные правки сохраняются. macOS 15+, Apple Silicon. Сборка без Apple notarization.</p>]]></description>
             <pubDate>Thu, 12 Nov 2026 12:18:59 +0300</pubDate>
