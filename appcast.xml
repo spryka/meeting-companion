@@ -5,6 +5,16 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.0.0</title>
+            <description><![CDATA[<p>Meeting Companion 2.0.0: локальная запись и расшифровка встреч на Swift/MLX.</p><ul><li>Библиотека с поиском, редактором и плеером.</li><li>Напоминания с выбором встречи и защищённым переходом между записями.</li><li>Очередь обработки, отбор речи Nemotron и коррекция терминов Parakeet.</li></ul><p>Записи и ручные правки сохраняются. macOS 15+, Apple Silicon. Сборка без Apple notarization.</p>]]></description>
+            <pubDate>Thu, 12 Nov 2026 12:18:59 +0300</pubDate>
+            <sparkle:version>80</sparkle:version>
+            <sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.0.0/Meeting-Companion-2.0.0-arm64.zip" length="17123645" type="application/octet-stream" sparkle:edSignature="XXHQH+1CnYG0DuFM9RA/7wPECWZCp4kjR/CRaK0V6dkdvo4T2i5HXHbrVSJO23XA4giIc6+mrxPeDYN2CxAFDg=="/>
+        </item>
+        <item>
             <title>2.0.0-beta.40</title>
             <description><![CDATA[<p>Публичная бета 2.0.0-beta.40 (build 78): ускорена коррекция терминов и убран отдельный проход Silero.</p><ul><li>Целые окна распознавания выбираются по уже найденным интервалам Nemotron без фильтра минимальной длительности 250 мс.</li><li>При недоступной или пустой диаризации обрабатываются все окна дорожки.</li><li>Silero больше не требуется при подготовке; существующие файлы и ручные правки сохраняются.</li></ul><p>На четырёх контрольных записях сохранились короткие реплики; общая точность и стабильное ускорение не установлены. Предварительная версия без Apple notarization, macOS 15+, Apple Silicon.</p>]]></description>
             <pubDate>Wed, 11 Nov 2026 18:45:10 +0300</pubDate>
