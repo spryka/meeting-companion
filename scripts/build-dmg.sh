@@ -15,6 +15,7 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir "$STAGE/contents"
 ditto "$APP" "$STAGE/contents/Meeting Companion.app"
 ln -s /Applications "$STAGE/contents/Applications"
+cp "$ROOT_DIR/Resources/Installation.txt" "$STAGE/contents/Установка.txt"
 hdiutil create -volname "Meeting Companion" -srcfolder "$STAGE/contents" \
   -format UDZO "$STAGE/Meeting Companion.dmg"
 hdiutil verify "$STAGE/Meeting Companion.dmg"
