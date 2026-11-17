@@ -37,7 +37,9 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
 
 @MainActor private final class NativeFixtureTransport: TranscriptPlaybackTransport {
     var onEvent: (@MainActor @Sendable (TranscriptPlaybackEvent) -> Void)?
-    func prepare(url: URL) async throws -> Double { 1458 }
+    let duration: Double
+    init(duration: Double = 1458) { self.duration = duration }
+    func prepare(url: URL) async throws -> Double { duration }
     func play() { onEvent?(.playing(true)) }
     func pause() { onEvent?(.playing(false)) }
     func seek(to seconds: Double) async -> Bool { onEvent?(.position(seconds)); return true }
@@ -46,6 +48,179 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
 }
 
 @Suite @MainActor final class VisualFidelityTests {
+    @Test func speakerSegmentStopsRealMutedAVPlayer() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32000))
+        buffer.frameLength = 32000
+        for i in 0..<32000 { buffer.floatChannelData![0][i] = 0 }
+        let wav = fixture.result.appendingPathComponent("segment.wav")
+        do { let file = try AVAudioFile(forWriting: wav, settings: format.settings); try file.write(from: buffer) }
+        let resultFile = fixture.result.appendingPathComponent("result.json")
+        var json = try JSONSerialization.jsonObject(with: Data(contentsOf: resultFile)) as! [String: Any]
+        json["playback"] = ["status": "ready", "mixPath": "raw/transcripts/v1/segment.wav"]
+        try JSONSerialization.data(withJSONObject: json).write(to: resultFile)
+        let transport = TranscriptAVPlayerTransport(isMuted: true)
+        let player = TranscriptPlaybackController(transport: transport)
+        defer { player.close() }
+        await player.select(resultID: "v1", recordingDirectory: fixture.root)
+        #expect(player.state == .ready)
+        await player.playSegment(start: 0.2, end: 0.5)
+        for _ in 0..<1000 where player.segment != nil { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(player.segment == nil && player.state == .ready && player.position == 0.5)
+        #expect(transport.actualPlaybackRate == 0)
+        #expect(transport.currentPosition <= 0.7)
+    }
+    @Test func speakerReviewNativeWorkspace() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["SPEAKER_REVIEW_NATIVE_ROOT"] else { return }
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
+        NSApp.finishLaunching()
+        let output = URL(fileURLWithPath: destination)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let transport = NativeFixtureTransport(duration: 5000)
+        let fixture = try SpeakerReviewFixture(transportFactory: { transport })
+        defer { fixture.close() }
+        let manager = fixture.manager
+        let editor = try await fixture.open()
+        let suite = "speaker-native-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(fixture.root.deletingLastPathComponent().path, forKey: "recordingsDirectory")
+        defaults.set([String](), forKey: "meetingCalendarIDs")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repo = RecordingHistoryRepository()
+        let processing = ProcessingService(transcriptionRunner: SyntheticRunner(), audioExporter: SyntheticExporter(), historyRepository: repo)
+        let app = isolatedRecorderModel(sessionService: RecordingSessionService(historyRepo: repo),
+            processingService: processing, historyRepository: repo, workspace: manager,
+            defaults: defaults, startBackgroundServices: false,
+            captureControllerFactory: { url, _, _ in SyntheticAudioCapture(outputURL: url) },
+            shortRecordingTrash: { _ in }, audioLevelMonitorFactory: { _, _, _ in SyntheticLevels() })
+        await app.history.refresh(root: fixture.root.deletingLastPathComponent())
+        var entry = RecordingEntry(recording: fixture.recording, date: Date(timeIntervalSince1970: 1794911520),
+            title: "Обсуждение продукта", phase: .completed)
+        entry.duration = 5000
+        repo.put(entry, persist: false)
+        await app.history.synchronize()
+        app.mainPage = .history
+        app.selectedHistoryURL = fixture.recording
+        app.workspaceShowsList = false
+        func elements(_ object: Any, depth: Int = 0) -> [any NSAccessibilityProtocol] {
+            guard depth < 30, let element = object as? any NSAccessibilityProtocol else { return [] }
+            return [element] + (element.accessibilityChildren() ?? []).flatMap { elements($0, depth: depth + 1) }
+        }
+        func capture(_ name: String, width: CGFloat, height: CGFloat = 850, dark: Bool = false,
+                     pane: TranscriptReviewWindowModel? = nil, scrollToBottom: Bool = false) async throws {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let content = pane.map { AnyView(SpeakerReviewView(model: $0)) }
+                ?? AnyView(RecordingHistoryView(model: app, history: app.history, workspace: manager, showSettings: {}))
+            let host = NSHostingView(rootView: content.defaultAppStorage(defaults)
+                .environment(\.colorScheme, dark ? .dark : .light))
+            window.contentView = host
+            window.orderFront(nil)
+            defer { window.orderOut(nil); window.close() }
+            window.setContentSize(NSSize(width: width, height: height))
+            try await Task.sleep(for: .milliseconds(180))
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            if scrollToBottom {
+                func scroll(_ view: NSView) {
+                    if let scroll = view as? NSScrollView, let document = scroll.documentView {
+                        let y = document.isFlipped ? max(0, document.bounds.height - scroll.contentView.bounds.height) : 0
+                        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                    }
+                    for child in view.subviews { scroll(child) }
+                }
+                scroll(host)
+                try await Task.sleep(for: .milliseconds(100))
+                host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            }
+            let frame = (window.attachedSheet?.contentView ?? window.contentView)?.superview ?? host
+            let bitmap = try #require(frame.bitmapImageRepForCachingDisplay(in: frame.bounds))
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(name + ".png"))
+            let tree = elements(host).map { ["role": $0.accessibilityRole()?.rawValue ?? "", "label": $0.accessibilityLabel() ?? "", "frame": NSStringFromRect($0.accessibilityFrame())] }
+            try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys])
+                .write(to: output.appendingPathComponent(name + "-ax.json"))
+            try JSONSerialization.data(withJSONObject: ["width": host.bounds.width, "height": host.bounds.height, "review": editor.voiceReviewVisible, "result": editor.currentResultID ?? ""], options: [.prettyPrinted, .sortedKeys])
+                .write(to: output.appendingPathComponent(name + "-geometry.json"))
+        }
+        try await capture("transcript-entry", width: 1440)
+        editor.openVoiceReview()
+        #expect(editor.voiceReviewVisible && editor.selectedVoice?.originalName == "Speaker 2")
+        for width: CGFloat in [360, 390, 768, 1024, 1440] {
+            try await capture("review-\(Int(width))", width: width, dark: width == 768)
+        }
+        for _ in 0..<100 where !editor.playbackEnabled { try await Task.sleep(for: .milliseconds(5)) }
+        let fragment = try #require(editor.selectedVoice?.rows.first)
+        for dark in [false, true] {
+            try await capture("fragment-idle-\(dark ? "dark" : "light")", width: 1440, dark: dark)
+            try await capture("fragment-idle-narrow-\(dark ? "dark" : "light")", width: 390, dark: dark)
+        }
+        await editor.playVoiceTurn(fragment.id)
+        transport.onEvent?(.position((fragment.start + fragment.end) / 2))
+        #expect(editor.fragmentTurnID == fragment.id && editor.playbackState == .playing)
+        for dark in [false, true] {
+            try await capture("fragment-playing-\(dark ? "dark" : "light")", width: 1440, dark: dark)
+            try await capture("fragment-narrow-\(dark ? "dark" : "light")", width: 390, dark: dark)
+        }
+        await editor.playVoiceTurn(fragment.id)
+        #expect(editor.fragmentTurnID == fragment.id && editor.playbackState == .ready)
+        try await capture("fragment-paused", width: 1024, dark: true)
+        editor.selectVoice(editor.voiceGroups[6].id)
+        try await capture("late-voice", width: 1440)
+        editor.returnToTranscript(turnID: "t6")
+        try await capture("quick-entry", width: 1024)
+        editor.openSpeakerAssignment(for: "t6")
+        #expect(editor.activeDraft != nil)
+        editor.updateDraftName("Длинное имя — Éva 李明 👩🏽‍💻 " + String(repeating: "Фамилия ", count: 6))
+        try await capture("local-sheet", width: 390, height: 650)
+        editor.openDraftVoiceReview()
+        try await capture("transferred-draft-short", width: 390, height: 550)
+        editor.cancelVoiceInput()
+        editor.returnToTranscript()
+        editor.openVoiceReview()
+        for _ in 0..<7 { editor.skipVoice() }
+        #expect(editor.voiceReviewComplete)
+        try await capture("completion", width: 1440)
+        editor.selectVoice(try #require(editor.selectedVoiceID))
+        #expect(editor.requestVoiceList())
+        editor.updateVoiceName("Имя после списка")
+        #expect(!editor.voiceListVisible)
+        try await capture("resize-dirty-details", width: 390)
+        editor.cancelVoiceInput()
+        editor.selectVoice(editor.voiceGroups[1].id)
+        editor.updateVoiceName("Анна")
+        editor.setVoiceReplaceManual(true)
+        try await capture("overwrite-preview", width: 1024)
+        let editsFile = fixture.result.appendingPathComponent("edits.json")
+        var changedBytes = try Data(contentsOf: editsFile)
+        changedBytes.append(0x20)
+        try changedBytes.write(to: editsFile)
+        editor.confirmVoiceAssignment(try #require(editor.voiceDraft))
+        #expect(editor.voiceRequiresReopen && editor.voiceDraft?.inputName == "Анна")
+        try await capture("save-conflict", width: 390)
+        editor.cancelVoiceInput()
+        for count in [1, 16] {
+            let extra = try SpeakerReviewFixture(voiceCount: count, transportFactory: { NativeFixtureTransport(duration: 5000) })
+            let review = try await extra.open()
+            review.openVoiceReview()
+            #expect(review.voiceGroups.count == count)
+            try await capture("voices-\(count)", width: 390, pane: review)
+            extra.close()
+        }
+        let long = try SpeakerReviewFixture(turnsPerVoice: 80, transportFactory: { NativeFixtureTransport(duration: 5000) })
+        let longReview = try await long.open()
+        longReview.openVoiceReview()
+        longReview.updateVoiceName("Очень длинное имя — Éva 李明 👩🏽‍💻 " + String(repeating: "Фамилия ", count: 10))
+        #expect(longReview.selectedVoice?.rows.count == 80)
+        try await capture("long-list-unicode", width: 390, height: 550, pane: longReview)
+        try await capture("long-list-unicode-bottom", width: 390, height: 550, pane: longReview, scrollToBottom: true)
+        long.close()
+    }
     @Test func processingProgressNativeSyntheticRender() async throws {
         guard let path = ProcessInfo.processInfo.environment["PROCESSING_PROGRESS_NATIVE_ROOT"] else { return }
         _ = NSApplication.shared

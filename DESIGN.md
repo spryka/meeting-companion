@@ -7,6 +7,8 @@ HTML-референс и активные предложения объясня�
 в [verification-release](openspec/changes/archive/2026-11-06-refresh-macos-interface/verification-release.md).
 Последующие изменения обработки и аудио приняты в [beta.35](docs/beta35-acceptance.md);
 дизайн капсулы описан в [processing-progress-ui](openspec/changes/archive/2026-11-09-processing-progress-ui/design.md).
+Разбор говорящих принят владельцем на локальной сборке 86; проверки и ограничения —
+в [speaker-review-ui](openspec/changes/archive/2026-11-18-speaker-review-ui/tasks.md).
 
 ## Где менять
 
@@ -17,6 +19,7 @@ HTML-референс и активные предложения объясня�
 | Библиотека, поиск, footer, toolbar/More | [RecordingHistoryView.swift](Sources/MeetingCompanionApp/RecordingHistoryView.swift): `RecordingHistoryView`, `RecorderWorkspaceView` |
 | Подтверждение переноса в Корзину | [RecordingTrashView.swift](Sources/MeetingCompanionApp/RecordingTrashView.swift): `RecordingTrashOverlay`; admission и outcome — `RecorderViewModel` |
 | Документ, реплики, player, редактирование | [TranscriptReviewWindow.swift](Sources/MeetingCompanionApp/TranscriptReviewWindow.swift): `TranscriptReviewWindowView`, `WaveformScrubberView` |
+| Общий разбор говорящих | [SpeakerReviewView.swift](Sources/MeetingCompanionApp/SpeakerReviewView.swift): список, детали, назначение и индикатор фрагмента; session/guards — прежний `TranscriptReviewWindowModel` |
 | Новая запись, meeting/mic fields, уровни | [RecorderView.swift](Sources/MeetingCompanionApp/RecorderView.swift): `FullRecorderView`, `MeetingPicker`, `FormLevelMetersView` |
 | Settings modal, навигация и настройки | [SettingsView.swift](Sources/MeetingCompanionApp/SettingsView.swift): `WorkspaceSettingsOverlay`, `SettingsShell`, `RecorderSettingsView`, локальные `ODSettings*` |
 | Независимая капсула | [RecordingCapsuleController.swift](Sources/MeetingCompanionApp/RecordingCapsuleController.swift): panel/position; [RecordingCapsuleView.swift](Sources/MeetingCompanionApp/RecordingCapsuleView.swift): содержимое |
@@ -99,6 +102,8 @@ Helper считает положительный leading из метрик `NSFo
 | `warning` / `warningBg` | `#855309` / `#FFF6E5` | `#F0C478` / `#3B3120` | Предупреждение, mute/overtime |
 | `red` / `redBg` | `#B82D3D` / `#FBECEF` | `#FF9AA8` / `#402730` | Ошибка, recording dot, stop |
 | `track` | `#DCE2EB` | `#404B5B` | Неактивный progress/switch |
+| `segmentProgressFill` | `#53709C` | `#7A8AA3` | Приглушённая полоса прослушивания реплики |
+| `segmentProgressTrack` | `#BDC0C4` | `#5D6266` | Дорожка индикатора фрагмента |
 
 `toolbarBackground/text/secondaryText/border/statusGreen/statusAmber/statusRed` —
 aliases перечисленных ролей; `avatarPalette` содержит accent/green/warning/red.
@@ -210,6 +215,16 @@ Settings button36×36/icon16, независимый нижний player. Empty/
 partial read/processing/warning/error показывают реальные состояния. Редактор
 использует current result и saved edits; текста/имени касаются прежние modal guards,
 preview/confirm, field undo и Cancel. Saved undo/version selector не добавляются.
+
+**Разбор говорящих.** Счётчик в описании открывает `SpeakerReviewView` в правой
+области той же session. При ширине панели ≤640 pt список и детали сменяют друг друга;
+с dirty draft детали и Save/Cancel остаются доступны. Выбранный голос использует
+`selected/selectedInk`, его номер — accent. У всех реплик постоянный horizontal
+padding12, у Play/Pause иконки — ширина12: запуск не меняет X или ширину текста.
+Подсветка фрагмента имеет radius8; индикатор — ширина120, штрих2 внутри области3,
+`segmentProgressFill/segmentProgressTrack`, время11 pt рядом. Ручные назначения
+сохраняются до явного overwrite; preview и ошибки принадлежат существующей модели.
+Быстрая модалка у имени остаётся отдельным входом и переносит draft в выбранный голос.
 
 **Новая запись.** Sheet через `ODDialog`, meeting и mic selectors, title field,
 два meter row13 pt (meter84×18). Ошибка/неподготовленные модели остаются видимыми;

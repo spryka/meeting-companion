@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Meeting Companion — назначение имён</title>
+<style>
+/* OD-LAYOUT-PRIMITIVES v1 — structure only: display, flex/grid, overflow, wrapping, ratio, geometry.
+   Put this @layer first; product CSS outside the layer wins ordinary layout rules.
+   Native hidden and closed-dialog states take precedence over component display rules. */
+@layer od-layout {
+  [hidden]:not([hidden="until-found" i]) { display: none !important; }
+  dialog:not([open]) { display: none !important; }
+
+  :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile) > :where(*) { min-width: 0; }
+
+  /* containers */
+  .od-stack   { display: flex; flex-direction: column; gap: var(--od-gap, 8px); }
+  .od-row     { display: flex; align-items: center; gap: var(--od-gap, 8px); }
+  .od-row-top { display: flex; align-items: flex-start; gap: var(--od-gap, 8px); }
+  .od-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--od-gap, 8px); }
+  .od-fill    { flex: 1 1 0; min-width: 0; }
+  .od-fixed   { flex: none; }
+  .od-grid    { display: grid; gap: var(--od-gap, 12px); grid-template-columns: repeat(var(--od-cols, 3), minmax(0, 1fr)); }
+
+  /* stacked information: each piece is its own line — never sibling inline spans */
+  .od-stat, .od-field, .od-cell { display: grid; gap: var(--od-gap, 2px); }
+  :where(.od-stat,.od-field,.od-cell) > :where(*) { display: block; }
+  .od-tile { display: grid; grid-template-rows: auto 1fr; }
+  :where(.od-tile) > :where(*) { display: block; }
+
+  /* media keeps its intrinsic ratio by default; never a distorted or cropped
+     cover by accident. height:auto lets the ratio win over an <img height="…">
+     attribute. Cropping to a uniform box is an explicit opt-in: set --od-ratio
+     AND add .od-media-cover together (per the core rule, only where a crop is
+     deliberate — tile thumbs, decorative fills — never on full-frame content). */
+  .od-media { display: block; width: 100%; height: auto; aspect-ratio: var(--od-ratio, auto); }
+  .od-media-cover { object-fit: cover; }
+
+  /* functional inline SVG icons opt into bounded geometry; content SVGs keep their own */
+  .od-icon { display: inline-block; inline-size: var(--od-icon-size, 1em); block-size: var(--od-icon-size, 1em); flex: none; }
+
+  /* data text only — authored copy is rewritten to its budget instead */
+  .od-truncate { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .od-clamp-2, .od-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .od-clamp-2 { -webkit-line-clamp: 2; }
+  .od-clamp-3 { -webkit-line-clamp: 3; }
+  .od-lines-2 { min-height: calc(2 * 1.4em); }   /* block-level reservation for a shared baseline */
+  .od-nowrap  { white-space: nowrap; }           /* 数字+单位 · 价格+起 · 日期+星期 */
+  .od-keep    { word-break: keep-all; overflow-wrap: anywhere; } /* CJK labels break at spaces / <wbr> first */
+
+  /* screen skeleton (optional): bars take their own space, the middle scrolls — no padding guessed for chrome */
+  .od-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+  .od-scroll { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+
+  /* horizontal rail: the next item peeks at the edge; trailing room survives overflow */
+  .od-rail { display: flex; gap: var(--od-gap, 8px); overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none;
+             padding-inline: var(--od-rail-pad, 16px); scroll-padding-inline: var(--od-rail-pad, 16px); }
+  .od-rail::-webkit-scrollbar { display: none; }
+  :where(.od-rail) > :where(*) { flex: none; scroll-snap-align: start; }
+  :where(.od-rail) > :where(:last-child) { margin-inline-end: var(--od-rail-pad, 16px); }
+
+  .od-spacer { flex: none; visibility: hidden; pointer-events: none; }
+  .od-touch  { min-width: 44px; min-height: 44px; }
+}
+:root [hidden]:where(:not([hidden="until-found" i])) { display: none; }
+/* /OD-LAYOUT-PRIMITIVES v1 */
+
+:root{color-scheme:light dark;--canvas:#e5e9ee;--surface:#fff;--sidebar:#f2f4f7;--toolbar:#fafbfc;--ink:#202630;--muted:#626b79;--line:#e3e7ed;--hover:#e6ebf2;--accent:#1762cf;--accent-hover:#1055b8;--on-accent:#fff;--selected:#e0ebfc;--selected-ink:#164e9e;--green:#27704b;--green-bg:#edf6f0;--warning:#855309;--warning-bg:#fff6e5;--red:#b82d3d;--shadow:0 24px 80px #24344a1a,0 2px 8px #24344a0a;--font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s6:24px;--s8:32px;--radius:12px;--motion:180ms}
+@media(prefers-color-scheme:dark){:root{--canvas:#101319;--surface:#20242b;--sidebar:#191e25;--toolbar:#22272f;--ink:#f0f2f6;--muted:#a4adbc;--line:#353c47;--hover:#303844;--accent:#8ab9ff;--accent-hover:#a6caff;--on-accent:#15243b;--selected:#233c5c;--selected-ink:#b0d0ff;--green:#93d5b0;--green-bg:#20392d;--warning:#f0c478;--warning-bg:#3b3120;--red:#ff9aa8;--shadow:0 24px 80px #0005}}
+*{box-sizing:border-box}body{margin:0;padding:var(--s6);min-width:320px;background:var(--canvas);font:16px/1.5 var(--font);color:var(--ink);-webkit-font-smoothing:antialiased}button,input{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:default;opacity:.55}button,a,input{touch-action:manipulation}button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:3px}h1,h2,h3,p{margin:0}button{border:0}svg.od-icon{--od-icon-size:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle}.app{margin:auto;width:min(1160px,100%);height:calc(100dvh - 48px);min-height:580px;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);background:var(--surface);overflow:clip;display:flex;flex-direction:column}.topbar{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);padding:var(--s4) var(--s6);border-bottom:1px solid var(--line);background:var(--toolbar);flex:none}.brand{font-size:14px;font-weight:650;letter-spacing:-.2px}.brand small{display:block;font-size:12px;font-weight:400;color:var(--muted);letter-spacing:0}.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);min-height:40px;border-radius:8px;padding:var(--s2) var(--s4);background:var(--hover);font-size:14px;font-weight:550;text-decoration:none;white-space:nowrap}.btn.primary{background:var(--accent);color:var(--on-accent)}.btn.plain{background:transparent}.small{font-size:13px;color:var(--muted)}.review{display:flex;flex-direction:column;min-height:0;flex:1}.review-heading{padding:var(--s6) var(--s8);display:flex;align-items:center;justify-content:space-between;gap:var(--s4);border-bottom:1px solid var(--line)}h1{font-size:25px;line-height:1.25;font-weight:650;letter-spacing:-.6px}.review-heading p{margin-top:var(--s1);font-size:13px;color:var(--muted)}.progress-copy{font-size:13px;color:var(--muted);white-space:nowrap}.workspace{display:grid;grid-template-columns:248px minmax(0,1fr);flex:1;min-height:0}.voices{background:var(--sidebar);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.voices-heading{padding:var(--s4) var(--s4) var(--s2);font-size:12px;letter-spacing:.04em;color:var(--muted);text-transform:uppercase}.voice-list{padding:0 var(--s2) var(--s4);overflow-y:auto;overscroll-behavior:contain;flex:1}.voice{display:flex;gap:var(--s3);width:100%;padding:var(--s3);background:transparent;text-align:left;border-radius:10px;margin-bottom:var(--s1)}.voice[aria-current="true"]{background:var(--selected);color:var(--selected-ink)}.voice-number{display:flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;border:1px solid var(--line);border-radius:50%;font-size:12px;font-weight:600;background:var(--surface);color:var(--muted);font-variant-numeric:tabular-nums}.voice[aria-current="true"] .voice-number{border-color:var(--accent);color:var(--accent)}.voice-copy{display:grid;gap:2px;min-width:0}.voice-name{font-size:14px;font-weight:600;overflow-wrap:anywhere}.voice-meta{font-size:11px;color:var(--muted)}.voice-state{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:var(--s1)}.voice-state.assigned{color:var(--green)}.voice-state.mixed{color:var(--warning)}.voice-state .od-icon{--od-icon-size:12px}.late{display:inline-block;color:var(--muted);font-size:11px;margin-top:var(--s1)}.voice-detail{display:flex;flex-direction:column;min-height:0;min-width:0}.detail-head{padding:var(--s6) var(--s8) var(--s4);border-bottom:1px solid var(--line)}.detail-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s4)}h2{font-size:24px;line-height:1.25;font-weight:650;letter-spacing:-.4px;overflow-wrap:anywhere}.source-tag{font-size:12px;color:var(--muted);margin-top:var(--s1)}.detail-caption{margin-top:var(--s3);font-size:13px;color:var(--muted)}.list-header{display:flex;justify-content:space-between;gap:var(--s3);padding:var(--s3) var(--s8) 0;font-size:12px;color:var(--muted)}.turns{padding:var(--s2) var(--s8) var(--s4);flex:1;overflow-y:auto;overscroll-behavior:contain;min-height:160px}.utterance{padding:var(--s4) 0;border-bottom:1px solid var(--line);scroll-margin-top:var(--s3)}.utterance:last-child{border-bottom:0}.utterance.playing{background:var(--selected);border-radius:8px;padding-inline:var(--s3)}.turn-tools{display:flex;align-items:center;gap:var(--s3);margin-bottom:var(--s2);flex-wrap:wrap}.play{display:inline-flex;align-items:center;gap:var(--s2);min-height:32px;padding:var(--s1) var(--s2);margin-left:calc(-1 * var(--s2));border-radius:6px;background:transparent;color:var(--accent);font-size:12px;font-weight:550;font-variant-numeric:tabular-nums}.turn-author{font-size:12px;color:var(--muted)}.turn-link{margin-left:auto;background:transparent;color:var(--muted);font-size:12px;min-height:32px;border-radius:6px;padding:var(--s1) var(--s2)}.turn-link .od-icon{--od-icon-size:14px}.utterance p{font-size:16px;line-height:1.65;overflow-wrap:anywhere}.segment-progress{display:flex;align-items:center;gap:var(--s2);margin-top:var(--s2);font-size:11px;color:var(--muted)}progress{width:120px;height:3px;accent-color:var(--accent)}.assignment{padding:var(--s4) var(--s8);background:var(--toolbar);border-top:1px solid var(--line);flex:none}.assign-top{display:flex;justify-content:space-between;align-items:center;gap:var(--s3);margin-bottom:var(--s2)}.assign-top label{font-size:14px;font-weight:600}.suggestions{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s3)}.name-chip{font-size:12px;min-height:30px;padding:var(--s1) var(--s2);border:1px solid var(--line);border-radius:6px;background:var(--surface)}.name-chip[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:var(--selected)}.name-field{display:block;width:100%;min-height:40px;border:1px solid var(--line);border-radius:8px;padding:var(--s2) var(--s3);background:var(--surface);font-size:15px}.overwrite{display:flex;align-items:flex-start;gap:var(--s2);font-size:12px;color:var(--muted);margin-top:var(--s2)}.overwrite input{accent-color:var(--accent);width:16px;height:16px;flex:none;margin-top:2px}.preview{margin-top:var(--s2);font-size:12px;color:var(--muted);min-height:18px}.error{color:var(--red);font-size:12px;margin-top:var(--s2)}.assign-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);margin-top:var(--s3)}.review-footer{display:flex;justify-content:space-between;gap:var(--s4);padding:var(--s2) var(--s6);border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.mobile-back{display:none}.transcript-screen{display:flex;flex:1;min-height:0;flex-direction:column}.transcript-head{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s6);padding:var(--s8) var(--s8) var(--s4);border-bottom:1px solid var(--line)}.transcript-head h1{font-size:28px}.transcript-head p{margin-top:var(--s2);color:var(--muted);font-size:13px}.transcript-body{overflow-y:auto;flex:1;padding:var(--s4) max(32px,calc((100% - 760px) / 2)) var(--s8);scroll-behavior:auto}.full-turn{padding:var(--s4) var(--s3);border-radius:8px;scroll-margin-top:var(--s4)}.full-turn.highlight{background:var(--selected)}.full-turn-head{display:flex;gap:var(--s3);align-items:center;margin-bottom:var(--s2);font-size:13px}.full-turn-head time{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}.full-turn p{line-height:1.75}.entry{background:var(--selected);border:1px solid var(--line);color:var(--accent)}.completion{margin:auto;padding:var(--s8);width:min(620px,100%)}.completion h2{font-size:28px}.completion p{margin-top:var(--s4);color:var(--muted)}.completion .btn{margin-top:var(--s6)}.sr-only{position:absolute;inline-size:1px;block-size:1px;padding:0;margin:-1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+@media(hover:hover){.btn:not(.primary):hover,.voice:not([aria-current="true"]):hover,.play:hover,.turn-link:hover{background:var(--hover)}.btn.primary:hover{background:var(--accent-hover);color:var(--on-accent)}.name-chip:hover{border-color:var(--accent)}}
+@media(max-width:1023px){.assign-actions{flex-direction:column-reverse;align-items:stretch}.assign-actions .btn{width:100%;font-size:13px}.workspace{grid-template-columns:216px minmax(0,1fr)}.review-heading,.detail-head,.assignment{padding-inline:var(--s6)}.turns,.list-header{padding-inline:var(--s6)}.suggestions{gap:var(--s1)}.name-chip{font-size:11px}}
+@media(max-width:767px){body{padding:0}.app{height:100dvh;min-height:0;border:0;border-radius:0}.topbar{padding:var(--s3) var(--s4)}.brand small{display:none}.topbar .btn{font-size:12px;padding:var(--s2)}.review-heading{padding:var(--s4);align-items:flex-start;gap:var(--s2)}h1{font-size:21px}.review-heading p{font-size:12px}.progress-copy{font-size:11px}.workspace{display:flex}.voices{width:100%;border:0}.voice-detail{width:100%}.review[data-pane="detail"] .voices{display:none}.review[data-pane="list"] .voice-detail{display:none}.mobile-back{display:flex;margin-bottom:var(--s3);font-size:12px;color:var(--accent);background:transparent;padding:var(--s1) 0;gap:var(--s1);align-items:center}.detail-head{padding:var(--s3) var(--s4)}.detail-caption{font-size:12px;margin-top:var(--s2)}.turns,.list-header{padding-inline:var(--s4)}.assignment{padding:var(--s3) var(--s4)}.suggestions{flex-wrap:nowrap;overflow-x:auto;padding-bottom:var(--s1)}.name-chip{white-space:nowrap;flex:none;font-size:12px;min-height:36px}.assign-top .small{display:none}.assign-actions .btn{min-height:44px;font-size:13px}.review-footer{padding-inline:var(--s4)}.review-footer span:last-child{display:none}.transcript-head{padding:var(--s6) var(--s4);gap:var(--s3);flex-wrap:wrap}.transcript-body{padding:var(--s4)}.voice{padding:var(--s4);min-height:88px}.name-field{min-height:44px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* Full application context; the speaker workflow occupies only the document pane. */
+body{padding:12px;background:#13171d}.app{width:100%;max-width:1800px;height:calc(100dvh - 24px);min-height:580px;display:grid;grid-template-columns:294px minmax(0,1fr);border-radius:18px}.library{display:flex;flex-direction:column;min-height:0;background:var(--sidebar);border-right:1px solid var(--line)}.library-brand{display:flex;align-items:center;gap:16px;padding:22px 22px 28px}.traffic{display:flex;gap:7px}.traffic i{width:12px;height:12px;border-radius:50%;background:#ff6058}.traffic i:nth-child(2){background:#ffbd2e}.traffic i:nth-child(3){background:#28c840}.library-brand strong{font-size:17px;line-height:1.15;letter-spacing:-.5px}.library-heading{display:flex;align-items:center;gap:10px;padding:0 20px 16px}.library-heading h2{font-size:26px;flex:1}.count{border-radius:6px;padding:0 7px;background:var(--hover);color:var(--muted);font-size:14px}.icon-btn{display:inline-flex;align-items:center;justify-content:center;background:transparent;border-radius:8px;padding:8px;color:var(--muted);min-width:36px;min-height:36px}.icon-btn:hover{background:var(--hover)}.search-wrap{margin:0 16px 20px;display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--muted)}.search-wrap input{width:100%;min-width:0;background:none;border:0;outline:none;font-size:13px}.recordings{overflow:auto;min-height:0;flex:1;padding:0 12px 20px}.day{font-size:12px;font-weight:600;color:var(--muted);padding:14px 12px 8px}.recording{width:100%;text-align:left;padding:16px 12px;margin-bottom:5px;border-radius:10px;background:transparent;display:block}.recording[aria-current="true"]{background:var(--selected);border:1px solid var(--line);color:var(--selected-ink)}.recording strong{font-size:14px;display:block;margin-bottom:7px}.recording .record-meta{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}.recording small{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:7px}.library-bottom{padding:16px 20px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;color:var(--muted);font-size:11px}.library-bottom>span{flex:1}.main-pane{display:flex;flex-direction:column;min-width:0;min-height:0}.topbar{min-height:66px;padding:12px 24px}.topbar .brand{color:var(--muted);font-size:14px}.toolbar-actions{display:flex;align-items:center;gap:12px}.toolbar-divider{width:1px;height:24px;background:var(--line)}.toolbar-actions .primary{background:#53729a;color:#eef4ff}.transcript-body{padding:0 48px 32px}.document-intro{padding:38px 0 28px;border-bottom:1px solid var(--line);margin-bottom:25px}.ready{display:flex;align-items:center;gap:8px;color:var(--green);font-size:13px;font-weight:600;margin-bottom:22px}.document-intro h1{font-size:32px;letter-spacing:-.8px;margin-bottom:22px}.metadata{display:flex;align-items:center;gap:20px;flex-wrap:wrap;color:var(--muted);font-size:13px}.metadata>span,.speaker-entry{display:inline-flex;align-items:center;gap:7px}.speaker-entry{background:transparent;padding:4px 8px;margin:-4px -8px;border-radius:6px;color:var(--accent);font-size:13px}.speaker-entry:hover{background:var(--selected)}.invited{font-size:13px;line-height:1.6;margin-top:6px;color:var(--muted);overflow-wrap:anywhere}.transcript-section-title{font-size:17px;margin-bottom:16px}.transcript-help{font-size:13px;color:var(--muted);margin-bottom:20px}.full-turn{padding:16px 0 22px}.full-turn-head{gap:14px;font-size:14px}.full-turn-head time{width:48px;flex:none}.speaker-label{background:transparent;border:1px solid var(--line);border-radius:8px;padding:4px 9px;font-size:13px;font-weight:600}.edit-turn{margin-left:auto;background:transparent;font-size:12px;color:var(--muted);padding:6px}.full-turn p{padding-left:62px;font-size:16px;line-height:1.65}.full-turn p[contenteditable="true"]{outline:2px solid var(--accent);border-radius:6px;padding:10px;margin-left:62px}.audio-dock{flex:none;border-top:1px solid var(--line);background:var(--toolbar);padding:18px 26px 12px}.audio-row{display:flex;align-items:center;gap:18px}.audio-play{width:46px;height:46px;border:1px solid var(--line);border-radius:50%;flex:none;background:transparent;display:grid;place-items:center}.waveform{height:40px;display:flex;align-items:center;gap:3px;flex:1;min-width:0;overflow:hidden}.waveform span{width:3px;flex:1;min-width:2px;max-width:4px;border-radius:3px;background:var(--muted);opacity:.35}.waveform span:first-child{background:var(--accent);opacity:1}.audio-time{white-space:nowrap;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.speed{background:transparent;border:1px solid var(--line);border-radius:8px;padding:6px;color:var(--ink);font:inherit;font-size:12px}.audio-sub{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:10px;font-size:11px;color:var(--muted)}.follow{background:transparent;color:var(--accent);font-size:12px}.review-heading{padding:24px}.workspace{grid-template-columns:212px minmax(0,1fr)}.detail-head,.assignment{padding-inline:24px}.turns,.list-header{padding-inline:24px}.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--surface);border-radius:10px;padding:12px 18px;font-size:13px;box-shadow:var(--shadow);z-index:10}
+@media(max-width:1100px){.app{grid-template-columns:246px minmax(0,1fr)}.library-brand{padding-inline:16px;gap:12px}.transcript-body{padding-inline:28px}.workspace{grid-template-columns:180px minmax(0,1fr)}.review-heading{padding:20px}.toolbar-actions{gap:6px}.topbar{padding-inline:20px}.detail-head,.assignment,.turns,.list-header{padding-inline:18px}}
+@media(max-width:767px){body{padding:0}.app{height:100dvh;min-height:0;grid-template-columns:minmax(0,1fr);border-radius:0}.library{display:none}.topbar{padding:10px 14px;min-height:58px}.toolbar-actions{gap:4px}.toolbar-actions .btn{font-size:12px;padding:8px}.toolbar-divider{display:none}.transcript-body{padding:0 20px 24px}.document-intro{padding-top:26px}.document-intro h1{font-size:26px}.metadata{gap:12px;font-size:12px}.audio-dock{padding:12px 16px}.audio-row{gap:10px}.audio-time{font-size:11px}.audio-play{width:38px;height:38px}.full-turn p{padding-left:0}.full-turn-head time{width:auto}.full-turn p[contenteditable="true"]{margin-left:0}.review-heading{padding:16px}.workspace{display:flex}.voices,.voice-detail{width:100%}.toolbar-actions .icon-btn{min-width:30px;padding:5px}}
+
+
+/* Size the workflow to its pane, including when the library is visible. */
+.app{min-height:0}.main-pane{container-type:inline-size}.topbar>.brand{min-width:0}.toolbar-actions{min-width:0}.review-heading>div{min-width:0}.review-heading h1{overflow-wrap:anywhere}.full-turn-head{flex-wrap:wrap}.speaker-label{max-width:100%;overflow-wrap:anywhere;text-align:left}.toast{max-width:calc(100vw - 32px);overflow-wrap:anywhere}
+@container(max-width:760px){
+ .topbar{gap:12px;padding:12px 16px;flex-wrap:wrap}.topbar>.brand{flex:1;font-size:13px}.toolbar-actions{gap:4px;flex-shrink:0}.toolbar-actions .btn{font-size:12px;min-height:40px;padding:8px 10px}.toolbar-divider{display:none}
+ .app[data-screen="review"] .toolbar-actions>:not(#toggleView){display:none}.app[data-screen="review"] .toolbar-actions{flex-shrink:1}.app[data-screen="review"] #toggleView{white-space:normal;text-align:right}.app[data-screen="review"] .topbar>.brand{flex-basis:100px}
+ .review-heading{align-items:flex-start;flex-wrap:wrap;gap:8px;padding:18px 16px}.review-heading h1{font-size:23px}.progress-copy{font-size:12px}.review-heading p{font-size:12px}
+ .assign-actions{flex-direction:column-reverse;align-items:stretch}.assign-actions .btn{width:100%;white-space:normal;font-size:13px;min-height:44px}.detail-head,.assignment,.turns,.list-header{padding-inline:16px}.transcript-body{padding-inline:20px}.audio-sub{flex-wrap:wrap}
+}
+@container(max-width:640px){
+ .workspace{display:flex}.voices{width:100%;border-right:0}.voice-detail{width:100%;overflow-y:auto}.review[data-pane="detail"] .voices{display:none}.review[data-pane="list"] .voice-detail{display:none}.mobile-back{display:flex;margin-bottom:12px;padding:6px 0;background:transparent;color:var(--accent);font-size:13px;min-height:36px;align-items:center}.detail-head{flex:none;padding-block:16px}.detail-caption{font-size:12px}.turns{min-height:120px;flex:1 0 120px}.assignment{flex:none}.list-header{flex:none}.review-footer{padding-inline:16px}.review-footer span:last-child{display:none}.suggestions{flex-wrap:wrap}.name-field{font-size:16px;min-height:44px}.voice{min-height:80px}
+}
+@container(max-width:420px){
+ .toolbar-actions .primary{font-size:0;gap:0;width:40px;padding:8px}.toolbar-actions .primary svg{width:20px;height:20px}.toolbar-actions .icon-btn{width:36px;min-width:36px}.topbar>.brand{font-size:12px}.document-intro h1{font-size:26px}.audio-row{gap:8px}.audio-time{font-size:10px}.waveform{gap:2px}.audio-sub{font-size:10px}.review-footer{font-size:10px}.detail-heading h2{font-size:21px}
+}
+
+
+.speaker-dialog{width:min(500px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow);overflow:auto}.speaker-dialog::backdrop{background:#10172266}.speaker-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:20px 24px;border-bottom:1px solid var(--line)}.speaker-dialog h2{font-size:21px}.speaker-dialog-body{padding:20px 24px;display:grid;gap:16px}.speaker-dialog-context{font-size:13px;color:var(--muted)}.speaker-dialog-quote{border-left:2px solid var(--line);padding-left:12px;font-size:14px;line-height:1.6;max-height:112px;overflow:auto}.speaker-dialog label{font-size:13px}.speaker-dialog .name-field{width:100%;margin-top:6px}.local-scope{border:1px solid var(--line);border-radius:10px;margin:0;padding:12px 14px;display:grid;gap:12px}.local-scope legend{font-size:12px;color:var(--muted);padding:0 5px}.local-scope label{display:flex;gap:9px;align-items:flex-start}.local-scope input{flex:none;margin-top:4px;accent-color:var(--accent)}.local-scope span{min-width:0}.local-dialog-actions{display:flex;justify-content:flex-end;gap:8px;padding:16px 24px;border-top:1px solid var(--line)}.speaker-dialog .group-link{background:transparent;color:var(--accent);text-align:left;padding:8px 0;font-size:13px;min-height:44px}.speaker-dialog .suggestions{margin:0;flex-wrap:wrap}.speaker-dialog .name-chip{white-space:normal;text-align:left}.speaker-dialog .preview{margin:0}.speaker-label:focus-visible{outline-offset:3px}@media(max-width:480px){.speaker-dialog header,.speaker-dialog-body,.local-dialog-actions{padding:16px}.speaker-dialog .name-field{font-size:16px}.local-dialog-actions .btn{min-height:44px}.local-scope label{min-height:36px}}
+
+</style>
+</head>
+<body>
+<main class="app" data-screen="transcript" aria-label="Meeting Companion">
+<aside class="library" aria-label="Библиотека записей">
+ <div class="library-brand"><span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span><strong>Meeting<br>Companion</strong></div>
+ <div class="library-heading"><h2>Записи</h2><span class="count">23</span><button class="icon-btn" data-demo="Список записей актуален · демоданные" aria-label="Обновить список"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 1-3-5M16 2l2 4-4 2"/></svg></button></div>
+ <label class="search-wrap"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input id="librarySearch" type="search" placeholder="Поиск по встречам и тексту" aria-label="Поиск по записям"></label>
+ <nav class="recordings" aria-label="Записи встреч">
+ <p class="day">17 ноября</p>
+ <button class="recording" data-demo="В макете открыт сценарий «Обсуждение продукта»"><strong>B2C + ADV | Arch review</strong><span class="record-meta"><span>14:00</span><span>41:02</span></span><small>△ Готово · есть замечание</small></button>
+ <button class="recording" id="currentRecording" aria-current="true"><strong>Обсуждение продукта</strong><span class="record-meta"><span>11:32</span><span>1:24:36</span></span><small><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg> Транскрипт готов</small></button>
+ <p class="day">16 ноября</p>
+ <button class="recording" data-demo="В макете открыт сценарий «Обсуждение продукта»"><strong>Агент B2C</strong><span class="record-meta"><span>12:32</span><span>35:06</span></span><small><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg> Транскрипт готов</small></button>
+ <button class="recording" data-demo="В макете открыт сценарий «Обсуждение продукта»"><strong>CX (CC) Standup</strong><span class="record-meta"><span>11:30</span><span>34:17</span></span><small><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg> Транскрипт готов</small></button>
+ <button class="recording" data-demo="В макете открыт сценарий «Обсуждение продукта»"><strong>CX (CC): ревью кода</strong><span class="record-meta"><span>11:26</span><span>04:10</span></span><small><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg> Транскрипт готов</small></button>
+ </nav>
+ <footer class="library-bottom"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6Z"/><path d="m8 12 3 3 5-6"/></svg><span>Локальная обработка<br>Данные остаются на Mac</span><button class="icon-btn" data-demo="Настройки приложения · в этом макете без изменений" aria-label="Настройки"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="m10 2 4 0 1 3 3 1 3 3-1 3 1 3-3 3-3 1-1 3h-4l-1-3-3-1-3-3 1-3-1-3 3-3 3-1Z"/></svg></button></footer>
+ </aside>
+ <div class="main-pane">
+<header class="topbar"><div class="brand" id="paneLabel">Транскрипт</div><div class="toolbar-actions"><button class="btn plain" type="button" id="toggleView" hidden>К транскрипту ↗</button><button class="icon-btn" data-demo="Экспорт транскрипта · демонстрационный экран" aria-label="Экспорт"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 14v7h14v-7M12 16V3m-5 5 5-5 5 5"/></svg></button><button class="icon-btn" data-demo="Действия с записью · демонстрационный экран" aria-label="Другие действия"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button><span class="toolbar-divider"></span><button class="btn primary" aria-label="Новая запись" data-demo="Новая запись запускается в приложении"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg> Новая запись</button></div></header>
+ <section id="review" class="review" data-pane="detail" hidden aria-label="Назначение имён говорящим">
+  <header class="review-heading"><div><h1>Назначить имена</h1><p>Прослушайте голос и укажите, кому он принадлежит</p></div><span class="progress-copy" id="progressCount"></span></header>
+  <div class="workspace" id="reviewWorkspace">
+   <aside class="voices" aria-label="Распознанные голоса"><div class="voices-heading">Говорящие · 7</div><nav class="voice-list" id="voiceList" aria-label="Выбрать голос"></nav></aside>
+   <section class="voice-detail" aria-labelledby="voiceHeading">
+    <header class="detail-head"><button class="mobile-back" type="button" data-action="show-voices">‹ Все говорящие</button><div class="detail-heading"><div><h2 id="voiceHeading" tabindex="-1"></h2><p class="source-tag" id="voiceSource"></p></div><span class="small" id="voiceStep"></span></div><p class="detail-caption" id="voiceCaption"></p></header>
+    <div class="list-header"><span id="turnCount"></span><span>Демо · без звука</span></div>
+    <div class="turns" id="turns" aria-label="Все реплики выбранного голоса"></div>
+    <section class="assignment" aria-label="Назначить имя выбранному голосу">
+     <div class="assign-top"><label for="speakerName">Кто это?</label><span class="small">Подсказки из календаря</span></div>
+     <div class="suggestions" id="suggestions" aria-label="Имена участников встречи"></div>
+     <input class="name-field" id="speakerName" maxlength="120" autocomplete="off" placeholder="Выберите имя или введите своё" aria-describedby="assignmentPreview nameError">
+     <label class="overwrite" id="overwriteRow" hidden><input type="checkbox" id="overwrite"><span id="overwriteLabel"></span></label>
+     <p class="preview" id="assignmentPreview" aria-live="polite"></p><p id="nameError" class="error" hidden></p>
+     <div class="assign-actions"><button class="btn plain" type="button" id="skipVoice">Пропустить</button><button class="btn primary" type="button" id="assignVoice">Назначить и перейти к следующему <span aria-hidden="true">→</span></button></div>
+    </section>
+   </section>
+  </div>
+  <section class="completion" id="completion" hidden><p class="small">Все голоса просмотрены</p><h2 tabindex="-1" id="completionHeading">Разбор завершён</h2><p id="completionCopy"></p><button class="btn primary" type="button" data-action="transcript">Вернуться к транскрипту</button><button class="btn plain" type="button" data-action="review-again">Посмотреть список</button></section>
+  <footer class="review-footer"><span>Демоданные · имена сохраняются до перезагрузки</span><span>Календарь предлагает имена; голос выбираете вы</span></footer>
+ </section>
+ <section class="transcript-screen" id="transcriptScreen" aria-label="Транскрипт встречи">
+  <div class="transcript-body" id="fullTranscript"></div>
+  <footer class="audio-dock"><div class="audio-row"><button class="audio-play" id="dockPlay" type="button" aria-label="Воспроизвести демонстрацию"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg></button><div class="waveform" aria-hidden="true"><span style="height:10px"></span><span style="height:30px"></span><span style="height:27px"></span><span style="height:30px"></span><span style="height:10px"></span><span style="height:25px"></span><span style="height:17px"></span><span style="height:15px"></span><span style="height:19px"></span><span style="height:29px"></span><span style="height:16px"></span><span style="height:38px"></span><span style="height:37px"></span><span style="height:13px"></span><span style="height:24px"></span><span style="height:12px"></span><span style="height:35px"></span><span style="height:35px"></span><span style="height:12px"></span><span style="height:24px"></span><span style="height:13px"></span><span style="height:37px"></span><span style="height:38px"></span><span style="height:16px"></span><span style="height:29px"></span><span style="height:19px"></span><span style="height:15px"></span><span style="height:17px"></span><span style="height:25px"></span><span style="height:10px"></span><span style="height:30px"></span><span style="height:27px"></span><span style="height:30px"></span><span style="height:10px"></span><span style="height:25px"></span><span style="height:17px"></span><span style="height:15px"></span><span style="height:19px"></span><span style="height:29px"></span><span style="height:16px"></span><span style="height:38px"></span><span style="height:37px"></span><span style="height:13px"></span><span style="height:24px"></span><span style="height:12px"></span><span style="height:35px"></span><span style="height:35px"></span><span style="height:12px"></span><span style="height:24px"></span><span style="height:13px"></span><span style="height:37px"></span><span style="height:38px"></span><span style="height:16px"></span><span style="height:29px"></span><span style="height:19px"></span><span style="height:15px"></span><span style="height:17px"></span><span style="height:25px"></span><span style="height:10px"></span><span style="height:30px"></span><span style="height:27px"></span><span style="height:30px"></span><span style="height:10px"></span><span style="height:25px"></span><span style="height:17px"></span><span style="height:15px"></span><span style="height:19px"></span><span style="height:29px"></span><span style="height:16px"></span><span style="height:38px"></span><span style="height:37px"></span><span style="height:13px"></span><span style="height:24px"></span><span style="height:12px"></span><span style="height:35px"></span><span style="height:35px"></span><span style="height:12px"></span><span style="height:24px"></span><span style="height:13px"></span><span style="height:37px"></span><span style="height:38px"></span><span style="height:16px"></span><span style="height:29px"></span><span style="height:19px"></span><span style="height:15px"></span><span style="height:17px"></span><span style="height:25px"></span><span style="height:10px"></span><span style="height:30px"></span><span style="height:27px"></span><span style="height:30px"></span><span style="height:10px"></span><span style="height:25px"></span><span style="height:17px"></span><span style="height:15px"></span><span style="height:19px"></span><span style="height:29px"></span><span style="height:16px"></span><span style="height:38px"></span><span style="height:37px"></span><span style="height:13px"></span><span style="height:24px"></span><span style="height:12px"></span><span style="height:35px"></span><span style="height:35px"></span><span style="height:12px"></span><span style="height:24px"></span><span style="height:13px"></span><span style="height:37px"></span><span style="height:38px"></span><span style="height:16px"></span><span style="height:29px"></span></div><span class="audio-time">00:00 / 1:24:36</span><select class="speed" aria-label="Скорость воспроизведения"><option>1×</option><option>1,25×</option><option>1,5×</option><option>2×</option></select></div><div class="audio-sub"><span>Демоданные · аудио не подключено</span><button class="follow" id="followText" aria-pressed="false">Следовать за текстом</button></div></footer>
+ </section>
+ </div>
+<template id="transcriptIntro"><header class="document-intro"><div class="ready"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg> Транскрипт готов</div><h1>Обсуждение продукта</h1><div class="metadata"><span><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v5M17 3v5M3 11h18"/></svg>17 ноября 2026 · 11:32</span><span><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>1:24:36</span><button class="speaker-entry" type="button" id="openReview" aria-label="Проверить и назначить имена говорящих"><svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5"/></svg>7 говорящих <span aria-hidden="true">›</span></button></div><p class="invited">Приглашены: Булат Файзулин, Анна Смирнова, Дмитрий Волков, Мария Орлова, Алексей Морозов</p></header><h2 class="transcript-section-title">Транскрипт</h2><p class="transcript-help">Нажми на имя, чтобы сменить спикера, или «Редактировать», чтобы исправить текст.</p></template>
+</main><div id="demoToast" class="toast" role="status" hidden></div><div class="sr-only" id="announcer" role="status" aria-live="polite"></div>
+
+<dialog id="localSpeakerDialog" class="speaker-dialog" aria-labelledby="localSpeakerTitle">
+ <header><h2 id="localSpeakerTitle">Сменить спикера</h2><button class="icon-btn" type="button" id="closeLocalSpeaker" aria-label="Закрыть">✕</button></header>
+ <form id="localSpeakerForm">
+ <div class="speaker-dialog-body">
+  <p class="speaker-dialog-context" id="localSpeakerContext"></p>
+  <p class="speaker-dialog-quote" id="localSpeakerQuote"></p>
+  <div><p class="small">Подсказки из календаря</p><div class="suggestions" id="localSuggestions" aria-label="Свободные имена из календаря"></div></div>
+  <label for="localSpeakerName">Имя спикера<input class="name-field" id="localSpeakerName" maxlength="120" autocomplete="off" placeholder="Выберите имя или введите своё" aria-describedby="localSpeakerPreview localSpeakerError" required></label>
+  <fieldset class="local-scope"><legend>Какие реплики изменить?</legend><label><input type="radio" name="localScope" value="one" checked><span>Только эта реплика</span></label><label><input type="radio" name="localScope" value="remaining"><span>Реплики этого голоса отсюда до конца</span></label></fieldset>
+  <p class="preview" id="localSpeakerPreview" aria-live="polite"></p><p class="error" id="localSpeakerError" hidden>Введите имя без пустых строк и служебных символов.</p>
+  <button class="group-link" id="openLocalGroup" type="button">Прослушать все реплики этого голоса →</button>
+  <p class="small">Демоданные · изменения действуют до перезагрузки</p>
+ </div>
+ <footer class="local-dialog-actions"><button class="btn plain" type="button" id="cancelLocalSpeaker">Отменить</button><button class="btn primary" id="saveLocalSpeaker" type="submit">Подтвердить замену</button></footer>
+ </form>
+</dialog>
+
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const glyph=(name)=>{const paths={play:'<path d="m9 5 10 7-10 7Z"/>',pause:'<path d="M9 5v14M16 5v14"/>',check:'<path d="m5 12 4 4L19 6"/>',link:'<path d="M7 17 17 7M7 7h10v10"/>'};return '<svg class="od-icon" viewBox="0 0 24 24" aria-hidden="true">'+paths[name]+'</svg>';};
+const calendar=['Анна Смирнова','Дмитрий Волков','Мария Орлова','Алексей Морозов'];
+const sampleTexts=[
+ ['Давайте сначала сверим, какое поведение мы хотим получить на первом экране. Пользователь должен сразу понимать, где находится результат встречи.','Для длинных созвонов важнее быстро найти нужное место. Отдельный список голосов как раз убирает лишнюю прокрутку.','Договорились: записываем это как отдельное изменение и сохраняем существующую логику обработки.'],
+ ['Я бы начал с библиотеки. Человек открывает запись и видит текст, время и основные действия в одном месте.','Да, но здесь ещё важно различать запись звука и просмотр результата. Это два независимых сценария.','Если в конце встречи появился новый человек, его голос должен быть доступен в списке сразу.','Давайте оставим простое действие: прослушать несколько реплик, выбрать имя и перейти дальше.','Календарь можно использовать как подсказку. Но ручное имя всё равно нужно оставить.','И не нужно заставлять человека проходить всех сразу. Он должен спокойно вернуться к тексту.'],
+ ['По обратной связи видно, что люди чаще всего читают транскрипт после встречи, а не во время обработки.','Названия действий должны оставаться одинаковыми везде, где мы их показываем.','Я добавлю эти замечания в описание сценария.'],
+ ['Нужно предусмотреть случай, когда один и тот же участник определяется как несколько голосов.','Пусть каждому такому голосу можно назначить одно имя. Автоматически объединять записи не обязательно.','Тогда список должен показывать исходный Speaker и источник, чтобы мы их не путали.','Хорошо, эту часть можно проверить на одной длинной встрече с несколькими участниками.'],
+ ['Здесь я бы сохранил уже назначенные вручную имена. Иначе легко перезаписать исправленную реплику.','Можно показать точное количество изменений перед кнопкой подтверждения.','Если в группе оказались разные люди, останется возможность вернуться к конкретной реплике.','Так и сделаем: существующие правки меняются только после явного подтверждения.'],
+ ['Добавлю ещё одно наблюдение: короткую реплику бывает трудно опознать только по тексту.','Нужно дать прослушать фрагмент прямо здесь, без перехода на другую страницу.','При этом проигрывать следующий фрагмент автоматически не стоит. Пусть пользователь выбирает сам.'],
+ ['Коллеги, я только подключился. Можно коротко уточнить, где мы остановились по назначению имён?','Понял, спасибо. Тогда для моего голоса достаточно выбрать имя один раз, даже если я появился в самом конце.','С моей стороны вопросов больше нет. Решение выглядит понятным.']
+];
+const definitions=[
+ {id:'host:1',label:'Speaker 1',source:'Микрофон',base:42,count:6,name:'Булат',reviewed:true},
+ {id:'remote:1',label:'Speaker 2',source:'Системный звук',base:114,count:18},
+ {id:'remote:2',label:'Speaker 3',source:'Системный звук',base:225,count:6,name:'Мария Орлова',reviewed:true},
+ {id:'remote:3',label:'Speaker 4',source:'Системный звук',base:486,count:8},
+ {id:'remote:4',label:'Speaker 5',source:'Системный звук',base:925,count:8},
+ {id:'host:2',label:'Speaker 6',source:'Микрофон',base:2460,count:6},
+ {id:'remote:5',label:'Speaker 7',source:'Системный звук',base:4324,count:3,late:true}
+];
+const voices=definitions.map((v,i)=>({...v,draft:v.name||'',skipped:false,turns:Array.from({length:v.count},(_,j)=>({id:'turn-'+i+'-'+j,start:v.base+j*(i===6?141:116),duration:6+j%5,text:sampleTexts[i][j%sampleTexts[i].length],manual:v.name||(i===4&&j===1?'Алексей Морозов':null)}))}));
+let selectedID=voices[1].id,overwrite=false,screen='transcript',playing=null,highlightID=null,complete=false,transcriptScrollTop=0;
+const clock=seconds=>{const n=Math.max(0,Math.floor(seconds));return n>=3600?Math.floor(n/3600)+':'+String(Math.floor(n/60)%60).padStart(2,'0')+':'+String(n%60).padStart(2,'0'):String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');};
+const current=()=>voices.find(v=>v.id===selectedID);
+const uniqueNames=v=>[...new Set(v.turns.map(t=>t.manual).filter(Boolean))];
+const allNamed=v=>v.turns.every(t=>t.manual);
+const labelFor=v=>allNamed(v)&&uniqueNames(v).length===1?uniqueNames(v)[0]:v.label;
+const stateFor=v=>v.skipped?'Пропущен':v.reviewed?(uniqueNames(v).length>1?'Разные имена':'Имя назначено'):'Не назначен';
+function say(message){$('announcer').textContent=message;}
+function makeButton(className,text,action){const b=document.createElement('button');b.type='button';b.className=className;b.textContent=text;if(action)b.dataset.action=action;return b;}
+function makeText(tag,className,text){const n=document.createElement(tag);n.className=className;n.textContent=text;return n;}
+function renderVoiceList(){
+ $('voiceList').replaceChildren();
+ voices.forEach((v,i)=>{
+  const b=makeButton('voice','');b.dataset.voice=v.id;b.setAttribute('aria-current',String(v.id===selectedID));
+  const num=makeText('span','voice-number',String(i+1).padStart(2,'0'));
+  const copy=makeText('span','voice-copy','');copy.append(makeText('span','voice-name',labelFor(v)),makeText('span','voice-meta',v.source+' · '+v.turns.length+' реплик'));
+  const state=makeText('span','voice-state'+(v.reviewed&&!v.skipped?(uniqueNames(v).length>1?' mixed':' assigned'):''),'');
+  if(v.reviewed&&!v.skipped)state.innerHTML=glyph('check');state.append(document.createTextNode(stateFor(v)));copy.append(state);
+  if(v.late)copy.append(makeText('span','late','Первый раз в '+clock(v.turns[0].start)));
+  b.append(num,copy);$('voiceList').append(b);
+ });
+ const done=voices.filter(v=>v.reviewed||v.skipped).length;
+ $('progressCount').textContent='Разобрано '+done+' из '+voices.length;
+}
+function stopPlayback(){
+ if(playing){const row=document.getElementById('sample-'+playing.id);if(row){row.classList.remove('playing');const b=row.querySelector('[data-play]');if(b){b.innerHTML=glyph('play')+'<span>'+clock(playing.start)+'</span>';b.setAttribute('aria-label','Прослушать фрагмент с '+clock(playing.start));}const p=row.querySelector('.segment-progress');if(p)p.hidden=true;}}
+ playing=null;
+}
+function renderTurns(){
+ const v=current();$('turns').replaceChildren();
+ v.turns.forEach(t=>{
+  const row=document.createElement('article');row.className='utterance';row.id='sample-'+t.id;
+  const tools=makeText('div','turn-tools','');const play=makeButton('play','');play.dataset.play=t.id;play.innerHTML=glyph('play')+'<span>'+clock(t.start)+'</span>';play.setAttribute('aria-label','Прослушать фрагмент с '+clock(t.start));
+  const author=makeText('span','turn-author',t.manual||v.label);const link=makeButton('turn-link','В транскрипте');link.dataset.goto=t.id;
+  tools.append(play,author,link);row.append(tools,makeText('p','',t.text));
+  const progress=makeText('div','segment-progress','');progress.hidden=true;const bar=document.createElement('progress');bar.max=t.duration;bar.value=0;bar.setAttribute('aria-label','Демонстрация прослушивания');progress.append(bar,makeText('span','play-time','Демо · 0:00 / '+clock(t.duration)));row.append(progress);$('turns').append(row);
+ });
+ $('turns').scrollTop=0;
+}
+function updateAssignment(){
+ const v=current(),name=$('speakerName').value.trim();v.draft=$('speakerName').value;
+ const prior=v.turns.filter(t=>t.manual).length;
+ const eligible=v.turns.filter(t=>!t.manual||overwrite);
+ const changed=name?eligible.filter(t=>(t.manual||v.label)!==name).length:eligible.length;
+ $('overwriteRow').hidden=prior===0;
+ $('overwriteLabel').textContent='Заменить ранее назначенные имена ('+prior+')';
+ $('assignmentPreview').textContent=(name?'Изменится '+changed+' из '+v.turns.length+' реплик.':'Выбрана группа: '+v.turns.length+' реплик.')+(prior&&!overwrite?' Ранее назначенные имена сохранятся.':'')+(prior&&overwrite?' Ручные назначения будут заменены.':'');
+ $('assignVoice').textContent=prior&&overwrite?'Заменить и перейти к следующему →':'Назначить и перейти к следующему →';
+ $('skipVoice').textContent=v.reviewed&&!v.skipped?'Следующий':'Пропустить';
+ for(const chip of $('suggestions').children)chip.setAttribute('aria-pressed',String(chip.dataset.name===name));
+}
+function renderDetail(focus=false){
+ stopPlayback();const v=current();
+ $('voiceHeading').textContent=labelFor(v);$('voiceSource').textContent=v.label+' · '+v.source;
+ $('voiceStep').textContent=(voices.indexOf(v)+1)+' / '+voices.length;
+ $('voiceCaption').textContent=v.late?'Этот голос впервые появился в '+clock(v.turns[0].start)+'. Все его реплики уже собраны здесь.':'Все реплики этого голоса за встречу — от первой до последней.';
+ $('turnCount').textContent=v.turns.length+' реплик · по времени встречи';
+ const availableNames=availableCalendarNames();
+ $('suggestions').replaceChildren(...availableNames.map(name=>{const chip=makeButton('name-chip',name);chip.dataset.name=name;chip.setAttribute('aria-pressed','false');return chip;}));
+ if(!availableNames.length)$('suggestions').append(makeText('p','small','Имена из календаря уже назначены. Введите имя вручную.'));
+ $('speakerName').placeholder=availableNames.length?'Выберите имя или введите своё':'Введите имя';
+ $('speakerName').value=v.draft;overwrite=false;$('overwrite').checked=false;$('nameError').hidden=true;
+ renderTurns();updateAssignment();renderVoiceList();
+ if(focus)$('voiceHeading').focus({preventScroll:true});
+}
+function showReview(){
+ document.querySelector('.app').dataset.screen='review';
+ if(screen==='transcript')transcriptScrollTop=$('fullTranscript').scrollTop;
+ $('toggleView').hidden=false;
+ $('paneLabel').textContent='Проверка говорящих';stopPlayback();screen='review';$('review').hidden=false;$('transcriptScreen').hidden=true;$('toggleView').innerHTML='К транскрипту <span aria-hidden="true">↗</span>';
+ $('reviewWorkspace').hidden=complete;$('completion').hidden=!complete;
+ if(!complete)renderDetail(true);else $('completionHeading').focus();
+}
+function renderTranscript(){
+ $('fullTranscript').replaceChildren($('transcriptIntro').content.cloneNode(true));
+ const turns=voices.flatMap(v=>v.turns.map(t=>({v,t}))).sort((a,b)=>a.t.start-b.t.start);
+ turns.forEach(({v,t})=>{const row=document.createElement('article');row.className='full-turn'+(t.id===highlightID?' highlight':'');row.id='full-'+t.id;
+ const head=makeText('div','full-turn-head','');const author=makeButton('speaker-label',(t.manual||v.label)+' ▾');author.dataset.editSpeaker=t.id;author.setAttribute('aria-haspopup','dialog');
+ const edit=makeButton('edit-turn','Редактировать');edit.dataset.editTurn=t.id;
+ head.append(makeText('time','',clock(t.start)),author,edit);row.append(head,makeText('p','',t.text));$('fullTranscript').append(row);});
+}
+function showTranscript(turnID=null){
+ document.querySelector('.app').dataset.screen='transcript';
+ $('toggleView').hidden=true;
+ $('paneLabel').textContent='Транскрипт';stopPlayback();highlightID=turnID;screen='transcript';$('review').hidden=true;$('transcriptScreen').hidden=false;$('toggleView').textContent='Назначить имена';renderTranscript();
+ if(turnID){const row=$('full-'+turnID);row.setAttribute('tabindex','-1');row.scrollIntoView({block:'center'});row.focus({preventScroll:true});say('Реплика найдена в полном транскрипте');}else{$('fullTranscript').scrollTop=transcriptScrollTop;$('openReview').focus({preventScroll:true});}
+}
+function advance(){
+ stopPlayback();const index=voices.indexOf(current());
+ const next=[...voices.slice(index+1),...voices.slice(0,index)].find(v=>!v.reviewed&&!v.skipped);
+ if(next){selectedID=next.id;$('review').dataset.pane='detail';renderDetail(true);return;}
+ complete=true;$('reviewWorkspace').hidden=true;$('completion').hidden=false;
+ const skipped=voices.filter(v=>v.skipped).length;
+ $('completionCopy').textContent='Проверено '+(voices.length-skipped)+' голосов, пропущено '+skipped+'. Вы можете вернуться к любому голосу и изменить имя. В макете изменения действуют до перезагрузки.';
+ $('completionHeading').focus();renderVoiceList();
+}
+$('voiceList').addEventListener('click',event=>{const b=event.target.closest('[data-voice]');if(!b)return;selectedID=b.dataset.voice;$('review').dataset.pane='detail';renderDetail(true);});
+$('speakerName').addEventListener('input',()=>{$('nameError').hidden=true;updateAssignment();});
+$('suggestions').addEventListener('click',event=>{const b=event.target.closest('[data-name]');if(!b)return;$('speakerName').value=b.dataset.name;$('nameError').hidden=true;updateAssignment();$('speakerName').focus();});
+$('overwrite').addEventListener('change',()=>{overwrite=$('overwrite').checked;updateAssignment();});
+$('assignVoice').addEventListener('click',()=>{
+ const v=current(),name=$('speakerName').value.trim();
+ if(!name||/[\u0000-\u001f\u007f]/.test(name)){$('nameError').textContent='Введите имя без пустых строк и служебных символов.';$('nameError').hidden=false;$('speakerName').focus();return;}
+ for(const t of v.turns){if(!t.manual||overwrite)t.manual=name;}
+ v.reviewed=true;v.skipped=false;v.draft=name;say('Имя '+name+' назначено. Следующий голос.');advance();
+});
+$('skipVoice').addEventListener('click',()=>{const v=current();if(!v.reviewed){v.skipped=true;v.draft='';}say('Переход к следующему голосу');advance();});
+$('speakerName').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();$('assignVoice').click();}});
+$('turns').addEventListener('click',event=>{
+ const goto=event.target.closest('[data-goto]');if(goto){showTranscript(goto.dataset.goto);return;}
+ const b=event.target.closest('[data-play]');if(!b)return;
+ const t=current().turns.find(t=>t.id===b.dataset.play);if(!t)return;
+ if(playing&&playing.id===t.id){playing.paused=!playing.paused;b.innerHTML=glyph(playing.paused?'play':'pause')+'<span>'+clock(t.start)+'</span>';b.setAttribute('aria-label',(playing.paused?'Продолжить':'Приостановить')+' демонстрацию фрагмента');return;}
+ stopPlayback();playing={...t,elapsed:0,paused:false};const row=$('sample-'+t.id);row.classList.add('playing');row.querySelector('.segment-progress').hidden=false;b.innerHTML=glyph('pause')+'<span>'+clock(t.start)+'</span>';b.setAttribute('aria-label','Приостановить демонстрацию фрагмента');say('Демонстрация прослушивания. Аудио не подключено.');
+});
+window.setInterval(()=>{if(!playing||playing.paused)return;playing.elapsed=Math.min(playing.duration,playing.elapsed+.15);const row=$('sample-'+playing.id);if(!row){playing=null;return;}row.querySelector('progress').value=playing.elapsed;row.querySelector('.play-time').textContent='Демо · '+clock(playing.elapsed)+' / '+clock(playing.duration);if(playing.elapsed>=playing.duration)stopPlayback();},150);
+$('toggleView').addEventListener('click',()=>screen==='review'?showTranscript():showReview());
+$('fullTranscript').addEventListener('click',event=>{
+ if(event.target.closest('#openReview')){complete=false;showReview();return;}
+ const speaker=event.target.closest('[data-edit-speaker]');if(speaker){openLocalSpeaker(speaker.dataset.editSpeaker);return;}
+ const edit=event.target.closest('[data-edit-turn]');if(!edit)return;
+ const row=edit.closest('.full-turn'),text=row.querySelector('p');
+ if(text.isContentEditable){const turn=voices.flatMap(v=>v.turns).find(t=>t.id===edit.dataset.editTurn);turn.text=text.textContent;text.contentEditable='false';edit.textContent='Редактировать';}
+ else{text.contentEditable='true';edit.textContent='Сохранить';text.focus();}
+});
+let toastTimer;
+function showDemo(message){$('demoToast').textContent=message;$('demoToast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{$('demoToast').hidden=true;},3200);}
+document.addEventListener('click',event=>{const demo=event.target.closest('[data-demo]');if(demo)showDemo(demo.dataset.demo);});
+$('librarySearch').addEventListener('input',event=>{const query=event.target.value.trim().toLocaleLowerCase('ru');document.querySelectorAll('.recording').forEach(row=>{row.hidden=!row.textContent.toLocaleLowerCase('ru').includes(query);});});
+$('currentRecording').addEventListener('click',()=>showTranscript());
+$('dockPlay').addEventListener('click',()=>showDemo('Аудио не подключено: это макет интерфейса'));
+$('followText').addEventListener('click',()=>{const button=$('followText');button.setAttribute('aria-pressed',String(button.getAttribute('aria-pressed')!=='true'));showDemo('Следование за текстом доступно при воспроизведении в приложении');});
+document.addEventListener('click',event=>{const b=event.target.closest('[data-action]');if(!b)return;switch(b.dataset.action){case 'show-voices':$('review').dataset.pane='list';$('voiceList').querySelector('[aria-current="true"]').focus();break;case 'transcript':showTranscript();break;case 'review-again':complete=false;$('reviewWorkspace').hidden=false;$('completion').hidden=true;renderDetail(true);break;}});
+
+function availableCalendarNames(){
+ const key=name=>name.normalize('NFC').trim().toLocaleLowerCase('ru');
+ const assigned=new Set(voices.flatMap(v=>v.turns.map(t=>t.manual).filter(Boolean)).map(key));
+ return calendar.filter(name=>!assigned.has(key(name)));
+}
+let localSpeaker=null;
+function localSpeakerTargets(turns,turnID,scope){
+ const index=turns.findIndex(t=>t.id===turnID);
+ return index<0?[]:turns.filter((t,i)=>scope==='one'?i===index:i>=index);
+}
+function updateLocalPreview(){
+ if(!localSpeaker)return;
+ const scope=$('localSpeakerForm').elements.localScope.value,name=$('localSpeakerName').value.trim();
+ const targets=localSpeakerTargets(localSpeaker.v.turns,localSpeaker.t.id,scope);
+ const changes=targets.filter(t=>(t.manual||localSpeaker.v.label)!==name);
+ const manual=changes.filter(t=>t.manual).length;
+ $('localSpeakerPreview').replaceChildren(makeText('p','', 'Имя: '+(name||'укажите имя')+'. '+localSpeaker.v.label+' · '+localSpeaker.v.source+'. Изменится '+changes.length+' из '+targets.length+' реплик.'+(manual?' Ранее назначенных имён будет заменено: '+manual+'.':'')));
+ const examples=document.createElement('ul');
+ changes.slice(0,3).forEach(t=>examples.append(makeText('li','',clock(t.start)+' · '+(t.manual||localSpeaker.v.label)+': '+t.text)));
+ if(changes.length)$('localSpeakerPreview').append(examples);
+ $('saveLocalSpeaker').disabled=!name||changes.length===0;
+ $('localSpeakerError').hidden=true;
+}
+function openLocalSpeaker(turnID){
+ const v=voices.find(v=>v.turns.some(t=>t.id===turnID));if(!v)return;
+ const t=v.turns.find(t=>t.id===turnID);localSpeaker={v,t};
+ $('localSpeakerContext').textContent=clock(t.start)+' · '+v.label+' · '+v.source;
+ $('localSpeakerQuote').textContent=t.text;
+ $('localSpeakerName').value=t.manual||'';
+ $('localSpeakerForm').elements.localScope.value='one';
+ $('localSuggestions').replaceChildren(...availableCalendarNames().map(name=>{const b=makeButton('name-chip',name);b.dataset.localName=name;return b;}));
+ if(!$('localSuggestions').children.length)$('localSuggestions').append(makeText('p','small','Имена из календаря уже назначены. Введите имя вручную.'));
+ $('openLocalGroup').textContent='Прослушать все реплики этого голоса ('+v.turns.length+') →';
+ updateLocalPreview();$('localSpeakerDialog').showModal();$('localSpeakerName').focus();
+}
+$('localSpeakerName').addEventListener('input',updateLocalPreview);
+$('localSpeakerForm').addEventListener('change',updateLocalPreview);
+$('localSuggestions').addEventListener('click',event=>{const b=event.target.closest('[data-local-name]');if(b){$('localSpeakerName').value=b.dataset.localName;updateLocalPreview();$('localSpeakerName').focus();}});
+for(const id of ['closeLocalSpeaker','cancelLocalSpeaker'])$(id).addEventListener('click',()=>$('localSpeakerDialog').close());
+$('openLocalGroup').addEventListener('click',()=>{localSpeaker.v.draft=$('localSpeakerName').value;selectedID=localSpeaker.v.id;$('localSpeakerDialog').close();complete=false;$('review').dataset.pane='detail';showReview();});
+$('localSpeakerForm').addEventListener('submit',event=>{
+ event.preventDefault();if(!localSpeaker)return;
+ const name=$('localSpeakerName').value.trim();
+ if(!name||/[\u0000-\u001f\u007f]/.test(name)){$('localSpeakerError').hidden=false;$('localSpeakerName').focus();return;}
+ const {v,t}=localSpeaker,scope=$('localSpeakerForm').elements.localScope.value;
+ const targets=localSpeakerTargets(v.turns,t.id,scope),changed=targets.filter(turn=>(turn.manual||v.label)!==name);
+ changed.forEach(turn=>{turn.manual=name;});v.draft=allNamed(v)&&uniqueNames(v).length===1?name:'';
+ const scroll=$('fullTranscript').scrollTop;$('localSpeakerDialog').close();renderTranscript();$('fullTranscript').scrollTop=scroll;
+ document.querySelector('[data-edit-speaker="'+t.id+'"]').focus({preventScroll:true});showDemo('Имя изменено в '+changed.length+' репликах');
+});
+// The caller passes a single source/voice group, including previously renamed turns.
+const localScopeFixture=[{id:'earlier'},{id:'selected'},{id:'later',manual:'Имя'}];
+console.assert(localSpeakerTargets(localScopeFixture,'selected','one').map(t=>t.id).join(',')==='selected'&&localSpeakerTargets(localScopeFixture,'selected','remaining').map(t=>t.id).join(',')==='selected,later'&&localSpeakerTargets(localScopeFixture,'missing','remaining').length===0,'Local speaker correction preserves earlier turns and includes renamed later turns');
+
+renderDetail();showTranscript();
+</script>
+</body>
+</html>
