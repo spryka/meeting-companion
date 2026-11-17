@@ -146,6 +146,7 @@ struct RecordingHistoryView: View {
     @State private var renameError: String?
     @State private var renameSaving = false
     @State private var moreHovered = false
+    @State private var reviewingSpeakers = false
     @StateObject private var libraryNavigation = WorkspaceNavigationView(.library)
     private enum RowControl: Hashable { case select(URL), trash(URL) }
     @State private var rowControl: RowControl?
@@ -207,6 +208,7 @@ struct RecordingHistoryView: View {
                                   current.currentResultID != nil || current.legacyText != nil {
                             TranscriptReviewWindowView(model: current, title: entry.effectiveTitle, entryDate: entry.date, entryDuration: entry.duration, workspaceWidth: geometry.size.width,
                                 keyboardNavigationVisible: !narrow || !model.workspaceShowsList)
+                                .onReceive(current.$voiceReviewVisible) { reviewingSpeakers = $0 }
                         } else if entry.phase.isWorking {
                             Text("Подготовка обработки…").font(.system(size: 14)).foregroundStyle(ODColors.muted)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -257,7 +259,8 @@ struct RecordingHistoryView: View {
                 windowState.attach(window)
                 windowState.updateHeader(
                     brand: AnyView(WorkspaceBrand(narrow: narrow, compact: !isWide)),
-                    actions: AnyView(documentToolbar(narrow: narrow, compact: !isWide)
+                    actions: AnyView(documentToolbar(narrow: narrow, compact: !isWide,
+                        paneWidth: geometry.size.width - (narrow ? 0 : sidebarWidth + 1))
                         .disabled(model.settingsPresented || model.trashOwnsInput)
                         .allowsHitTesting(!model.settingsPresented && !model.trashOwnsInput)
                         .accessibilityHidden(model.settingsPresented || model.trashOwnsInput)),
@@ -603,25 +606,39 @@ struct RecordingHistoryView: View {
         .background(ODColors.sidebar)
     }
 
-    private func documentToolbar(narrow: Bool, compact: Bool) -> some View {
-        HStack(spacing: compact ? 8 : 16) {
+    private func documentToolbar(narrow: Bool, compact: Bool, paneWidth: CGFloat) -> some View {
+        let reviewingSpeakers = self.reviewingSpeakers && workspace.current?.voiceReviewVisible == true
+            && workspace.current?.state.id == model.selectedHistoryURL
+        return HStack(spacing: compact ? 8 : 16) {
             if narrow && !model.workspaceShowsList {
-                Button(action: { if !workspace.hasInput { model.workspaceShowsList = true } }) {
+                Button(action: {
+                    if !workspace.hasInput {
+                        if reviewingSpeakers { workspace.current?.beginEditing() }
+                        model.workspaceShowsList = true
+                    }
+                }) {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left")
-                        Text("Все записи")
+                        if !reviewingSpeakers { Text("Все записи") }
                     }
                     .font(.system(size: 13, weight: .medium))
                 }
                 .buttonStyle(.plain)
             } else {
-                Text("Транскрипт")
+                Text(reviewingSpeakers ? "Проверка говорящих" : "Транскрипт")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(ODColors.muted)
             }
 
             Spacer()
 
+            if reviewingSpeakers {
+                Button("К транскрипту ↗") { workspace.current?.returnToTranscript() }
+                    .buttonStyle(.plain).font(.system(size: 13, weight: .semibold))
+                    .help("Сначала сохраните или отмените введённое имя.")
+            }
+
+            if !reviewingSpeakers || paneWidth > 760 {
             if let url = model.selectedHistoryURL, let entry = history.entry(url) {
                 Button(action: { exportTranscript(entry) }) {
                     ODIconView(.export, size: 16, color: ODColors.ink)
@@ -694,6 +711,7 @@ struct RecordingHistoryView: View {
             }
             .buttonStyle(.plain)
             .disabled(!model.canStartRecording || workspace.nativeInput())
+            }
         }
         .padding(.horizontal, narrow ? 12 : compact ? 16 : 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

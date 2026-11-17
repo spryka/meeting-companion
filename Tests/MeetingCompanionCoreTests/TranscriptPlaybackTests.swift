@@ -14,6 +14,8 @@ import Testing
     var deferred = false
     var pending: [CheckedContinuation<Double, any Error>] = []
     var seekSuccess = true
+    var deferSeek = false
+    var pendingSeeks: [CheckedContinuation<Bool, Never>] = []
     func prepare(url: URL) async throws -> Double {
         urls.append(url)
         if deferred { return try await withCheckedThrowingContinuation { pending.append($0) } }
@@ -22,11 +24,75 @@ import Testing
     func play() { plays += 1 }
     func pause() { pauses += 1 }
     func stop() { stops += 1 }
-    func seek(to seconds: Double) async -> Bool { seeks.append(seconds); return seekSuccess }
+    func seek(to seconds: Double) async -> Bool {
+        seeks.append(seconds)
+        if deferSeek { return await withCheckedContinuation { pendingSeeks.append($0) } }
+        return seekSuccess
+    }
     func setRate(_ rate: Float) { rates.append(rate) }
 }
 
 @Suite @MainActor final class TranscriptPlaybackTests {
+    @Test func segmentStopsAtEndAndPauseResumesSameInterval() async throws {
+        let root = try recording(), fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        await player.playSegment(start: 2, end: 4)
+        #expect(fake.seeks == [2] && fake.plays == 1)
+        fake.onEvent?(.playing(true))
+        fake.onEvent?(.position(3))
+        player.toggle()
+        #expect(player.state == .ready)
+        player.toggle(); fake.onEvent?(.playing(true))
+        #expect(fake.plays == 2 && fake.seeks == [2])
+        fake.onEvent?(.position(4.1))
+        #expect(player.state == .ready && player.position == 4)
+        fake.onEvent?(.position(5))
+        #expect(fake.plays == 2) // No sequential playback.
+    }
+
+    @Test(arguments: ["cancel", "pause", "close", "switch", "select", "failure"])
+    func segmentRejectsLateSeekAndFailedSeek(action: String) async throws {
+        let root = try recording(), fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        fake.deferSeek = true
+        let task = Task { await player.playSegment(start: 2, end: 4) }
+        for _ in 0..<100 where fake.pendingSeeks.isEmpty { await Task.yield() }
+        #expect(fake.plays == 0)
+        switch action {
+        case "close": player.close()
+        case "pause": player.pause()
+        case "select": await player.select(resultID: "v1", recordingDirectory: root)
+        case "switch":
+            fake.deferSeek = false
+            await player.playSegment(start: 6, end: 8)
+        case "failure": break
+        default: player.cancelSegment()
+        }
+        try #require(!fake.pendingSeeks.isEmpty)
+        fake.pendingSeeks.removeFirst().resume(returning: action != "failure")
+        await task.value
+        #expect(fake.plays == (action == "switch" ? 1 : 0))
+        if action == "switch" { #expect(player.position == 6) }
+    }
+
+    @Test(arguments: [(0.0, 0.0), (-1.0, 1.0), (3.0, 2.0), (Double.nan, 4.0), (12.0, 15.0)])
+    func invalidSegmentsNeverSeekOrPlay(interval: (Double, Double)) async throws {
+        let root = try recording(), fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        await player.playSegment(start: interval.0, end: interval.1)
+        #expect(fake.seeks.isEmpty && fake.plays == 0)
+    }
+
+    @Test func missingMixCannotPlaySegment() async throws {
+        let root = try recording(mix: false), fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        await player.playSegment(start: 2, end: 4)
+        #expect(fake.seeks.isEmpty && fake.plays == 0)
+    }
     private var roots: [URL] = []
     deinit { for root in roots { try? FileManager.default.removeItem(at: root) } }
 

@@ -16,10 +16,12 @@ public protocol TranscriptPlaybackTransport: AnyObject {
     func seek(to seconds: Double) async -> Bool
     func stop()
     func setRate(_ rate: Float)
+    func setPlaybackBoundary(_ end: Double?)
 }
 
 public extension TranscriptPlaybackTransport {
     func setRate(_ rate: Float) {}
+    func setPlaybackBoundary(_ end: Double?) {}
 }
 
 @MainActor
@@ -35,6 +37,8 @@ public final class TranscriptPlaybackController {
     private let transport: any TranscriptPlaybackTransport
     private var generation: UInt64 = 0
     private var seekGeneration: UInt64 = 0
+    private var segmentGeneration: UInt64 = 0
+    public private(set) var segment: ClosedRange<Double>?
     private var wantsPlay = false
 
     public init(transport: any TranscriptPlaybackTransport) { self.transport = transport }
@@ -49,9 +53,12 @@ public final class TranscriptPlaybackController {
     public func select(resultID: String, recordingDirectory: URL) async {
         guard state != .closed else { return }
         generation &+= 1
+        segmentGeneration &+= 1
+        segment = nil
         let ticket = generation
         wantsPlay = false
         transport.onEvent = nil
+        transport.setPlaybackBoundary(nil)
         transport.stop()
         self.resultID = resultID
         self.mixURL = nil
@@ -120,6 +127,7 @@ public final class TranscriptPlaybackController {
     }
 
     public func pause() {
+        segmentGeneration &+= 1
         wantsPlay = false
         guard state == .playing || state == .ready else { return }
         transport.pause()
@@ -127,28 +135,54 @@ public final class TranscriptPlaybackController {
         onChange?()
     }
 
-    public func seek(to seconds: Double) async {
-        guard seconds.isFinite, state == .ready || state == .playing else { return }
+    @discardableResult
+    public func seek(to seconds: Double) async -> Bool {
+        if segment != nil { cancelSegment() }
+        guard seconds.isFinite, state == .ready || state == .playing else { return false }
         let target = min(duration, max(0, seconds))
         let ticket = generation
         seekGeneration &+= 1
         let seekTicket = seekGeneration
         let success = await transport.seek(to: target)
-        guard generation == ticket, seekGeneration == seekTicket, state == .ready || state == .playing else { return }
+        guard generation == ticket, seekGeneration == seekTicket, state == .ready || state == .playing else { return false }
         if success { position = target }
         else { wantsPlay = false; transport.pause(); state = .failed }
         onChange?()
+        return success
     }
 
     public func close() {
         guard state != .closed else { return }
         generation &+= 1
+        segmentGeneration &+= 1
+        segment = nil
         wantsPlay = false
         transport.onEvent = nil
+        transport.setPlaybackBoundary(nil)
         transport.stop()
         mixURL = nil
         state = .closed
         onChange = nil
+    }
+
+    public func playSegment(start: Double, end: Double) async {
+        cancelSegment()
+        guard start.isFinite, end.isFinite, start >= 0, end > start, start < duration,
+              state == .ready || state == .playing else { return }
+        let ticket = segmentGeneration
+        guard await seek(to: start), ticket == segmentGeneration else { return }
+        segment = start...min(end, duration)
+        transport.setPlaybackBoundary(segment?.upperBound)
+        onChange?()
+        guard ticket == segmentGeneration else { return }
+        play()
+    }
+
+    public func cancelSegment() {
+        segment = nil
+        transport.setPlaybackBoundary(nil)
+        seekGeneration &+= 1
+        pause()
     }
 
     private func receive(_ event: TranscriptPlaybackEvent) {
@@ -157,9 +191,21 @@ public final class TranscriptPlaybackController {
         case .position(let seconds):
             guard seconds.isFinite else { return }
             position = min(duration, max(0, seconds))
+            if let segment, position >= segment.upperBound {
+                position = segment.upperBound
+                cancelSegment()
+                return
+            }
         case .playing(let playing): state = playing ? .playing : .ready
-        case .ended: wantsPlay = false; transport.pause(); position = duration; state = .ready
-        case .failed: wantsPlay = false; transport.pause(); state = .failed
+        case .ended:
+            position = segment?.upperBound ?? duration
+            segment = nil
+            transport.setPlaybackBoundary(nil)
+            segmentGeneration &+= 1
+            wantsPlay = false
+            transport.pause()
+            state = .ready
+        case .failed: segment = nil; segmentGeneration &+= 1; wantsPlay = false; transport.pause(); state = .failed
         }
         onChange?()
     }

@@ -131,6 +131,17 @@ public enum InterfaceStyle {
                           : NSColor(srgbRed: 0xdc/255.0, green: 0xe2/255.0, blue: 0xeb/255.0, alpha: 1)
     })
 
+    // The reference HTML progress control uses a muted palette, separate from action links.
+    public static let segmentProgressFill = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDark ? NSColor(srgbRed: 0x7a/255.0, green: 0x8a/255.0, blue: 0xa3/255.0, alpha: 1)
+                          : NSColor(srgbRed: 0x53/255.0, green: 0x70/255.0, blue: 0x9c/255.0, alpha: 1)
+    })
+
+    public static let segmentProgressTrack = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.isDark ? NSColor(srgbRed: 0x5d/255.0, green: 0x62/255.0, blue: 0x66/255.0, alpha: 1)
+                          : NSColor(srgbRed: 0xbd/255.0, green: 0xc0/255.0, blue: 0xc4/255.0, alpha: 1)
+    })
+
     // MARK: - Layout Constants
     public static let sidebarWidth: CGFloat = 304
     public static let sidebarWidthCompact: CGFloat = 264
@@ -219,6 +230,7 @@ struct ODMenuField<Selection: Hashable>: View {
 struct ODDialog<Content: View, Actions: View>: View {
     let title: String
     var width: CGFloat = 480
+    var maxContentHeight: CGFloat? = nil
     let close: () -> Void
     @ViewBuilder let content: () -> Content
     @ViewBuilder let actions: () -> Actions
@@ -235,7 +247,7 @@ struct ODDialog<Content: View, Actions: View>: View {
                 VStack(alignment: .leading, spacing: 20, content: content)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 24).padding(.bottom, 24)
-            }.fixedSize(horizontal: false, vertical: true)
+            }.frame(maxHeight: maxContentHeight).fixedSize(horizontal: false, vertical: true)
             Rectangle().fill(ODColors.line).frame(height: 1)
             HStack(spacing: 8) { Spacer(minLength: 0); actions() }
                 .buttonStyle(ODButtonStyle())

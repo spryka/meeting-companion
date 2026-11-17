@@ -28,6 +28,10 @@ public final class TranscriptAVPlayerTransport: TranscriptPlaybackTransport {
 
     public init(isMuted: Bool = false) { player.isMuted = isMuted }
 
+    public func setPlaybackBoundary(_ end: Double?) {
+        player.currentItem?.forwardPlaybackEndTime = end.map { CMTime(seconds: $0, preferredTimescale: 600) } ?? .invalid
+    }
+
     public func setRate(_ rate: Float) {
         guard rate.isFinite, rate > 0 else { return }
         currentRate = rate
@@ -97,7 +101,9 @@ public final class TranscriptAVPlayerTransport: TranscriptPlaybackTransport {
             Task { @MainActor [weak self] in
                 guard let self, self.generation == ticket, self.playbackEpoch == epoch,
                       !self.isSeeking, let current = self.player.currentItem else { return }
-                let duration = current.duration.seconds
+                let fullDuration = current.duration.seconds
+                let boundary = current.forwardPlaybackEndTime.seconds
+                let duration = boundary.isFinite ? min(fullDuration, boundary) : fullDuration
                 let position = self.player.currentTime().seconds
                 guard duration.isFinite, position.isFinite, duration > 0,
                       position >= duration - 0.05 else { return }
