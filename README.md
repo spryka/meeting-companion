@@ -22,8 +22,8 @@
 · [Все версии](https://github.com/spryka/meeting-companion/releases)
 · [История изменений](CHANGELOG.md)
 
-**Бета — 2.1.0-beta.1, build 87:**
-[скачать DMG с разбором говорящих](https://github.com/spryka/meeting-companion/releases/download/v2.1.0-beta.1/Meeting-Companion-2.1.0-beta.1-arm64.dmg).
+**Бета — 2.1.0-beta.2, build 88:**
+[скачать DMG с компактным напоминанием](https://github.com/spryka/meeting-companion/releases/download/v2.1.0-beta.2/Meeting-Companion-2.1.0-beta.2-arm64.dmg).
 
 Откройте DMG, перенесите Meeting Companion в «Программы» и извлеките образ.
 Для замены установленной версии сначала завершите запись, обработку и

@@ -9,6 +9,100 @@ import SwiftUI
 final class ReminderPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    var cardView: NSView? { (contentView as? ReminderSurfaceHost)?.hostingView ?? contentView }
+    var reminderView: NSHostingView<MeetingReminderView>? { cardView as? NSHostingView<MeetingReminderView> }
+    var cardFrame: NSRect {
+        guard let cardView else { return frame }
+        return convertToScreen(cardView.convert(cardView.bounds, to: nil))
+    }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        // Placement already clamps the card; transparent shadow paint may extend beyond visibleFrame.
+        contentView is ReminderSurfaceHost ? frameRect : super.constrainFrameRect(frameRect, to: screen)
+    }
+
+    static func reminderFrame(fittingSize: NSSize, screen: NSRect, capsule: NSRect?) -> NSRect {
+        let width = min(360, max(0, screen.width - 32))
+        var height = min(max(0, screen.height - 32), fittingSize.height)
+        let x = screen.maxX - width - 16
+        var y = screen.maxY - height - 16
+        if let capsule {
+            let frame = NSRect(x: x, y: y, width: width, height: height)
+            if frame.intersects(capsule) {
+                let below = max(0, capsule.minY - screen.minY - 24)
+                let above = max(0, screen.maxY - capsule.maxY - 24)
+                if below >= height || below >= above {
+                    height = min(height, below)
+                    y = capsule.minY - height - 8
+                } else {
+                    height = min(height, above)
+                    y = capsule.maxY + 8
+                }
+            }
+        }
+        y = max(screen.minY + 16, min(screen.maxY - height - 16, y))
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+final class ReminderSurfaceHost: NSView {
+    let hostingView: NSView
+    private let radius: CGFloat
+    private let shadows = [CALayer(), CALayer()]
+
+    static func paintFrame(for card: NSRect) -> NSRect {
+        NSRect(x: card.minX - 80, y: card.minY - 104, width: card.width + 160, height: card.height + 184)
+    }
+
+    init(hostingView: NSView, radius: CGFloat) {
+        self.hostingView = hostingView
+        self.radius = radius
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        for shadow in shadows { layer?.addSublayer(shadow) }
+        addSubview(hostingView)
+        updateShadows()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        hostingView.frame = NSRect(x: 80, y: 104, width: max(0, bounds.width - 160), height: max(0, bounds.height - 184))
+        updateShadows()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateShadows()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        hostingView.frame.contains(convert(point, from: superview)) ? super.hitTest(point) : nil
+    }
+
+    private func updateShadows() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let color = dark ? CGColor(gray: 0, alpha: 1) : CGColor(srgbRed: 36/255.0, green: 52/255.0, blue: 74/255.0, alpha: 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (index, shadow) in shadows.enumerated() {
+            shadow.frame = bounds
+            shadow.shadowPath = CGPath(roundedRect: hostingView.frame, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            shadow.shadowColor = color
+            shadow.shadowOpacity = index == 0 ? (dark ? 0.333 : 0.102) : (dark ? 0.2 : 0.039)
+            // CSS blur is twice the Gaussian standard deviation used by Core Animation.
+            shadow.shadowRadius = index == 0 ? 40 : 4
+            shadow.shadowOffset = CGSize(width: 0, height: index == 0 ? -24 : -2)
+        }
+        CATransaction.commit()
+    }
 }
 
 // MARK: - Date Formatting Helper
@@ -155,15 +249,96 @@ final class MeetingReminderPresenter: ObservableObject {
     }
 }
 
-// MARK: - Meeting Chooser Popover View
+// MARK: - Compact presentation
+
+// SwiftUI rounds a Text's native line box; CSS leading must use that measured box.
+private struct ReminderLineLayout: Layout {
+    let height: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let dimensions = subviews[0].dimensions(in: proposal)
+        return CGSize(width: dimensions.width,
+            height: dimensions[.lastTextBaseline] - dimensions[.firstTextBaseline] + height)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let proposal = ProposedViewSize(width: bounds.width, height: nil)
+        let dimensions = subviews[0].dimensions(in: proposal)
+        let singleLineHeight = dimensions.height - (dimensions[.lastTextBaseline] - dimensions[.firstTextBaseline])
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.minY + (height - singleLineHeight) / 2), proposal: proposal)
+    }
+}
+
+private struct ReminderLineBox: ViewModifier {
+    let size: CGFloat
+    let height: CGFloat
+    @Environment(\.displayScale) private var scale
+    func body(content: Content) -> some View {
+        let font = NSFont.systemFont(ofSize: size)
+        let nativeHeight = ceil((font.ascender - font.descender + font.leading) * scale) / scale
+        ReminderLineLayout(height: height) { content.lineSpacing(max(0, height - nativeHeight)) }
+    }
+}
+
+extension View {
+    func reminderLineBox(size: CGFloat, height: CGFloat) -> some View {
+        modifier(ReminderLineBox(size: size, height: height))
+    }
+}
+
+private enum ReminderColors {
+    static let hover = Color(nsColor: NSColor(name: nil) {
+        $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 0x30/255.0, green: 0x38/255.0, blue: 0x44/255.0, alpha: 1)
+                  : NSColor(srgbRed: 0xed/255.0, green: 0xf1/255.0, blue: 0xf6/255.0, alpha: 1)
+    })
+    static let primaryInk = Color(nsColor: NSColor(name: nil) {
+        $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 0x15/255.0, green: 0x24/255.0, blue: 0x3b/255.0, alpha: 1) : .white
+    })
+    static let recording = Color(nsColor: NSColor(name: nil) {
+        $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(srgbRed: 0xff/255.0, green: 0x9a/255.0, blue: 0xa8/255.0, alpha: 1)
+                  : NSColor(srgbRed: 0xb8/255.0, green: 0x2d/255.0, blue: 0x3d/255.0, alpha: 1)
+    })
+}
+
+private struct ReminderButtonStyle: ButtonStyle {
+    var primary = false
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(primary ? (enabled ? ReminderColors.primaryInk : ODColors.muted) : ODColors.ink)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .circular)
+                    .fill(primary ? (enabled ? (hovering ? ODColors.accentHover : ODColors.accent) : ReminderColors.hover)
+                          : (hovering || configuration.isPressed ? ReminderColors.hover : .clear))
+                    .shadow(color: .black.opacity(primary && enabled ? 0.067 : 0), radius: 2, y: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .circular))
+            .onHover { hovering = $0 }
+    }
+}
+
+private struct ReminderSymbol: Shape {
+    var check = false
+    func path(in rect: CGRect) -> Path {
+        let points: [CGPoint] = check
+            ? [CGPoint(x: 5, y: 12), CGPoint(x: 9, y: 16), CGPoint(x: 19, y: 6)]
+            : [CGPoint(x: 7, y: 10), CGPoint(x: 12, y: 15), CGPoint(x: 17, y: 10)]
+        var path = Path()
+        path.addLines(points.map { CGPoint(x: rect.minX + $0.x * rect.width / 24, y: rect.minY + $0.y * rect.height / 24) })
+        return path
+    }
+}
+
+// MARK: - Separate chooser
 
 struct MeetingChooserPopoverView: View {
     @ObservedObject var presenter: MeetingReminderPresenter
+    var width: CGFloat = 336
+    var height: CGFloat = 420
     @FocusState private var focusedIndex: Int?
 
     private var allOptions: [MeetingContext?] {
-        let meetings: [MeetingContext?] = presenter.candidateMeetings.map { Optional($0) }
-        return meetings + [nil]
+        presenter.candidateMeetings.map { Optional($0) } + [nil]
     }
 
     var body: some View {
@@ -172,67 +347,36 @@ struct MeetingChooserPopoverView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(Array(presenter.candidateMeetings.enumerated()), id: \.element.id) { index, meeting in
-                            optionRow(
-                                meeting: meeting,
-                                isSelected: presenter.selectedMeeting?.id == meeting.id,
-                                isFocused: focusedIndex == index
-                            ) {
-                                presenter.selectMeeting(meeting)
-                            }
-                            .focused($focusedIndex, equals: index)
-                            .id(index)
+                            optionRow(meeting: meeting, index: index)
+                                .focused($focusedIndex, equals: index)
+                                .id(index)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(4)
                 }
-                .frame(maxHeight: 340)
-
-                Divider()
-                    .background(ODColors.line)
-
-                // Fixed "Без встречи" option
-                optionRow(
-                    meeting: nil,
-                    isSelected: presenter.selectedMeeting == nil,
-                    isFocused: focusedIndex == presenter.candidateMeetings.count
-                ) {
-                    presenter.selectMeeting(nil)
-                }
-                .focused($focusedIndex, equals: presenter.candidateMeetings.count)
+                Rectangle().fill(ODColors.line).frame(height: 1)
+                optionRow(meeting: nil, index: presenter.candidateMeetings.count)
+                    .focused($focusedIndex, equals: presenter.candidateMeetings.count)
+                    .padding(4)
             }
-            .frame(width: 360)
-            .padding(.vertical, 8)
-            .background(ODColors.surface)
+            .padding(1)
+            .frame(width: width, height: height)
+            .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 12, style: .circular))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .circular))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .circular).strokeBorder(ODColors.line, lineWidth: 1))
             .onKeyPress(.downArrow) {
-                let count = allOptions.count
-                if count > 0 {
-                    focusedIndex = ((focusedIndex ?? -1) + 1) % count
-                }
+                focusedIndex = ((focusedIndex ?? -1) + 1) % allOptions.count
                 return .handled
             }
             .onKeyPress(.upArrow) {
-                let count = allOptions.count
-                if count > 0 {
-                    focusedIndex = ((focusedIndex ?? 0) - 1 + count) % count
-                }
+                focusedIndex = ((focusedIndex ?? 0) - 1 + allOptions.count) % allOptions.count
                 return .handled
             }
-            .onKeyPress(.return) {
-                commitFocused()
-                return .handled
-            }
-            .onKeyPress(.space) {
-                commitFocused()
-                return .handled
-            }
-            .onKeyPress(.escape) {
-                presenter.isChooserOpen = false
-                return .handled
-            }
+            .onKeyPress(.return) { commitFocused(); return .handled }
+            .onKeyPress(.space) { commitFocused(); return .handled }
+            .onKeyPress(.escape) { presenter.isChooserOpen = false; return .handled }
             .onChange(of: focusedIndex) { _, index in
-                if let index, index < presenter.candidateMeetings.count {
-                    scroll.scrollTo(index, anchor: .center)
-                }
+                if let index, index < presenter.candidateMeetings.count { scroll.scrollTo(index, anchor: .center) }
             }
             .task {
                 focusSelection()
@@ -243,11 +387,9 @@ struct MeetingChooserPopoverView: View {
     }
 
     private func focusSelection() {
-        if let selected = presenter.selectedMeeting {
-            focusedIndex = presenter.candidateMeetings.firstIndex { $0.id == selected.id } ?? 0
-        } else {
-            focusedIndex = presenter.candidateMeetings.count
-        }
+        focusedIndex = presenter.selectedMeeting.flatMap { selected in
+            presenter.candidateMeetings.firstIndex { $0.id == selected.id }
+        } ?? (presenter.selectedMeeting == nil ? presenter.candidateMeetings.count : 0)
     }
 
     private func commitFocused() {
@@ -256,261 +398,283 @@ struct MeetingChooserPopoverView: View {
         presenter.selectMeeting(options[focusedIndex])
     }
 
-    @ViewBuilder
-    private func optionRow(
-        meeting: MeetingContext?,
-        isSelected: Bool,
-        isFocused: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: 12) {
-                Group {
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(ODColors.accent)
-                    } else {
-                        Color.clear
-                    }
-                }
-                .frame(width: 16, height: 16)
-
+    private func optionRow(meeting: MeetingContext?, index: Int) -> some View {
+        let selected = presenter.selectedMeeting?.id == meeting?.id
+        return Button { presenter.selectMeeting(meeting) } label: {
+            HStack(spacing: 12) {
+                ReminderSymbol(check: true)
+                    .stroke(ODColors.accent, style: StrokeStyle(lineWidth: 1.7 * 16 / 24, lineCap: .round, lineJoin: .round))
+                    .frame(width: 16, height: 16)
+                    .opacity(selected ? 1 : 0)
+                    .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(meeting?.summary ?? "Без встречи")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 13))
+                        .reminderLineBox(size: 13, height: 18.2)
                         .foregroundStyle(ODColors.ink)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-
                     Text(meeting.map { formatMeetingInterval(start: $0.start, end: $0.end) } ?? "Новая запись без привязки к календарю")
                         .font(.system(size: 12))
+                        .reminderLineBox(size: 12, height: 16.8)
+                        .offset(y: -1)
                         .foregroundStyle(ODColors.muted)
                         .monospacedDigit()
                 }
-
-                Spacer(minLength: 0)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(minHeight: 56)
-            .background(isFocused ? ODColors.hover : Color.clear)
-            .contentShape(Rectangle())
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .background(focusedIndex == index ? ReminderColors.hover : .clear, in: RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ReminderButtonStyle())
         .focusable()
+        .disabled(presenter.isTransitioning)
         .accessibilityLabel(meeting?.summary ?? "Без встречи")
+        .accessibilityValue(selected ? "Выбрано" : "")
     }
 }
 
-// MARK: - Main Meeting Reminder View
+// A child panel avoids NSPopover's extra chrome and keeps the reminder frame unchanged.
+private struct MeetingChooserAnchor: NSViewRepresentable {
+    @ObservedObject var presenter: MeetingReminderPresenter
+    let restoreFocus: () -> Void
+
+    func makeNSView(context: Context) -> Anchor { Anchor() }
+    func updateNSView(_ view: Anchor, context: Context) {
+        view.presenter = presenter
+        view.restoreFocus = restoreFocus
+        if presenter.isChooserOpen { view.showChooser() } else { view.dismissChooser() }
+    }
+    static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.dismissChooser(restoreFocus: false) }
+
+    final class Anchor: NSView {
+        weak var presenter: MeetingReminderPresenter?
+        var restoreFocus: (() -> Void)?
+        private var panel: ReminderPanel?
+        private var localMonitor: Any?
+        private var globalMonitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil { dismissChooser(restoreFocus: false) }
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            panel?.appearance = effectiveAppearance
+        }
+
+        func showChooser() {
+            guard panel == nil, let parent = window, let presenter else { return }
+            let screen = parent.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? parent.frame
+            let width = min(336, max(0, screen.width - 32))
+            let height = min(420, max(0, screen.height - 32))
+            let anchor = parent.convertToScreen(convert(bounds, to: nil))
+            let below = anchor.minY - screen.minY - 24
+            let above = screen.maxY - anchor.maxY - 24
+            let y = below >= height || below >= above ? anchor.minY - height - 8 : anchor.maxY + 8
+            let frame = NSRect(x: max(screen.minX + 16, min(anchor.minX, screen.maxX - width - 16)).rounded(),
+                y: max(screen.minY + 16, min(y, screen.maxY - height - 16)).rounded(), width: width, height: height)
+            let chooser = ReminderPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            chooser.isOpaque = false
+            chooser.appearance = parent.effectiveAppearance
+            chooser.backgroundColor = .clear
+            chooser.hasShadow = false
+            chooser.isReleasedWhenClosed = false
+            chooser.hidesOnDeactivate = false
+            chooser.collectionBehavior = parent.collectionBehavior
+            chooser.level = parent.level
+            let host = NSHostingView(rootView: MeetingChooserPopoverView(presenter: presenter, width: width, height: height))
+            host.sizingOptions = []
+            chooser.contentView = ReminderSurfaceHost(hostingView: host, radius: 12)
+            chooser.setFrame(ReminderSurfaceHost.paintFrame(for: frame), display: true)
+            parent.addChildWindow(chooser, ordered: .above)
+            panel = chooser
+            chooser.makeKeyAndOrderFront(nil)
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                guard let self else { return event }
+                if event.window === self.panel, let card = self.panel?.cardView,
+                   card.bounds.contains(card.convert(event.locationInWindow, from: nil)) { return event }
+                if self.convert(self.bounds, to: nil).contains(event.locationInWindow), event.window === self.window { return event }
+                self.closeFromOutside()
+                return event
+            }
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+                MainActor.assumeIsolated { self?.closeFromOutside() }
+            }
+        }
+
+        private func closeFromOutside() {
+            presenter?.isChooserOpen = false
+            dismissChooser(restoreFocus: false)
+            restoreFocus?()
+        }
+
+        func dismissChooser(restoreFocus shouldRestore: Bool = true) {
+            guard let panel else { return }
+            let wasKey = panel.isKeyWindow
+            if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+            if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+            localMonitor = nil
+            globalMonitor = nil
+            panel.parent?.removeChildWindow(panel)
+            panel.orderOut(nil)
+            panel.contentView = nil
+            self.panel = nil
+            if shouldRestore {
+                if wasKey { window?.makeKey() }
+                restoreFocus?()
+            }
+        }
+    }
+}
+
+// MARK: - Main reminder
 
 struct MeetingReminderView: View {
     @ObservedObject var presenter: MeetingReminderPresenter
+    var width: CGFloat = 360
     @FocusState private var chooserFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    contentHeader
-                    if case .terminalError(let reason) = presenter.mode {
-                        terminalErrorContent(reason: reason)
-                    } else {
-                        if presenter.mode == .recording {
-                            recordingContextBox
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            ViewThatFits(in: .vertical) {
+                textContent
+                ScrollView(.vertical) { textContent }
             }
-
-            actionsArea
+            actionsArea.fixedSize(horizontal: false, vertical: true)
         }
-        .padding(24)
-        .frame(width: 440)
+        .padding(17) // Border 1 + inner padding 16, inside the outer frame.
+        .frame(width: width)
         .modifier(MeetingOverlaySurface(capsule: false))
-        .onChange(of: presenter.explanationText) { _, _ in presenter.onLayoutChanged?() }
+        .onChange(of: presenter.isShortRecording) { _, _ in presenter.onLayoutChanged?() }
+        .onChange(of: presenter.currentRecordingTitle) { _, _ in presenter.onLayoutChanged?() }
+        .onChange(of: presenter.currentRecordingElapsedText) { _, _ in presenter.onLayoutChanged?() }
     }
 
-    @ViewBuilder
-    private var contentHeader: some View {
-        switch presenter.mode {
-        case .terminalError:
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Не удалось начать запись")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(ODColors.ink)
-            }
-        case .idle, .recording:
-            VStack(alignment: .leading, spacing: 0) {
-                Text(presenter.mode == .recording ? "Начинается следующая встреча" : "Встреча начинается")
-                    .font(.system(size: 13, weight: .medium))
-                    .odLineBox(size: 13, height: 19.5)
-                    .foregroundStyle(ODColors.muted)
-
-                Text(presenter.selectedMeeting?.summary ?? "Без встречи")
-                    .font(.system(size: 28, weight: .semibold))
-                    .tracking(-0.6)
-                    .odLineBox(size: 28, height: 33.6)
-                    .foregroundStyle(ODColors.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 12)
-
-                Text(presenter.selectedMeeting.map { formatMeetingInterval(start: $0.start, end: $0.end) } ?? "Новая запись без привязки к календарю")
-                    .font(.system(size: 16))
-                    .odLineBox(size: 16, height: 24)
-                    .foregroundStyle(ODColors.muted)
-                    .monospacedDigit()
-                    .padding(.top, 8)
-
-                Button {
-                    presenter.isChooserOpen.toggle()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Другая встреча")
-                            .font(.system(size: 13, weight: .medium))
-                        Image(systemName: presenter.isChooserOpen ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundStyle(ODColors.ink)
-                }
-                .buttonStyle(.plain)
-                .focusable()
-                .focused($chooserFocused)
-                .onKeyPress(.space) {
-                    presenter.isChooserOpen = true
-                    return .handled
-                }
-                .onKeyPress(.return) {
-                    presenter.isChooserOpen = true
-                    return .handled
-                }
-                .frame(minHeight: 36)
-                .padding(.top, 16)
-                .popover(isPresented: $presenter.isChooserOpen, arrowEdge: .bottom) {
-                    MeetingChooserPopoverView(presenter: presenter)
-                        .onDisappear {
-                            DispatchQueue.main.async { chooserFocused = true }
-                        }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func terminalErrorContent(reason: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(reason)
-                .font(.system(size: 14))
-                .foregroundStyle(ODColors.muted)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private var recordingContextBox: some View {
+    private var textContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Divider()
-                .background(ODColors.line)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(Color(nsColor: .systemRed))
-                        .frame(width: 8, height: 8)
-
-                    Text("Сейчас записывается")
-                        .font(.system(size: 13, weight: .medium))
-                        .odLineBox(size: 13, height: 19.5)
-                        .foregroundStyle(ODColors.muted)
-                }
-
-                HStack(spacing: 6) {
-                    Text(presenter.currentRecordingTitle)
-                        .font(.system(size: 15, weight: .semibold))
+            if case .terminalError(let reason) = presenter.mode {
+                Text("Не удалось начать запись")
+                    .font(Font(NSFont.systemFont(ofSize: 21, weight: NSFont.Weight(rawValue: 0.33))))
+                    .reminderLineBox(size: 21, height: 26.25)
+                    .foregroundStyle(ODColors.ink)
+                Text(reason)
+                    .font(.system(size: 12))
+                    .reminderLineBox(size: 12, height: 18)
+                    .foregroundStyle(ODColors.muted)
+                    .textSelection(.enabled)
+                    .padding(.top, 8)
+            } else {
+                Text(presenter.mode == .recording ? "Следующая встреча" : "Встреча начинается")
+                    .font(.system(size: 12, weight: .medium))
+                    .tracking(0.12)
+                    .reminderLineBox(size: 12, height: 16.8)
+                    .offset(y: -0.5)
+                    .foregroundStyle(ODColors.muted)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(presenter.selectedMeeting?.summary ?? "Без встречи")
+                        .font(Font(NSFont.systemFont(ofSize: 21, weight: NSFont.Weight(rawValue: 0.33))))
+                        .tracking(-0.4)
+                        .reminderLineBox(size: 21, height: 26.25)
+                        .offset(y: 0.5)
                         .foregroundStyle(ODColors.ink)
-                        .lineLimit(1)
-
-                    Text("·")
-                        .foregroundStyle(ODColors.muted)
-
-                    Text(presenter.currentRecordingElapsedText)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(ODColors.ink)
+                    Text(presenter.selectedMeeting.map { formatMeetingInterval(start: $0.start, end: $0.end) } ?? "Новая запись без привязки к календарю")
+                        .font(.system(size: 13))
+                        .reminderLineBox(size: 13, height: 19.5)
+                        .offset(y: 0.5)
                         .monospacedDigit()
+                        .foregroundStyle(ODColors.muted)
                 }
-                .odLineBox(size: 15, height: 22.5)
+                .padding(.top, 8)
+                if presenter.mode == .recording {
+                    recordingContext.padding(.top, 12)
+                }
             }
-            .padding(.vertical, 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
 
-            Divider()
-                .background(ODColors.line)
-
-            Text(presenter.explanationText)
-                .font(.system(size: 14))
-                .odLineBox(size: 14, height: 21)
-                .foregroundStyle(ODColors.muted)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 12)
+    private var recordingContext: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(ODColors.line).frame(height: 1)
+            HStack(spacing: 8) {
+                Circle().fill(ReminderColors.recording).frame(width: 6, height: 6)
+                (Text("Сейчас: ") + Text(presenter.currentRecordingTitle).font(Font(NSFont.systemFont(ofSize: 12, weight: NSFont.Weight(rawValue: 0.245))))
+                    .foregroundColor(ODColors.ink) + Text(" · \(presenter.currentRecordingElapsedText.replacingOccurrences(of: ":", with: "\u{2060}:\u{2060}"))"))
+                    .font(.system(size: 12))
+                    .reminderLineBox(size: 12, height: 18)
+                    .foregroundStyle(ODColors.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.top, 10)
+            if presenter.isShortRecording {
+                Text("Запись короче 10 секунд будет отменена")
+                    .font(.system(size: 12))
+                    .reminderLineBox(size: 12, height: 18)
+                    .foregroundStyle(ODColors.muted)
+                    .padding(.top, 8)
+            }
         }
     }
 
-    @ViewBuilder
-    private var actionsArea: some View {
-        switch presenter.mode {
-        case .terminalError:
-            Button {
-                presenter.dismissError()
-            } label: {
-                Text("Закрыть").frame(maxWidth: .infinity, minHeight: 28)
-            }
-            .buttonStyle(ODButtonStyle(primary: true))
-
-        case .idle:
-            VStack(spacing: 16) {
-                Divider().background(ODColors.line)
-                HStack {
-                    Button("Пропустить") {
-                        presenter.skip()
+    @ViewBuilder private var actionsArea: some View {
+        if case .terminalError = presenter.mode {
+            primaryButton("Закрыть", action: presenter.dismissError)
+        } else {
+            VStack(spacing: 4) {
+                primaryButton(presenter.mode == .recording ? "Завершить и начать новую" : "Начать запись", action: presenter.accept)
+                HStack(spacing: 8) {
+                    Button { presenter.isChooserOpen.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Text("Другая встреча")
+                                .font(.system(size: 12, weight: .medium))
+                                .reminderLineBox(size: 12, height: 18)
+                            ReminderSymbol()
+                                .stroke(style: StrokeStyle(lineWidth: 1.7 * 16 / 24, lineCap: .round, lineJoin: .round))
+                                .frame(width: 16, height: 16)
+                                .rotationEffect(.degrees(presenter.isChooserOpen ? 180 : 0))
+                        }
+                        .padding(.vertical, 8).padding(.horizontal, 4)
+                        .frame(minHeight: 36)
+                        .background(presenter.isChooserOpen ? ReminderColors.hover : .clear, in: RoundedRectangle(cornerRadius: 8))
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(ODColors.ink)
-                    .frame(minHeight: 44)
-
-                    Spacer()
-
-                    Button {
-                        presenter.accept()
-                    } label: {
-                        Text("Начать запись").padding(.horizontal, 4).frame(minHeight: 28)
+                    .buttonStyle(ReminderButtonStyle())
+                    .focusable()
+                    .focused($chooserFocused)
+                    .onKeyPress(.space) { presenter.isChooserOpen = true; return .handled }
+                    .onKeyPress(.return) { presenter.isChooserOpen = true; return .handled }
+                    .background(MeetingChooserAnchor(presenter: presenter) { chooserFocused = true })
+                    .accessibilityValue(presenter.isChooserOpen ? "Раскрыто" : "Закрыто")
+                    Spacer(minLength: 0)
+                    Button(action: presenter.skip) {
+                        Text("Пропустить")
+                            .font(Font(NSFont.systemFont(ofSize: presenter.mode == .recording ? 13 : 12, weight: NSFont.Weight(rawValue: 0.245))))
+                            .reminderLineBox(size: presenter.mode == .recording ? 13 : 12, height: presenter.mode == .recording ? 19.5 : 18)
+                            .padding(.vertical, 8).padding(.horizontal, 4)
+                            .frame(minHeight: presenter.mode == .recording ? 40 : 36)
                     }
-                    .buttonStyle(ODButtonStyle(primary: true))
-                    .disabled(presenter.isTransitioning)
+                    .buttonStyle(ReminderButtonStyle())
                 }
             }
-
-        case .recording:
-            VStack(spacing: 8) {
-                Button {
-                    presenter.accept()
-                } label: {
-                    Text("Завершить и начать новую").frame(maxWidth: .infinity, minHeight: 28)
-                }
-                .buttonStyle(ODButtonStyle(primary: true))
-                .disabled(presenter.isTransitioning)
-
-                Button("Пропустить") {
-                    presenter.skip()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(ODColors.ink)
-                .frame(maxWidth: .infinity, minHeight: 44)
-            }
+            .disabled(presenter.isTransitioning)
         }
+    }
+
+    private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(Font(NSFont.systemFont(ofSize: 13, weight: NSFont.Weight(rawValue: 0.245))))
+                .reminderLineBox(size: 13, height: 19.5)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 9)
+                .padding(.horizontal, presenter.mode == .recording ? 8 : 12)
+                .frame(maxWidth: .infinity, minHeight: 40)
+        }
+        .buttonStyle(ReminderButtonStyle(primary: true))
+        .disabled(presenter.isTransitioning)
     }
 }
