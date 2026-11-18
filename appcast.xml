@@ -5,6 +5,17 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.1.0-beta.2</title>
+            <description><![CDATA[<p>Компактное напоминание о встрече в Meeting Companion 2.1.0-beta.2.</p><p>В карточке видны название и время встречи. Другую встречу можно выбрать в отдельном списке с прокруткой.</p>]]></description>
+            <pubDate>Wed, 18 Nov 2026 16:36:22 +0300</pubDate>
+            <sparkle:channel>beta</sparkle:channel>
+            <sparkle:version>88</sparkle:version>
+            <sparkle:shortVersionString>2.1.0-beta.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.1.0-beta.2/Meeting-Companion-2.1.0-beta.2-arm64.zip" length="17277926" type="application/octet-stream" sparkle:edSignature="m+0Gat/McvaSwAc20iiBYhOFPKNBs6NXxSv+iNA373e5FFU7O+QquZXHGDzywPxXjnyNyUKjDxwZys22U+iYAw=="/>
+        </item>
+        <item>
             <title>2.1.0-beta.1</title>
             <description><![CDATA[<p>Meeting Companion 2.1.0-beta.1, build 87.</p><ul><li>Общий разбор говорящих через счётчик в описании транскрипта: все реплики голоса, прослушивание фрагментов и назначение имени.</li><li>Переход из быстрой правки ко всему голосу; прежние ручные имена сохраняются до явного разрешения замены.</li><li>Свободные календарные подсказки в обоих редакторах, повторный ручной ввод разрешён.</li><li>Уточнены оформление индикатора и стабильность карточки при Play/Pause.</li></ul><p>Записи, исходные результаты и ручные правки сохраняются. Автоматическое определение людей не добавлено. macOS 15+, Apple Silicon. Без Apple notarization.</p>]]></description>
             <pubDate>Wed, 18 Nov 2026 00:51:26 +0300</pubDate>
