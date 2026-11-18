@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "meeting-reminder-compact-handoff/openspec/changes/meeting-reminder-compact/reference/index.html",
+  "entry": "meeting-reminder-compact-handoff/openspec/changes/meeting-reminder-compact/reference/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-11-17T21:43:28.552Z",
+  "updatedAt": "2026-11-17T21:43:28.552Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

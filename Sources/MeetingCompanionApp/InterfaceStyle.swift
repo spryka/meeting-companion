@@ -655,8 +655,11 @@ public struct MeetingOverlaySurface: ViewModifier {
     }
 
     @ViewBuilder public func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: capsule ? 36 : 24)
-        if #available(macOS 26.0, *) {
+        let shape = RoundedRectangle(cornerRadius: capsule ? 36 : 16, style: .circular)
+        if !capsule {
+            content.background(ODColors.surface, in: shape)
+                .overlay(shape.strokeBorder(ODColors.line, lineWidth: 1))
+        } else if #available(macOS 26.0, *) {
             content.glassEffect(.regular, in: shape)
         } else {
             content.background(.regularMaterial, in: shape)

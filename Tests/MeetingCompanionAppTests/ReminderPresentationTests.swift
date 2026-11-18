@@ -141,6 +141,30 @@ import Testing
         #expect(!model.isRecording)
     }
 
+    @Test func automaticReminderPreservesAcknowledgementEligibilityAndLiveSession() throws {
+        let current = makeMeeting(id: "current", title: "Агент B2C", startOffset: -60)
+        let concurrent = makeMeeting(id: "concurrent", title: "Обсуждение проекта", startOffset: -30)
+        let future = makeMeeting(id: "future", title: "Позже", startOffset: 300)
+        let ended = makeMeeting(id: "ended", title: "Ранее", startOffset: -1800, duration: 300)
+        calendar.setEventsForTesting([current, concurrent, future, ended])
+        let sessionID = UUID()
+        model.isRecording = true
+        model.activeSessionID = sessionID
+        model.setRecordingMeetingIDForTesting(current.id)
+        let delegate = RecorderAppDelegate(model: model)
+        delegate.showReminder(current)
+        #expect(delegate.reminder == nil, "The recording's own meeting must only be acknowledged")
+        #expect(defaults.dictionary(forKey: "meetingReminders")?[current.id] != nil)
+        model.setRecordingMeetingIDForTesting("other-recording")
+        delegate.showReminder(current)
+        let panel = try #require(delegate.reminder)
+        let handled = try #require(defaults.dictionary(forKey: "meetingReminders"))
+        #expect(handled[current.id] != nil && handled[concurrent.id] != nil)
+        #expect(handled[future.id] == nil && handled[ended.id] == nil)
+        panel.reminderView?.rootView.presenter.skip()
+        #expect(delegate.reminder == nil && model.isRecording && model.activeSessionID == sessionID)
+    }
+
     @Test func explanatoryTextDifferentiatesShortAndNormalRecording() {
         let m1 = makeMeeting(id: "m1", title: "Next Meeting")
         calendar.setEventsForTesting([m1])
@@ -272,7 +296,7 @@ import Testing
 
         let idleHosting = NSHostingView(rootView: MeetingReminderView(presenter: presenter))
         let idleSize = idleHosting.fittingSize
-        #expect(idleSize.width == 440)
+        #expect(idleSize.width == 360)
         #expect(idleSize.height > 150)
 
         // Switch to recording mode
@@ -287,7 +311,7 @@ import Testing
         )
         let recordingHosting = NSHostingView(rootView: MeetingReminderView(presenter: recordingPresenter))
         let recordingSize = recordingHosting.fittingSize
-        #expect(recordingSize.width == 440)
+        #expect(recordingSize.width == 360)
         // Recording state has extra context box, so it should be taller than idle
         #expect(recordingSize.height > idleSize.height)
 
@@ -295,7 +319,25 @@ import Testing
         recordingPresenter.mode = .terminalError(reason: "Не удалось остановить сессию")
         let errorHosting = NSHostingView(rootView: MeetingReminderView(presenter: recordingPresenter))
         let errorSize = errorHosting.fittingSize
-        #expect(errorSize.width == 440)
+        #expect(errorSize.width == 360)
+    }
+
+    @Test func compactPlacementFitsNarrowScreenAndLongContent() {
+        let screen = NSRect(x: -420, y: 80, width: 360, height: 400)
+        let frame = ReminderPanel.reminderFrame(fittingSize: NSSize(width: 360, height: 1200),
+            screen: screen, capsule: nil)
+        #expect(frame.width == 328)
+        #expect(frame.height == 368)
+        #expect(screen.insetBy(dx: 16, dy: 16).contains(frame))
+        let short = ReminderPanel.reminderFrame(fittingSize: NSSize(width: 360, height: 180),
+            screen: NSRect(x: 0, y: 0, width: 1280, height: 900), capsule: nil)
+        #expect(short.width == 360)
+        #expect(short.height == 180, "Fitting height must not inherit the old 200pt minimum")
+        let capsule = NSRect(x: screen.maxX - 300, y: screen.minY + 140, width: 280, height: 80)
+        let beside = ReminderPanel.reminderFrame(fittingSize: NSSize(width: 360, height: 1200),
+            screen: screen, capsule: capsule)
+        #expect(screen.insetBy(dx: 16, dy: 16).contains(beside))
+        #expect(!beside.intersects(capsule))
     }
 
     @Test func chooserPopoverDimensionsAreBounded() {
@@ -312,8 +354,26 @@ import Testing
 
         let chooserHosting = NSHostingView(rootView: MeetingChooserPopoverView(presenter: presenter))
         let chooserSize = chooserHosting.fittingSize
-        #expect(chooserSize.width == 360)
-        #expect(chooserSize.height <= 440)
+        #expect(chooserSize.width == 336)
+        #expect(chooserSize.height <= 420)
+    }
+
+    @Test func productionReminderRendersBothSurfaceShadows() throws {
+        _ = NSApplication.shared
+        let meeting = makeMeeting(id: "shadow", title: "Агент B2C")
+        calendar.setEventsForTesting([meeting])
+        let delegate = RecorderAppDelegate(model: model)
+        delegate.showReminder(meeting)
+        let panel = try #require(delegate.reminder)
+        let content = try #require(panel.contentView)
+        defer { panel.reminderView?.rootView.presenter.skip() }
+        content.layoutSubtreeIfNeeded()
+        let shadows = content.layer?.sublayers?.filter { $0.shadowPath != nil && $0.shadowOpacity > 0 } ?? []
+        #expect(shadows.count == 2, "The reminder must render both reference surface shadows")
+        #expect(shadows.map(\.shadowRadius) == [40, 4])
+        #expect(shadows.allSatisfy { $0.shadowPath?.boundingBoxOfPath.width == 360 })
+        #expect(panel.cardFrame.width == 360)
+        #expect(content.hitTest(NSPoint(x: 10, y: 10)) == nil, "Transparent shadow paint must not be a view hit target")
     }
 
     @Test func openReminderPublishesElapsedAndCalendarChanges() {
@@ -343,24 +403,24 @@ import Testing
         model.elapsed = 15
         let delegate = RecorderAppDelegate(model: model)
         defer {
-            (delegate.reminder?.contentView as? NSHostingView<MeetingReminderView>)?.rootView.presenter.skip()
+            delegate.reminder?.reminderView?.rootView.presenter.skip()
         }
         weak var releasedPanel: NSPanel?
         weak var releasedPresenter: MeetingReminderPresenter?
         weak var releasedChooser: NSWindow?
-        var panel: NSPanel?
+        var panel: ReminderPanel?
         var host: NSHostingView<MeetingReminderView>?
         var oldLayout: (() -> Void)?
         try autoreleasepool {
             delegate.showReminder(meeting)
             panel = try #require(delegate.reminder)
-            host = try #require(panel?.contentView as? NSHostingView<MeetingReminderView>)
+            host = try #require(panel?.reminderView)
             let reference = NSHostingView(rootView: host!.rootView)
             let screenHeight = NSScreen.main?.visibleFrame.height ?? 900
             if let path = ProcessInfo.processInfo.environment["REMINDER_NATIVE_ROOT"] {
                 try snapshot(host!, path: path, name: "recording-panel-" + dismissal)
             }
-            #expect(panel!.frame.height == max(200, min(screenHeight - 32, reference.fittingSize.height)))
+            #expect(panel!.cardFrame.height == min(screenHeight - 32, reference.fittingSize.height))
             #expect(host!.fittingSize.height > 200)
             releasedPanel = panel
             releasedPresenter = host!.rootView.presenter
@@ -402,16 +462,41 @@ import Testing
     }
 
     @discardableResult
-    private func snapshot(_ host: NSView, path: String, name: String) throws -> NSBitmapImageRep {
+    private func snapshot(_ host: NSView, path: String, name: String, scale: CGFloat? = nil) throws -> NSBitmapImageRep {
         let directory = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        print("NATIVE \(name) frame=\(host.frame) fitting=\(host.fittingSize) scale=\(host.window?.backingScaleFactor ?? 0)")
         host.layoutSubtreeIfNeeded()
         host.displayIfNeeded()
-        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        let bitmap: NSBitmapImageRep
+        if let scale {
+            bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+                pixelsWide: Int(ceil(host.bounds.width * scale)), pixelsHigh: Int(ceil(host.bounds.height * scale)),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0))
+            bitmap.size = host.bounds.size
+        } else {
+            bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        }
         host.cacheDisplay(in: host.bounds, to: bitmap)
         try #require(bitmap.representation(using: .png, properties: [:]))
             .write(to: directory.appendingPathComponent(name + ".png"))
+        let origin = host.window?.convertToScreen(host.convert(host.bounds, to: nil)) ?? host.bounds
+        let tree = accessibilityElements(host).map { element -> [String: Any] in
+            let frame = element.accessibilityFrame()
+            return ["role": element.accessibilityRole()?.rawValue ?? "", "label": element.accessibilityLabel() ?? "",
+                "value": element.accessibilityValue() as? String ?? "",
+                "x": frame.minX - origin.minX, "y": origin.maxY - frame.maxY, "width": frame.width, "height": frame.height]
+        }
+        try JSONSerialization.data(withJSONObject: ["width": host.bounds.width, "height": host.bounds.height,
+            "pixelWidth": bitmap.pixelsWide, "pixelHeight": bitmap.pixelsHigh, "accessibility": tree], options: [.prettyPrinted, .sortedKeys])
+            .write(to: directory.appendingPathComponent(name + ".json"))
         return bitmap
+    }
+
+    private func accessibilityElements(_ object: Any, depth: Int = 0) -> [any NSAccessibilityProtocol] {
+        guard depth < 30, let element = object as? any NSAccessibilityProtocol else { return [] }
+        return [element] + (element.accessibilityChildren() ?? []).flatMap { accessibilityElements($0, depth: depth + 1) }
     }
 
     private func expectFullWidthBluePrimary(_ bitmap: NSBitmapImageRep) {
@@ -442,18 +527,18 @@ import Testing
         let delegate = RecorderAppDelegate(model: model)
         delegate.showReminder(events[0])
         let panel = try #require(delegate.reminder)
-        let host = try #require(panel.contentView as? NSHostingView<MeetingReminderView>)
+        let host = try #require(panel.reminderView)
         let presenter = host.rootView.presenter
         defer { presenter.isChooserOpen = false; presenter.skip() }
         panel.makeKeyAndOrderFront(nil)
         try await Task.sleep(for: .milliseconds(100))
         try snapshot(host, path: path, name: "idle-panel")
 
-        func openChooser() async throws -> NSWindow {
+        func openChooser() async throws -> ReminderPanel {
             presenter.isChooserOpen = true
             try await Task.sleep(for: .milliseconds(150))
             let popover = panel.childWindows?.first { $0.isVisible }
-            return try #require(popover)
+            return try #require(popover as? ReminderPanel)
         }
         func key(_ code: UInt16, _ characters: String, in window: NSWindow, phase: NSEvent.EventType = .keyDown) throws {
             let event = try #require(NSEvent.keyEvent(with: phase, location: .zero, modifierFlags: [],
@@ -468,13 +553,13 @@ import Testing
             try key(125, "\u{f701}", in: chooser)
             try await Task.sleep(for: .milliseconds(15))
         }
-        try snapshot(try #require(chooser.contentView), path: path, name: "chooser-last-row")
+        try snapshot(try #require(chooser.cardView), path: path, name: "chooser-last-row")
         try key(36, "\r", in: chooser)
         try await Task.sleep(for: .milliseconds(100))
         #expect(presenter.selectedMeeting?.id == "m15")
         #expect(!presenter.isChooserOpen)
         let reopened = try await openChooser()
-        try snapshot(try #require(reopened.contentView), path: path, name: "chooser-reopened")
+        try snapshot(try #require(reopened.cardView), path: path, name: "chooser-reopened")
         try key(53, "\u{1b}", in: reopened)
         try await Task.sleep(for: .milliseconds(100))
         #expect(!presenter.isChooserOpen)
@@ -494,6 +579,95 @@ import Testing
         #expect(!model.isRecording)
     }
 
+    @Test func nativeCompactReferenceAndConstrainedViewport() async throws {
+        guard let path = ProcessInfo.processInfo.environment["REMINDER_NATIVE_ROOT"] else { return }
+        _ = NSApplication.shared
+        let start = try #require(Calendar.current.date(bySettingHour: 12, minute: 30, second: 0, of: Date()))
+        let titles = ["Агент B2C", "Командная встреча", "Обсуждение проекта", "Синхронизация", "Дизайн-ревью",
+            "Разбор исследования", "Обратная связь от поддержки", "Подготовка релиза", "Архитектурное обсуждение",
+            "Ретроспектива", "Интервью", "Обсуждение приоритетов команды на следующий квартал"]
+        let events = titles.enumerated().map { index, title in
+            MeetingContext(id: "reference-\(index)", calendar: "Synthetic", summary: title, start: start,
+                end: start.addingTimeInterval(index == 5 ? 2700 : [2, 4, 8, 9, 10, 11].contains(index) ? 3600 : 1800))
+        }
+        calendar.setEventsForTesting(events)
+        let delegate = RecorderAppDelegate(model: model)
+        let oldKey = NSApp.keyWindow
+        delegate.showReminder(events[0])
+        let panel = try #require(delegate.reminder)
+        let host = try #require(panel.reminderView)
+        let presenter = host.rootView.presenter
+        defer { presenter.skip() }
+        #expect(NSApp.keyWindow === oldKey, "Automatic presentation must not take keyboard focus")
+        panel.appearance = NSAppearance(named: .aqua)
+        try await Task.sleep(for: .milliseconds(100))
+        let frame = panel.cardFrame
+        try snapshot(host, path: path, name: "compact-idle-2x")
+        try snapshot(try #require(panel.contentView), path: path, name: "compact-idle-shadow-2x")
+        try snapshot(host, path: path, name: "compact-idle-1x", scale: 1)
+        presenter.isChooserOpen = true
+        try await Task.sleep(for: .milliseconds(150))
+        let chooser = try #require(panel.childWindows?.first { $0.isVisible } as? ReminderPanel)
+        #expect(panel.cardFrame == frame)
+        #expect(chooser.cardFrame.size == NSSize(width: 336, height: 420))
+        #expect((chooser.screen?.visibleFrame ?? .zero).contains(chooser.cardFrame))
+        try snapshot(try #require(chooser.cardView), path: path, name: "compact-chooser-2x")
+        try snapshot(try #require(chooser.contentView), path: path, name: "compact-chooser-shadow-2x")
+        try snapshot(try #require(chooser.cardView), path: path, name: "compact-chooser-1x", scale: 1)
+        panel.appearance = NSAppearance(named: .darkAqua)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(chooser.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        try snapshot(try #require(chooser.contentView), path: path, name: "compact-chooser-live-dark-shadow-2x")
+        panel.appearance = NSAppearance(named: .aqua)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(chooser.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua)
+        presenter.isChooserOpen = false
+        presenter.selectMeeting(events[11])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(panel.cardFrame.height > frame.height)
+        try snapshot(host, path: path, name: "compact-long-title-2x")
+        panel.appearance = NSAppearance(named: .darkAqua)
+        try await Task.sleep(for: .milliseconds(100))
+        try snapshot(host, path: path, name: "compact-long-title-dark-2x")
+        presenter.selectMeeting(events[0])
+        for dark in [false, true] {
+            let window = ReminderPanel(contentRect: NSRect(x: 100, y: 100, width: 328, height: 180),
+                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let long = makeMeeting(id: "very-long", title: String(repeating: titles[11] + " ", count: 20))
+            var skipped = false
+            let constrainedPresenter = MeetingReminderPresenter(model: model, calendar: calendar, initialMeeting: long,
+                expectedSessionID: nil, onDismiss: { skipped = true })
+            let constrained = NSHostingView(rootView: MeetingReminderView(presenter: constrainedPresenter, width: 328))
+            constrained.sizingOptions = []
+            window.contentView = constrained
+            window.orderFront(nil)
+            try await Task.sleep(for: .milliseconds(100))
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            let scroll = try #require(descendants(constrained).compactMap { $0 as? NSScrollView }.first)
+            let document = try #require(scroll.documentView)
+            #expect(document.bounds.height > scroll.contentView.bounds.height)
+            try snapshot(constrained, path: path, name: dark ? "compact-narrow-short-dark-2x" : "compact-narrow-short-2x")
+            try snapshot(constrained, path: path, name: dark ? "compact-narrow-short-dark-1x" : "compact-narrow-short-1x", scale: 1)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: document.bounds.height - scroll.contentView.bounds.height))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            #expect(scroll.contentView.bounds.minY > 0, "The complete title and time must remain reachable by scrolling")
+            try await Task.sleep(for: .milliseconds(50))
+            try snapshot(constrained, path: path, name: dark ? "compact-narrow-scrolled-dark-2x" : "compact-narrow-scrolled-2x")
+            let skipPoint = constrained.convert(NSPoint(x: 280, y: 145), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try #require(NSEvent.mouseEvent(with: type, location: skipPoint, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                window.sendEvent(event)
+            }
+            #expect(skipped, "The lower action must remain visible and pointer-accessible on a short screen")
+            window.orderOut(nil)
+            window.contentView = nil
+            window.close()
+        }
+    }
+
     @Test func nativeReminderUpdatesElapsedAndLongContent() async throws {
         guard let path = ProcessInfo.processInfo.environment["REMINDER_NATIVE_ROOT"] else { return }
         _ = NSApplication.shared
@@ -508,7 +682,7 @@ import Testing
         delegate.setUpPresentation()
         delegate.showReminder(meeting)
         let panel = try #require(delegate.reminder)
-        let host = try #require(panel.contentView as? NSHostingView<MeetingReminderView>)
+        let host = try #require(panel.reminderView)
         defer { host.rootView.presenter.skip() }
         panel.appearance = NSAppearance(named: .aqua)
         try await Task.sleep(for: .milliseconds(100))
@@ -523,8 +697,10 @@ import Testing
         panel.appearance = NSAppearance(named: .aqua)
         try await Task.sleep(for: .milliseconds(100))
         let recordingBitmap = try snapshot(host, path: path, name: "reference-recording-native")
+        try snapshot(try #require(panel.contentView), path: path, name: "compact-recording-shadow-2x")
         expectFullWidthBluePrimary(recordingBitmap)
-        #expect(panel.frame.height > 450 && panel.frame.height < 500)
+        #expect(abs(panel.cardFrame.height - 249.546875) < 0.5)
+        try snapshot(host, path: path, name: "reference-recording-native-1x", scale: 1)
         panel.appearance = NSAppearance(named: .darkAqua)
         try await Task.sleep(for: .milliseconds(100))
         expectFullWidthBluePrimary(try snapshot(host, path: path, name: "reference-recording-native-dark"))
@@ -536,13 +712,13 @@ import Testing
         let long = makeMeeting(id: "long", title: String(repeating: "Очень длинное название встречи ", count: 50))
         host.rootView.presenter.selectMeeting(long)
         try await Task.sleep(for: .milliseconds(150))
-        #expect(panel.frame.height <= (NSScreen.main?.visibleFrame.height ?? 900) - 32)
-        #expect(!panel.frame.intersects(capsule.frame), "Tall reminders must fit beside the actual visible capsule")
+        #expect(panel.cardFrame.height <= (NSScreen.main?.visibleFrame.height ?? 900) - 32)
+        #expect(!panel.cardFrame.intersects(capsule.frame), "Tall reminders must fit beside the actual visible capsule")
         try snapshot(host, path: path, name: "recording-long-content")
         capsule.setFrameOrigin(NSPoint(x: capsule.frame.minX, y: screen.minY + 16))
         host.rootView.presenter.onLayoutChanged?()
         try await Task.sleep(for: .milliseconds(100))
-        #expect(screen.contains(panel.frame) && !panel.frame.intersects(capsule.frame))
+        #expect(screen.contains(panel.cardFrame) && !panel.cardFrame.intersects(capsule.frame))
         try snapshot(host, path: path, name: "recording-capsule-bottom")
         model.elapsed = 9
         #expect(await model.cancelRecordingIntent(sessionID: model.activeSessionID))
@@ -552,10 +728,10 @@ import Testing
         delegate.showReminder(meeting)
         let idlePanel = try #require(delegate.reminder)
         idlePanel.appearance = NSAppearance(named: .aqua)
-        let idleHost = try #require(idlePanel.contentView as? NSHostingView<MeetingReminderView>)
+        let idleHost = try #require(idlePanel.reminderView)
         try await Task.sleep(for: .milliseconds(100))
         try snapshot(idleHost, path: path, name: "reference-idle-native")
-        #expect(idlePanel.frame.height > 260 && idlePanel.frame.height < 310)
+        #expect(abs(idlePanel.cardFrame.height - 204.546875) < 0.5)
         idlePanel.appearance = NSAppearance(named: .darkAqua)
         try await Task.sleep(for: .milliseconds(100))
         try snapshot(idleHost, path: path, name: "reference-idle-native-dark")
@@ -567,6 +743,32 @@ import Testing
         expectFullWidthBluePrimary(errorBitmap)
         model.workspace.settingsInput = { false }
         idleHost.rootView.presenter.dismissError()
+    }
+
+    @Test func nativeManualSurfaceUAT() async throws {
+        guard ProcessInfo.processInfo.environment["REMINDER_NATIVE_UAT"] == "1" else { return }
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
+        NSApp.finishLaunching()
+        let start = try #require(Calendar.current.date(bySettingHour: 12, minute: 30, second: 0, of: Date()))
+        let meeting = MeetingContext(id: "uat", calendar: "Synthetic", summary: "Агент B2C", start: start, end: start.addingTimeInterval(1800))
+        let recording = ProcessInfo.processInfo.environment["REMINDER_NATIVE_UAT_STATE"] == "recording"
+        model.isRecording = recording
+        let planning = makeMeeting(id: "uat-recording", title: "Планирование")
+        model.setRecordingMeetingIDForTesting(recording ? planning.id : nil)
+        model.elapsed = 42 * 60 + 18
+        calendar.setEventsForTesting([meeting, makeMeeting(id: "uat2", title: "Обсуждение проекта")] + (recording ? [planning] : []))
+        let delegate = RecorderAppDelegate(model: model)
+        delegate.showReminder(meeting)
+        let panel = try #require(delegate.reminder)
+        defer { panel.reminderView?.rootView.presenter.skip() }
+        panel.title = "Compact Reminder QA"
+        panel.appearance = NSAppearance(named: .aqua)
+        panel.makeKeyAndOrderFront(nil)
+        let identity = "NATIVE_UAT pid=\(getpid()) window=\(panel.windowNumber) bundle=\(Bundle.main.bundleURL.path) executable=\(Bundle.main.executableURL?.path ?? "")\n"
+        FileHandle.standardOutput.write(Data(identity.utf8))
+        try await Task.sleep(for: .seconds(45))
+        #expect(model.isRecording == recording, "Manual presentation UAT must not change recording state")
     }
 }
 

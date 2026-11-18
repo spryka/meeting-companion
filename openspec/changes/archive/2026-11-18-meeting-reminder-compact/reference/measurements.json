@@ -1,0 +1,73 @@
+{
+  "environment": {
+    "devicePixelRatio": 2,
+    "innerWidth": 1280,
+    "innerHeight": 900,
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "platform": "MacIntel"
+  },
+  "theme": "light",
+  "scale": 2,
+  "recordingCard": {
+    "x": 460,
+    "y": 325.2265625,
+    "width": 360,
+    "height": 249.546875
+  },
+  "idleCard": {
+    "x": 460,
+    "y": 347.7265625,
+    "width": 360,
+    "height": 204.546875
+  },
+  "cardWithChooser": {
+    "x": 460,
+    "y": 347.7265625,
+    "width": 360,
+    "height": 204.546875
+  },
+  "chooser": {
+    "x": 477,
+    "y": 71.2734375,
+    "width": 336,
+    "height": 420
+  },
+  "styles": {
+    "recording": {
+      "#reminder": "Element: section.panel\nBox: x=460 y=325 w=360 h=250\nChildren: 4  Text length: 164\nScroll Y: size=248 client=248 overflowing=false top=0\nScroll X: size=358 client=358 overflowing=false left=0\nStyles: width=360px height=249.547px padding=16px margin=0px gap=normal border-width=1px border-radius=16px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#reminderLabel": "Element: p.eyebrow\nBox: x=477 y=342 w=326 h=17\nChildren: 0  Text length: 17\nScroll Y: size=17 client=17 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=16.7969px padding=0px margin=0px gap=normal border-width=0px border-radius=0px font-size=12px font-weight=500 line-height=16.8px letter-spacing=0.12px",
+      ".meeting": "Element: div.meeting\nBox: x=477 y=367 w=326 h=52\nChildren: 2  Text length: 32\nScroll Y: size=52 client=52 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=51.75px padding=0px margin=8px 0px 0px gap=2px border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#meetingTitle": "Element: h1\nBox: x=477 y=367 w=326 h=26\nChildren: 0  Text length: 9\nScroll Y: size=26 client=26 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=26.25px padding=0px margin=0px gap=normal border-width=0px border-radius=0px font-size=21px font-weight=650 line-height=26.25px letter-spacing=-0.4px",
+      "#meetingTime": "Element: p.time\nBox: x=477 y=399 w=326 h=20\nChildren: 0  Text length: 20\nScroll Y: size=20 client=20 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=19.5px padding=0px margin=4px 0px 0px gap=normal border-width=0px border-radius=0px font-size=13px font-weight=400 line-height=19.5px letter-spacing=normal",
+      "#currentRecording": "Element: div.current-recording\nBox: x=477 y=431 w=326 h=29\nChildren: 2  Text length: 28\nScroll Y: size=28 client=28 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=29px padding=10px 0px 0px margin=12px 0px 0px gap=8px border-width=1px 0px 0px border-radius=0px font-size=12px font-weight=400 line-height=18px letter-spacing=normal",
+      ".record-dot": "Element: span.record-dot\nBox: x=477 y=448 w=6 h=6\nChildren: 0  Text length: 0\nScroll Y: size=6 client=6 overflowing=false top=0\nScroll X: size=6 client=6 overflowing=false left=0\nStyles: width=6px height=6px padding=0px margin=0px gap=normal border-width=0px border-radius=50% font-size=12px font-weight=400 line-height=18px letter-spacing=normal\nAria: aria-hidden=true",
+      ".actions": "Element: div.actions\nBox: x=477 y=474 w=326 h=84\nChildren: 2  Text length: 65\nScroll Y: size=84 client=84 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=84px padding=0px margin=14px 0px 0px gap=4px border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#start": "Element: button.button\nBox: x=477 y=474 w=326 h=40\nChildren: 0  Text length: 24\nScroll Y: size=40 client=40 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=40px padding=9px 8px margin=0px gap=8px border-width=0px border-radius=8px font-size=13px font-weight=550 line-height=19.5px letter-spacing=normal",
+      ".secondary-actions": "Element: div.secondary-actions\nBox: x=477 y=518 w=326 h=40\nChildren: 2  Text length: 33\nScroll Y: size=40 client=40 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=40px padding=0px margin=0px gap=8px border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#chooseMeeting": "Element: button.choice-trigger\nBox: x=477 y=520 w=122 h=36\nChildren: 2  Text length: 14\nScroll Y: size=36 client=36 overflowing=false top=0\nScroll X: size=122 client=122 overflowing=false left=0\nStyles: width=121.586px height=36px padding=8px 4px margin=0px gap=4px border-width=0px border-radius=8px font-size=12px font-weight=500 line-height=18px letter-spacing=normal\nAria: aria-expanded=false",
+      "#skip": "Element: button.button\nBox: x=718 y=518 w=85 h=40\nChildren: 0  Text length: 10\nScroll Y: size=40 client=40 overflowing=false top=0\nScroll X: size=85 client=85 overflowing=false left=0\nStyles: width=84.8203px height=40px padding=8px 4px margin=0px gap=8px border-width=0px border-radius=8px font-size=13px font-weight=550 line-height=19.5px letter-spacing=normal"
+    },
+    "idle": {
+      "#reminder": "Element: section.panel\nBox: x=460 y=348 w=360 h=205\nChildren: 4  Text length: 154\nScroll Y: size=203 client=203 overflowing=false top=0\nScroll X: size=358 client=358 overflowing=false left=0\nStyles: width=360px height=204.547px padding=16px margin=0px gap=normal border-width=1px border-radius=16px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#reminderLabel": "Element: p.eyebrow\nBox: x=477 y=365 w=326 h=17\nChildren: 0  Text length: 18\nScroll Y: size=17 client=17 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=16.7969px padding=0px margin=0px gap=normal border-width=0px border-radius=0px font-size=12px font-weight=500 line-height=16.8px letter-spacing=0.12px",
+      ".meeting": "Element: div.meeting\nBox: x=477 y=390 w=326 h=52\nChildren: 2  Text length: 32\nScroll Y: size=52 client=52 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=51.75px padding=0px margin=8px 0px 0px gap=2px border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#meetingTitle": "Element: h1\nBox: x=477 y=390 w=326 h=26\nChildren: 0  Text length: 9\nScroll Y: size=26 client=26 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=26.25px padding=0px margin=0px gap=normal border-width=0px border-radius=0px font-size=21px font-weight=650 line-height=26.25px letter-spacing=-0.4px",
+      "#meetingTime": "Element: p.time\nBox: x=477 y=422 w=326 h=20\nChildren: 0  Text length: 20\nScroll Y: size=20 client=20 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=19.5px padding=0px margin=4px 0px 0px gap=normal border-width=0px border-radius=0px font-size=13px font-weight=400 line-height=19.5px letter-spacing=normal",
+      ".actions": "Element: div.actions\nBox: x=477 y=455 w=326 h=80\nChildren: 2  Text length: 54\nScroll Y: size=80 client=80 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=80px padding=0px margin=14px 0px 0px gap=4px border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#start": "Element: button.button\nBox: x=477 y=455 w=326 h=40\nChildren: 0  Text length: 13\nScroll Y: size=40 client=40 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=40px padding=9px 12px margin=0px gap=8px border-width=0px border-radius=8px font-size=13px font-weight=550 line-height=19.5px letter-spacing=normal",
+      ".secondary-actions": "Element: div.secondary-actions\nBox: x=477 y=499 w=326 h=36\nChildren: 2  Text length: 33\nScroll Y: size=36 client=36 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=36px padding=0px margin=0px gap=8px border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#chooseMeeting": "Element: button.choice-trigger\nBox: x=477 y=499 w=122 h=36\nChildren: 2  Text length: 14\nScroll Y: size=36 client=36 overflowing=false top=0\nScroll X: size=122 client=122 overflowing=false left=0\nStyles: width=121.586px height=36px padding=8px 4px margin=0px gap=4px border-width=0px border-radius=8px font-size=12px font-weight=500 line-height=18px letter-spacing=normal\nAria: aria-expanded=false",
+      "#skip": "Element: button.button\nBox: x=723 y=499 w=80 h=36\nChildren: 0  Text length: 10\nScroll Y: size=36 client=36 overflowing=false top=0\nScroll X: size=80 client=80 overflowing=false left=0\nStyles: width=79.6172px height=36px padding=8px 4px margin=0px gap=8px border-width=0px border-radius=8px font-size=12px font-weight=550 line-height=18px letter-spacing=normal"
+    },
+    "chooser": {
+      "#reminder": "Element: section.panel\nBox: x=460 y=348 w=360 h=205\nChildren: 4  Text length: 154\nScroll Y: size=203 client=203 overflowing=false top=0\nScroll X: size=358 client=358 overflowing=false left=0\nStyles: width=360px height=204.547px padding=16px margin=0px gap=normal border-width=1px border-radius=16px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#meetingChoices": "Element: div.choices\nBox: x=477 y=71 w=336 h=420\nChildren: 2  Text length: 518\nScroll Y: size=418 client=418 overflowing=false top=0\nScroll X: size=334 client=334 overflowing=false left=0\nStyles: width=336px height=420px padding=0px margin=0px gap=normal border-width=1px border-radius=12px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#choiceList": "Element: div.choice-list\nBox: x=478 y=72 w=334 h=352\nChildren: 12  Text length: 468\nScroll Y: size=710 client=352 overflowing=true top=0\nScroll X: size=334 client=334 overflowing=false left=0\nStyles: width=334px height=352.008px padding=4px margin=0px gap=normal border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#choiceFooter": "Element: div.choice-footer\nBox: x=478 y=424 w=334 h=66\nChildren: 1  Text length: 48\nScroll Y: size=65 client=65 overflowing=false top=0\nScroll X: size=334 client=334 overflowing=false left=0\nStyles: width=334px height=65.9922px padding=4px margin=0px gap=normal border-width=1px 0px 0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#choiceList button:first-child": "Element: button.option\nBox: x=482 y=76 w=326 h=57\nChildren: 2  Text length: 29\nScroll Y: size=57 client=57 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=56.9922px padding=10px margin=0px gap=12px border-width=0px border-radius=8px font-size=16px font-weight=400 line-height=24px letter-spacing=normal\nAria: aria-pressed=true",
+      "#choiceFooter button": "Element: button.option\nBox: x=482 y=429 w=326 h=57\nChildren: 2  Text length: 48\nScroll Y: size=57 client=57 overflowing=false top=0\nScroll X: size=326 client=326 overflowing=false left=0\nStyles: width=326px height=56.9922px padding=10px margin=0px gap=12px border-width=0px border-radius=8px font-size=16px font-weight=400 line-height=24px letter-spacing=normal\nAria: aria-pressed=false",
+      ".check-slot": "Element: span.check-slot\nBox: x=492 y=97 w=20 h=16\nChildren: 1  Text length: 0\nScroll Y: size=16 client=16 overflowing=false top=0\nScroll X: size=20 client=20 overflowing=false left=0\nStyles: width=20px height=16px padding=0px margin=0px gap=normal border-width=0px border-radius=0px font-size=16px font-weight=400 line-height=24px letter-spacing=normal",
+      "#chooseMeeting svg": "Element: svg.od-icon\nBox: x=579 y=509 w=16 h=16\nChildren: 1  Text length: 0\nScroll Y: size=16 client=16 overflowing=false top=0\nScroll X: size=16 client=16 overflowing=false left=0\nStyles: width=16px height=16px padding=0px margin=0px gap=normal border-width=0px border-radius=0px font-size=12px font-weight=500 line-height=18px letter-spacing=normal\nAria: aria-hidden=true"
+    }
+  }
+}

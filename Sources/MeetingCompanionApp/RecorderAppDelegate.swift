@@ -27,7 +27,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     private weak var settingsReturnFocus: NSResponder?
     private weak var settingsFocusWindow: NSWindow?
     private var statusItem: NSStatusItem!
-    private(set) var reminder: NSPanel?
+    private(set) var reminder: ReminderPanel?
     private var recordingObserver: AnyCancellable?
     private var busyObserver: AnyCancellable?
     private var updateObserver: AnyCancellable?
@@ -321,7 +321,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         let expectedSessionID = model.activeSessionID
 
         let panel = ReminderPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 205),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -345,37 +345,21 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             }
         )
 
-        let rootView = MeetingReminderView(presenter: presenter)
+        let screen = window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let rootView = MeetingReminderView(presenter: presenter, width: min(360, max(0, screen.width - 32)))
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.sizingOptions = [.intrinsicContentSize]
-        panel.contentView = hostingView
+        panel.contentView = ReminderSurfaceHost(hostingView: hostingView, radius: 16)
 
         let layoutPanel = { [weak self, weak panel, weak hostingView] in
             guard let self, let panel, let hostingView else { return }
             let targetSize = hostingView.fittingSize
             let screen = self.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            let width: CGFloat = 440
-            var height = max(200, min(screen.height - 32, targetSize.height))
-            let x = screen.maxX - width - 16
-            var y = screen.maxY - height - 16
-
-            if let capsulePanel = self.capsuleController?.panel, capsulePanel.isVisible {
-                let capsuleFrame = capsulePanel.frame
-                let reminderRect = NSRect(x: x, y: y, width: width, height: height)
-                if reminderRect.intersects(capsuleFrame) {
-                    let below = max(0, capsuleFrame.minY - screen.minY - 24)
-                    let above = max(0, screen.maxY - capsuleFrame.maxY - 24)
-                    if below >= height || below >= above {
-                        height = min(height, below)
-                        y = capsuleFrame.minY - height - 8
-                    } else {
-                        height = min(height, above)
-                        y = capsuleFrame.maxY + 8
-                    }
-                }
-            }
-            y = max(screen.minY + 16, min(screen.maxY - height - 16, y))
-            panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+            let capsule = self.capsuleController?.panel
+            let card = ReminderPanel.reminderFrame(fittingSize: targetSize, screen: screen,
+                capsule: capsule?.isVisible == true ? capsule?.frame : nil)
+            panel.setFrame(ReminderSurfaceHost.paintFrame(for: card), display: true)
+            panel.contentView?.layoutSubtreeIfNeeded()
         }
 
         layoutPanel()
