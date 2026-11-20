@@ -68,43 +68,14 @@ import Darwin
         return (resultURL, [hostAudio, remoteAudio, mixAudio], versionDir)
     }
 
-    private func findHelperBinary() throws -> URL {
-        struct HelperNotFoundError: LocalizedError {
-            let searched: String
-            var errorDescription: String? { "TranscriptLockHelper binary not found in current test image output directory (searched: \(searched))" }
-        }
-
-        #if canImport(Darwin)
-        var info = Dl_info()
-        guard dladdr(unsafeBitCast(TranscriptEditsLockTests.self, to: UnsafeRawPointer.self), &info) != 0,
-              let fname = info.dli_fname else {
-            throw HelperNotFoundError(searched: "dladdr could not identify current test image")
-        }
-        let imageURL = URL(fileURLWithPath: String(cString: fname))
-        var outputDirectory = imageURL.deletingLastPathComponent()
-        // SwiftPM puts the image either directly in products or in an XCTest bundle.
-        if outputDirectory.lastPathComponent == "MacOS",
-           outputDirectory.deletingLastPathComponent().lastPathComponent == "Contents",
-           outputDirectory.deletingLastPathComponent().deletingLastPathComponent().pathExtension == "xctest" {
-            outputDirectory = outputDirectory.deletingLastPathComponent()
-                .deletingLastPathComponent().deletingLastPathComponent()
-        }
-        let candidate = outputDirectory.appendingPathComponent("TranscriptLockHelper")
-        guard FileManager.default.isExecutableFile(atPath: candidate.path) else {
-            throw HelperNotFoundError(searched: candidate.path)
-        }
-        print("TranscriptLockHelper selected: \(candidate.path) (test image: \(imageURL.path))")
-        return candidate
-        #else
-        throw HelperNotFoundError(searched: "current test image lookup requires Darwin")
-        #endif
+    private func launchHelper(recordingDirectory: URL) throws -> (process: Process, stdin: Pipe, stdout: Pipe) {
+        try launchHelper(arguments: [recordingDirectory.path])
     }
 
-    private func launchHelper(recordingDirectory: URL) throws -> (process: Process, stdin: Pipe, stdout: Pipe) {
-        let helperBinary = try findHelperBinary()
+    private func launchHelper(arguments: [String]) throws -> (process: Process, stdin: Pipe, stdout: Pipe) {
         let process = Process()
-        process.executableURL = helperBinary
-        process.arguments = [recordingDirectory.path]
+        process.executableURL = try transcriptLockHelperBinary()
+        process.arguments = arguments
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -115,6 +86,40 @@ import Darwin
         try process.run()
         runningProcesses.append(process)
         return (process, stdinPipe, stdoutPipe)
+    }
+
+    @Test(arguments: [false, true])
+    func removesWorkingCopiesAfterTheWorkerIsKilled(atStartup: Bool) throws {
+        let root = try temporaryDirectory()
+        let input = root.appendingPathComponent("synthetic.wav")
+        let audio = Data([42])
+        try audio.write(to: input)
+
+        let helper = try launchHelper(arguments: ["--hold-transcription-workspace", root.path, input.path])
+        let response = try #require(try readLineWithTimeout(from: helper.stdout.fileHandleForReading))
+        let snapshot = URL(fileURLWithPath: response.trimmingCharacters(in: .newlines))
+        let workingRoot = snapshot.deletingLastPathComponent().deletingLastPathComponent()
+        let link = workingRoot.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        let active = try TranscriptionWorkspace(temporaryDirectory: root)
+        defer { withExtendedLifetime(active) {} }
+        let activeSnapshot = try active.snapshot(input, named: "host", lease: nil)
+        #expect(try Data(contentsOf: snapshot) == audio)
+
+        try #require(kill(helper.process.processIdentifier, SIGKILL) == 0)
+        helper.process.waitUntilExit()
+        #expect(helper.process.terminationStatus == SIGKILL)
+        #expect(try Data(contentsOf: snapshot) == audio)
+
+        if atStartup {
+            TranscriptionWorkspace.removeAbandoned(temporaryDirectory: root)
+        } else {
+            _ = try TranscriptionWorkspace(temporaryDirectory: root)
+        }
+        #expect(!FileManager.default.fileExists(atPath: snapshot.deletingLastPathComponent().path))
+        #expect(try Data(contentsOf: activeSnapshot) == audio)
+        #expect(try Data(contentsOf: input) == audio)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == root.path)
     }
 
     private func readLineWithTimeout(from handle: FileHandle, timeoutSeconds: Double = 5.0) throws -> String? {
@@ -428,4 +433,36 @@ import Darwin
             return true
         }
     }
+}
+
+func transcriptLockHelperBinary() throws -> URL {
+    struct HelperNotFoundError: LocalizedError {
+        let searched: String
+        var errorDescription: String? { "TranscriptLockHelper binary not found in current test image output directory (searched: \(searched))" }
+    }
+
+    #if canImport(Darwin)
+    var info = Dl_info()
+    guard dladdr(unsafeBitCast(TranscriptEditsLockTests.self, to: UnsafeRawPointer.self), &info) != 0,
+          let fname = info.dli_fname else {
+        throw HelperNotFoundError(searched: "dladdr could not identify current test image")
+    }
+    let imageURL = URL(fileURLWithPath: String(cString: fname))
+    var outputDirectory = imageURL.deletingLastPathComponent()
+    // SwiftPM puts the image either directly in products or in an XCTest bundle.
+    if outputDirectory.lastPathComponent == "MacOS",
+       outputDirectory.deletingLastPathComponent().lastPathComponent == "Contents",
+       outputDirectory.deletingLastPathComponent().deletingLastPathComponent().pathExtension == "xctest" {
+        outputDirectory = outputDirectory.deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+    }
+    let candidate = outputDirectory.appendingPathComponent("TranscriptLockHelper")
+    guard FileManager.default.isExecutableFile(atPath: candidate.path) else {
+        throw HelperNotFoundError(searched: candidate.path)
+    }
+    print("TranscriptLockHelper selected: \(candidate.path) (test image: \(imageURL.path))")
+    return candidate
+    #else
+    throw HelperNotFoundError(searched: "current test image lookup requires Darwin")
+    #endif
 }

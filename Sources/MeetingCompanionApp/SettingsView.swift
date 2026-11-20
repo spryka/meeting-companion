@@ -161,12 +161,17 @@ struct RecorderSettingsView: View {
                         Text(model.outputDirectory.path).font(.system(size: 12)).foregroundStyle(ODColors.muted).textSelection(.enabled)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     Button("Выбрать…", action: model.chooseFolder)
-                        .disabled(model.isRecording || model.isBusy || model.diagnosticRunning)
+                        .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.audioRetentionRunning)
                 }
                 if let error = model.errorMessage {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
             }
+            ODSettingsGroup("Хранение аудио") {
+                ODSettingsToggle("Удалять аудио по сроку", hint: "Срок считается от последнего изменения аудио, в том числе у записей с незавершённой обработкой. Аудиофайлы удаляются безвозвратно. Расшифровки, правки и итоги сохраняются.", isOn: $model.audioRetentionEnabled)
+                Stepper("Срок хранения, суток — \(model.audioRetentionDays)", value: $model.audioRetentionDays, in: 1...365)
+            }
+            .disabled(model.audioRetentionRunning)
             DisclosureGroup("Дополнительно") {
                     ODSettingsPicker(title: "Захват системного звука", selection: $model.captureBackend,
                         options: [("Core Audio Tap (рекомендуется)", .coreAudioTap), ("ScreenCaptureKit (при проблемах)", .screenCaptureKit)])

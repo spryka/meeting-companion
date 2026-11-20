@@ -27,9 +27,16 @@ public enum TranscriptPublishError: LocalizedError, Sendable {
 
 public struct TranscriptPublisher: Sendable {
     public let recordingDirectory: URL
+    private let lease: RecordingDirectoryLease?
 
     public init(recordingDirectory: URL) {
         self.recordingDirectory = recordingDirectory.resolvingSymlinksInPath().standardizedFileURL
+        lease = nil
+    }
+
+    package init(lease: RecordingDirectoryLease) {
+        recordingDirectory = lease.directory
+        self.lease = lease
     }
 
     /// Validates directory containment ensuring neither raw nor transcripts escapes via symlinks.
@@ -112,7 +119,11 @@ public struct TranscriptPublisher: Sendable {
             throw TranscriptPublishError.invalidResultID(resultID)
         }
 
+        try lease?.validateLocation()
         let transcriptsDir = try validateDirectoryContainment()
+        let root = try lease?.openDirectory() ?? RecordingAudioDirectory(recordingDirectory)
+        try root.validateLocation()
+        let transcripts = try root.directory(at: transcriptsDir)
         let document = try document.includingSavedContext(in: recordingDirectory)
         let targetDir = transcriptsDir.appendingPathComponent(resultID)
 
@@ -122,11 +133,11 @@ public struct TranscriptPublisher: Sendable {
 
         let stagingDirName = ".staging-\(resultID)-\(UUID().uuidString)"
         let stagingDir = transcriptsDir.appendingPathComponent(stagingDirName)
-        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        try transcripts.createDirectory(stagingDirName)
 
         var committed = false
         defer {
-            if !committed {
+            if !committed, (try? root.validateLocation()) != nil {
                 try? FileManager.default.removeItem(at: stagingDir)
             }
         }
@@ -183,34 +194,28 @@ public struct TranscriptPublisher: Sendable {
             remoteAudioRelPath: remoteAudioRelPath ?? "raw/remote_record.wav")
         try text.write(to: stagingDir.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)
         try beforeCommit?(stagingDir)
+        try root.validateLocation()
         try checkCancel()
 
-        // The directory rename is the only publication commit.
-        // Perform Darwin atomic no-replace rename
-        let ret = Darwin.renamex_np(stagingDir.path, targetDir.path, UInt32(RENAME_EXCL))
-        guard ret == 0 else {
-            let err = errno
-            if err == EEXIST {
-                throw TranscriptPublishError.destinationExists(resultID)
-            }
-            throw TranscriptPublishError.publicationFailed(String(cString: strerror(err)))
+        // Both the publication and its text export stay in the open recording directory.
+        do {
+            try transcripts.rename(stagingDirName, to: resultID)
+        } catch let error as POSIXError where error.code == .EEXIST {
+            throw TranscriptPublishError.destinationExists(resultID)
+        } catch {
+            throw TranscriptPublishError.publicationFailed(error.localizedDescription)
         }
-
         committed = true
 
         if let stem = recordingStem {
             do {
-                let cache = recordingDirectory.appendingPathComponent("\(stem).sources.transcript.txt")
-                let resolved = cache.resolvingSymlinksInPath().standardizedFileURL
-                guard resolved.deletingLastPathComponent() == recordingDirectory else {
-                    throw TranscriptPublishError.invalidRecordingDirectory(cache.path)
-                }
-                try text.write(to: cache, atomically: true, encoding: .utf8)
+                try root.writeAtomically(Data(text.utf8), named: "\(stem).sources.transcript.txt")
             } catch {
                 onWarning("Результат сохранён; не удалось обновить текстовый экспорт: " + error.localizedDescription)
             }
         }
 
+        try root.validateLocation()
         return targetDir.appendingPathComponent("result.json")
     }
 

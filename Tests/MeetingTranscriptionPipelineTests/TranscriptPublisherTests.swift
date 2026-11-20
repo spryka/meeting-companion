@@ -144,6 +144,38 @@ struct TranscriptPublisherTests {
         #expect(FileManager.default.fileExists(atPath: targetJournal.path))
     }
 
+    @Test func publicationAndExportStayInTheOriginalRecordingAfterLateReplacement() throws {
+        let root = try temporaryDirectory()
+        let parent = root.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let moved = parent.appendingPathComponent("moved-recording")
+        let manager = FileManager.default
+        let lease = try RecordingDirectoryLease(root)
+        let publisher = TranscriptPublisher(lease: lease)
+        let document = try makeValidDocument(resultID: "res_moved")
+        let replacementText = Data("Сохранённый экспорт копии".utf8)
+        let exportName = "meeting.sources.transcript.txt"
+        let resultPath = "raw/transcripts/res_moved/result.json"
+        var checks = 0
+
+        #expect(throws: CocoaError.self) {
+            try publisher.publish(document: document, audioMixData: Data([1]), recordingStem: "meeting",
+                checkCancel: {
+                    checks += 1
+                    if checks == 2 {
+                        try manager.moveItem(at: root, to: moved)
+                        try manager.createDirectory(at: root.appendingPathComponent("raw/transcripts"), withIntermediateDirectories: true)
+                        try replacementText.write(to: root.appendingPathComponent(exportName))
+                    }
+                })
+        }
+
+        #expect(try Data(contentsOf: root.appendingPathComponent(exportName)) == replacementText)
+        #expect(!manager.fileExists(atPath: root.appendingPathComponent(resultPath).path))
+        #expect(manager.fileExists(atPath: moved.appendingPathComponent(resultPath).path))
+        #expect(try String(contentsOf: moved.appendingPathComponent(exportName), encoding: .utf8).contains("Тест"))
+    }
+
     @Test func testDuplicateResultIDThrows() throws {
         let root = try temporaryDirectory()
         let publisher = TranscriptPublisher(recordingDirectory: root)

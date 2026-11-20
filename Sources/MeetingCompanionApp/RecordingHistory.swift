@@ -16,6 +16,7 @@ public final class RecordingHistory: ObservableObject {
     public let repository: RecordingHistoryRepository
     @Published public private(set) var refreshError: String?
     @Published public private(set) var refreshCompletion: UUID?
+    var onNextSuccessfulRefresh: ((URL) -> Void)?
     private var refreshRequest: UUID?
     private var revision = -1
     private var observation: Task<Void, Never>?
@@ -89,6 +90,10 @@ public final class RecordingHistory: ObservableObject {
             refreshError = result.error.map { "Не удалось полностью обновить библиотеку. Повторите обновление. " + $0 }
             if result.error == nil { refreshCompletion = id }
         } else if let failure = result.error { reportError(failure) }
+        if result.error == nil, let onNextSuccessfulRefresh {
+            self.onNextSuccessfulRefresh = nil
+            onNextSuccessfulRefresh(root)
+        }
     }
 
     public func putThrowing(_ entry: RecordingEntry, persist: Bool = true) async throws {

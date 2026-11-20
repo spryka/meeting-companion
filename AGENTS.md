@@ -57,10 +57,12 @@ artifact layout, failure behavior and evaluation method.
 
 - Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths
   stable; changing signing identity can reset macOS permissions.
-- Never remove user recordings or transcripts. Remove app-owned model/runtime caches
-  only through the user-confirmed reset action; preserve shared caches. Reset permissions
-  only at the user's explicit request, with `scripts/reset-permissions.sh` after
-  the app quits. Never reset permissions automatically during build/install.
+- Never automatically remove recording folders, transcripts, edits or other
+  results. Explicitly enabled retention may remove known expired audio files
+  from idle recordings in the selected library, including failed processing. Remove
+  app-owned model/runtime caches only through the user-confirmed reset action and
+  preserve shared caches. Reset permissions only at the user's explicit request,
+  with `scripts/reset-permissions.sh` after the app quits. Never reset permissions automatically during build/install.
 - Keep host and remote WAVs on the same timeline: 16 kHz mono PCM16, silence
   included. Host is the microphone source and can contain multiple voices; do not hardcode identities.
 - Transcription must work offline after preparation. Never upload audio.
@@ -73,9 +75,11 @@ artifact layout, failure behavior and evaluation method.
   Gate windows by existing Nemotron intervals; unavailable/empty diarization admits all windows.
   Preserve baseline GigaAM text with Parakeet enabled.
 - Keep processing UI event-driven and discrete; no continuous animation for transcription.
-- On transcription failure keep audio and logs, and allow retry.
+- On transcription failure keep logs and allow retry while the input audio exists.
+  Keep the audio until any explicitly enabled retention expires.
 - Capture warnings must not block transcription of finalized WAVs. Keep the bounded
-  capture report and preserve CAF sources when capture/export has warnings.
+  capture report and preserve CAF sources when capture/export has warnings until
+  any explicitly enabled retention expires.
 - Mute must silence host in both WAV and CAF, using capture timestamps (including
   delayed delivery); remote is unaffected. Level detection never stores muted audio.
 - Do not quit/install over an active recording, preparation or transcription.

@@ -97,6 +97,7 @@ final class RecorderViewModel: ObservableObject {
     @Published var outputDirectory: URL {
         willSet { history.invalidateRefresh() }
         didSet {
+            if outputDirectory != oldValue { audioRetentionEnabled = false }
             defaults.set(outputDirectory.path, forKey: "recordingsDirectory")
             let root = outputDirectory
             Task {
@@ -105,6 +106,48 @@ final class RecorderViewModel: ObservableObject {
             }
         }
     }
+    @Published var audioRetentionEnabled: Bool {
+        didSet {
+            if audioRetentionEnabled {
+                defaults.set(outputDirectory.resolvingSymlinksInPath().path, forKey: "audioRetentionOptInFolder")
+                checkAudioRetention()
+            } else {
+                defaults.removeObject(forKey: "audioRetentionOptInFolder")
+            }
+        }
+    }
+    @Published var audioRetentionDays: Int {
+        didSet { defaults.set(audioRetentionDays, forKey: "audioRetentionPeriod") }
+    }
+    @Published private(set) var audioRetentionRunning = false
+    private var audioRetentionTimer: Task<Void, Never>?
+
+    func loadInitialLibrary() async {
+        history.onNextSuccessfulRefresh = { [weak self] root in
+            let loadedPath = root.resolvingSymlinksInPath().path
+            guard let self, self.outputDirectory.resolvingSymlinksInPath().path == loadedPath else { return }
+            self.checkAudioRetention()
+        }
+        await history.refresh(root: outputDirectory)
+    }
+
+    private func checkAudioRetention() {
+        guard history.initialLoadComplete, audioRetentionEnabled, !audioRetentionRunning, audioPreviewURL == nil,
+              let worker = Transcription.locateWorkerExecutable() else { return }
+        let root = outputDirectory.resolvingSymlinksInPath()
+        guard defaults.string(forKey: "audioRetentionOptInFolder") == root.path else { return }
+        let cutoff = Date().addingTimeInterval(-Double(audioRetentionDays) * 86_400)
+        let excluded = Set([workspace.current?.state.id, selectedHistoryURL].compactMap { $0 })
+        let repository = historyRepository
+        audioRetentionRunning = true
+        Task {
+            await Task.detached(priority: .utility) {
+                repository.removeExpiredAudio(root: root, before: cutoff, worker: worker, excluding: excluded)
+            }.value
+            audioRetentionRunning = false
+        }
+    }
+
     let calendar: MeetingCalendar
     let historyRepository: RecordingHistoryRepository
     let recordingSessionService: RecordingSessionService
@@ -761,7 +804,11 @@ final class RecorderViewModel: ObservableObject {
         self.defaults = defaults
         self.appDataDirectory = appDataDirectory
         self.appearance = AppAppearance(rawValue: defaults.string(forKey: "appAppearance") ?? "") ?? .system
-        self.outputDirectory = defaults.string(forKey: "recordingsDirectory").map { URL(fileURLWithPath: $0) } ?? RecordingPaths.defaultOutputDirectory
+        let outputDirectory = defaults.string(forKey: "recordingsDirectory").map { URL(fileURLWithPath: $0) } ?? RecordingPaths.defaultOutputDirectory
+        self.outputDirectory = outputDirectory
+        self.audioRetentionEnabled = defaults.string(forKey: "audioRetentionOptInFolder") == outputDirectory.resolvingSymlinksInPath().path
+        let storedPeriod = defaults.integer(forKey: "audioRetentionPeriod")
+        self.audioRetentionDays = (1...365).contains(storedPeriod) ? storedPeriod : 14
         self.improveTerms = defaults.bool(forKey: "improveTechnicalTerms")
         self.echoCancellation = defaults.bool(forKey: "echoCancellation")
         self.transcriptionReady = defaults.bool(forKey: "transcriptionPrepared")
@@ -798,7 +845,15 @@ final class RecorderViewModel: ObservableObject {
         }
         historySubscription = history.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if startBackgroundServices {
-            Task { await history.refresh(root: outputDirectory) }
+            Task.detached(priority: .utility) { TranscriptionWorkspace.removeAbandoned() }
+            Task { await loadInitialLibrary() }
+            audioRetentionTimer = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(3600)) }
+                    catch { return }
+                    self?.checkAudioRetention()
+                }
+            }
             refreshMicrophones()
             refreshAccess()
             startTimer()
@@ -826,6 +881,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     deinit {
+        audioRetentionTimer?.cancel()
         sessionObservation?.cancel()
         processingObservation?.cancel()
     }
@@ -1046,7 +1102,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func chooseFolder(withPicker picker: ((URL) async -> URL?)? = nil) async {
-        guard !isRecording, !isBusy, !diagnosticRunning else { return }
+        guard !isRecording, !isBusy, !diagnosticRunning, !audioRetentionRunning else { return }
         let chosen: URL?
         if let picker {
             chosen = await picker(outputDirectory)
@@ -1058,7 +1114,7 @@ final class RecorderViewModel: ObservableObject {
             panel.directoryURL = outputDirectory
             chosen = panel.runModal() == .OK ? panel.url : nil
         }
-        guard let url = chosen else { return }
+        guard let url = chosen, !audioRetentionRunning else { return }
         do {
             try RecorderDiagnostics.checkFolder(url)
             outputDirectory = url

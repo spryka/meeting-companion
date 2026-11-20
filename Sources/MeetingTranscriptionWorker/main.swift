@@ -39,11 +39,62 @@ func emitProgress(_ event: PipelineProgressEvent) {
     }
 }
 
+private func transcribe(
+    _ sources: RecordingSources, in modelRoot: URL, inputDirectory: URL? = nil,
+    parakeet: Bool, echoCancel: Bool, resultID: String
+) throws -> URL {
+    let host = sources.hostWAV.resolvingSymlinksInPath().standardizedFileURL
+    let remote = sources.remoteWAV.resolvingSymlinksInPath().standardizedFileURL
+    let hostDirectory = inputDirectory ?? RecordingPaths.managedDirectory(containing: host)
+    let remoteDirectory = inputDirectory ?? RecordingPaths.managedDirectory(containing: remote)
+    let outputLease = try RecordingDirectoryLease(sources.recordingDirectory)
+    var leases = [sources.recordingDirectory.path: outputLease]
+    for directory in [hostDirectory, remoteDirectory].compactMap({ $0 }) where leases[directory.path] == nil {
+        leases[directory.path] = try RecordingDirectoryLease(directory)
+    }
+    defer { withExtendedLifetime(leases) {} }
+    let locks = try leases.values.map { try RecordingTranscriptionLock(lease: $0) }
+    defer { withExtendedLifetime(locks) {} }
+
+    let workspace = try TranscriptionWorkspace()
+    defer { withExtendedLifetime(workspace) {} }
+    try checkCancel()
+    let hostSnapshot = try workspace.snapshot(host, named: "host", lease: hostDirectory.flatMap { leases[$0.path] })
+    try checkCancel()
+    let remoteSnapshot = try workspace.snapshot(remote, named: "remote", lease: remoteDirectory.flatMap { leases[$0.path] })
+    let inputs = RecordingSources(
+        recordingDirectory: sources.recordingDirectory, stem: sources.stem,
+        hostWAV: hostSnapshot, remoteWAV: remoteSnapshot, hostRelPath: sources.hostRelPath,
+        remoteRelPath: sources.remoteRelPath, contextWarnings: sources.contextWarnings
+    )
+    let runner = PipelineRunner(modelRoot: modelRoot, parakeetEnabled: parakeet, echoCancelEnabled: echoCancel)
+    let result = try runner.run(
+        sources: inputs, resultID: resultID, workspaceDirectory: workspace.directory,
+        checkCancel: checkCancel, onProgress: emitProgress
+    )
+    try outputLease.validateLocation()
+    emitProgress(PipelineProgressEvent(stage: .publication, completed: 0, total: 0, state: .started))
+    let publisher = TranscriptPublisher(lease: outputLease)
+    let published = try publisher.publish(
+        document: result.document,
+        audioMixURL: result.audioMixURL,
+        aecAudioURL: result.aecAudioURL,
+        correctionJournalData: result.correctionJournalData,
+        recordingStem: sources.stem,
+        hostAudioRelPath: sources.hostRelPath,
+        remoteAudioRelPath: sources.remoteRelPath,
+        checkCancel: checkCancel,
+        onWarning: { emitProgress(PipelineProgressEvent(stage: .warning, completed: 0, total: 1, warning: $0)) }
+    )
+    return published
+}
+
 do {
     signal(SIGINT) { _ in interrupted = 1 }
     signal(SIGTERM) { _ in interrupted = 1 }
 
     let rawArgs = Array(CommandLine.arguments.dropFirst())
+    if try RecordingAudioRemoval.performWorkerRequest(rawArgs) { exit(0) }
 
     if rawArgs.isEmpty || rawArgs.contains("--help") || rawArgs.contains("-h") {
         printHelp()
@@ -172,12 +223,6 @@ do {
             exit(1)
         }
 
-        let customRunner = PipelineRunner(
-            modelRoot: customModelRoot,
-            parakeetEnabled: parakeet,
-            echoCancelEnabled: echoCancel
-        )
-
         let stem = hostURL.deletingPathExtension().lastPathComponent
         let sources = RecordingSources(
             recordingDirectory: outputDir,
@@ -189,26 +234,8 @@ do {
         )
 
         let resultID = explicitResultID ?? ("res_" + UUID().uuidString.prefix(8).lowercased())
-        let res = try customRunner.run(
-            sources: sources,
-            resultID: resultID,
-            checkCancel: checkCancel,
-            onProgress: emitProgress
-        )
-
-        emitProgress(PipelineProgressEvent(stage: .publication, completed: 0, total: 0, state: .started))
-        let publisher = TranscriptPublisher(recordingDirectory: outputDir)
-        let publishedURL = try publisher.publish(
-            document: res.document,
-            audioMixURL: res.audioMixURL,
-            aecAudioURL: res.aecAudioURL,
-            correctionJournalData: res.correctionJournalData,
-            recordingStem: stem,
-            hostAudioRelPath: sources.hostRelPath,
-            remoteAudioRelPath: sources.remoteRelPath,
-            checkCancel: checkCancel,
-            onWarning: { emitProgress(PipelineProgressEvent(stage: .warning, completed: 0, total: 1, warning: $0)) }
-        )
+        let publishedURL = try transcribe(sources, in: customModelRoot,
+                                          parakeet: parakeet, echoCancel: echoCancel, resultID: resultID)
         print("Success: Published transcript to \(publishedURL.path)")
         exit(0)
     }
@@ -221,34 +248,9 @@ do {
 
     // Resolve recording sources deterministically matching app contract
     let sources = try RecordingSourceResolver.resolve(recordingPath: recordingArg)
-    let runner = PipelineRunner(
-        modelRoot: modelRoot,
-        parakeetEnabled: parakeet,
-        echoCancelEnabled: echoCancel
-    )
     let resultID = explicitResultID ?? ("res_" + UUID().uuidString.prefix(8).lowercased())
-
-    let pipelineResult = try runner.run(
-        sources: sources,
-        resultID: resultID,
-        checkCancel: checkCancel,
-        onProgress: emitProgress
-    )
-
-    emitProgress(PipelineProgressEvent(stage: .publication, completed: 0, total: 0, state: .started))
-    let publisher = TranscriptPublisher(recordingDirectory: sources.recordingDirectory)
-    let publishedURL = try publisher.publish(
-        document: pipelineResult.document,
-        audioMixURL: pipelineResult.audioMixURL,
-        aecAudioURL: pipelineResult.aecAudioURL,
-        correctionJournalData: pipelineResult.correctionJournalData,
-        recordingStem: sources.stem,
-        hostAudioRelPath: sources.hostRelPath,
-        remoteAudioRelPath: sources.remoteRelPath,
-            checkCancel: checkCancel,
-            onWarning: { emitProgress(PipelineProgressEvent(stage: .warning, completed: 0, total: 1, warning: $0)) }
-    )
-
+    let publishedURL = try transcribe(sources, in: modelRoot, inputDirectory: sources.recordingDirectory,
+                                      parakeet: parakeet, echoCancel: echoCancel, resultID: resultID)
     print("Success: Published transcript version \(resultID) to \(publishedURL.path)")
     exit(0)
 

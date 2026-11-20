@@ -40,6 +40,7 @@ public final class TranscriptPlaybackController {
     private var segmentGeneration: UInt64 = 0
     public private(set) var segment: ClosedRange<Double>?
     private var wantsPlay = false
+    private var audioLease: RecordingDirectoryLease?
 
     public init(transport: any TranscriptPlaybackTransport) { self.transport = transport }
 
@@ -60,6 +61,7 @@ public final class TranscriptPlaybackController {
         transport.onEvent = nil
         transport.setPlaybackBoundary(nil)
         transport.stop()
+        audioLease = nil
         self.resultID = resultID
         self.mixURL = nil
         duration = 0
@@ -83,15 +85,23 @@ public final class TranscriptPlaybackController {
                 onChange?()
                 return
             }
+            let lease = try RecordingDirectoryLease(root)
+            defer { withExtendedLifetime(lease) {} }
             let mix = Self.resolve(path, in: root)
             guard mix.pathComponents.count > version.pathComponents.count,
-                  mix.pathComponents.starts(with: version.pathComponents),
-                  FileManager.default.isReadableFile(atPath: mix.path),
+                  mix.pathComponents.starts(with: version.pathComponents) else { throw PlaybackError.invalidMix }
+            if RecordingPaths.audioRetentionApplied(in: root), !FileManager.default.fileExists(atPath: mix.path) {
+                state = .unavailable
+                onChange?()
+                return
+            }
+            guard FileManager.default.isReadableFile(atPath: mix.path),
                   (try mix.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
                 throw PlaybackError.invalidMix
             }
             guard generation == ticket, state != .closed else { return }
             self.mixURL = mix
+            audioLease = lease
             transport.onEvent = { [weak self] event in
                 guard let self, self.generation == ticket, self.state != .closed else { return }
                 self.receive(event)
@@ -109,6 +119,7 @@ public final class TranscriptPlaybackController {
             transport.onEvent = nil
             transport.stop()
             self.mixURL = nil
+            audioLease = nil
             state = .failed
             onChange?()
         }
@@ -161,6 +172,7 @@ public final class TranscriptPlaybackController {
         transport.setPlaybackBoundary(nil)
         transport.stop()
         mixURL = nil
+        audioLease = nil
         state = .closed
         onChange = nil
     }

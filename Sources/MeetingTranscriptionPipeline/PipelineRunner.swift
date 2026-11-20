@@ -92,6 +92,7 @@ public final class PipelineRunner: @unchecked Sendable {
     public func run(
         sources: RecordingSources,
         resultID: String = "res_" + UUID().uuidString.prefix(8).lowercased(),
+        workspaceDirectory: URL? = nil,
         checkCancel: @escaping () throws -> Void = {},
         onProgress: (@Sendable (PipelineProgressEvent) -> Void)? = nil
     ) throws -> PipelineResult {
@@ -110,9 +111,15 @@ public final class PipelineRunner: @unchecked Sendable {
         // ----------------------------------------------------
         // Stage 0: Echo Cancellation (if requested)
         // ----------------------------------------------------
-        let transcriptsDir = try TranscriptPublisher.validateContainment(of: recordingDirectory)
-        let aecTempDir = transcriptsDir.appendingPathComponent(".staging-\(resultID)")
-        try FileManager.default.createDirectory(at: aecTempDir, withIntermediateDirectories: true)
+        let aecTempDir: URL
+        if let workspaceDirectory {
+            aecTempDir = workspaceDirectory
+        } else {
+            let transcriptsDir = try TranscriptPublisher.validateContainment(of: recordingDirectory)
+            aecTempDir = transcriptsDir.appendingPathComponent(".staging-\(resultID)")
+            try FileManager.default.createDirectory(at: aecTempDir, withIntermediateDirectories: true)
+            try Data().write(to: aecTempDir.appendingPathComponent(RecordingPaths.transcriptionStagingMarker), options: .atomic)
+        }
         let aecTargetURL = aecTempDir.appendingPathComponent("host_aec.wav")
 
         var aecAudioURL: URL? = nil
