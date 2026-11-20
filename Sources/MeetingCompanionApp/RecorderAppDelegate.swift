@@ -265,7 +265,7 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
                 description = "Идёт запись"
             }
         } else if isProcessing {
-            symbolName = "mic.badge.ellipsis"
+            symbolName = "microphone.badge.ellipsis"
             description = "Обработка записи"
         } else {
             symbolName = "mic.circle"
