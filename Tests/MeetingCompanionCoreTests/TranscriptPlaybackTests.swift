@@ -175,6 +175,16 @@ import Testing
         await p.select(resultID: "v1", recordingDirectory: root); p.play()
         #expect(p.state == .unavailable && fake.urls.isEmpty && fake.plays == 0)
     }
+    @Test func missingMixAfterRetentionIsUnavailable() async throws {
+        let root = try recording(mix: false)
+        let marker = root.appendingPathComponent("raw").appendingPathComponent(RecordingPaths.audioRetentionMarker)
+        try Data().write(to: marker)
+        let fake = PlaybackFake()
+        let player = TranscriptPlaybackController(transport: fake)
+        await player.select(resultID: "v1", recordingDirectory: root)
+        #expect(player.state == .unavailable && fake.urls.isEmpty)
+    }
+
     @Test func missingNeverFallsBack() async throws {
         let root = try recording(mix: false); let fake = PlaybackFake(); let p = TranscriptPlaybackController(transport: fake)
         try Data("master".utf8).write(to: root.appendingPathComponent("meeting.m4a"))
