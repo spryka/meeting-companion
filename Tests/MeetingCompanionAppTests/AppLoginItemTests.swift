@@ -1,9 +1,34 @@
-import Foundation
+import AppKit
+import Carbon
 import Testing
 @testable import MeetingCompanionApp
 
 @MainActor
 struct AppLoginItemTests {
+    @Test(arguments: [false, true])
+    func openApplicationEventDistinguishesManualLaunchFromLogin(registered: Bool) {
+        let fixture = LoginItemFixture()
+        defer { fixture.close() }
+        fixture.service.enabled = registered
+        let login = fixture.login()
+        let event = NSAppleEventDescriptor(eventClass: kCoreEventClass, eventID: kAEOpenApplication,
+            targetDescriptor: .null(), returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID))
+
+        #expect(login.shouldOpenWorkspace(for: event))
+
+        event.setParam(NSAppleEventDescriptor(enumCode: keyAELaunchedAsLogInItem), forKeyword: keyAEPropData)
+        #expect(!login.shouldOpenWorkspace(for: event))
+    }
+
+    @Test(arguments: [false, true])
+    func launchWithoutEventUsesExistingRegistration(registered: Bool) {
+        let fixture = LoginItemFixture()
+        defer { fixture.close() }
+        fixture.service.enabled = registered
+        #expect(fixture.login().shouldOpenWorkspace(for: nil) == !registered)
+    }
+
     @Test(arguments: [
         ("swiftpm-testing-helper", nil),
         ("Helper.app", "swiftpm-testing-helper"),
