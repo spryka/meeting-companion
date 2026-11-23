@@ -469,7 +469,6 @@ final class RecorderViewModel: ObservableObject {
         case .receiving: return ""
         case .silent: return "Проверьте микрофон: долго нет звука"
         case .missing: return "Микрофон не записывается"
-        case .reconnecting: return "Переподключаем микрофон…"
         }
     }
     @Published private(set) var mutedMicrophoneActivity = false
@@ -1512,6 +1511,7 @@ final class RecorderViewModel: ObservableObject {
             cancelCapsuleDeadline()
             recordingCancelled = false
             pendingCapsuleEnqueue = presentationID
+            capsuleJobID = nil
             capsuleDismissed = false
             transcriptionState = .running(nil)
         }

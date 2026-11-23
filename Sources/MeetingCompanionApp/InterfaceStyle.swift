@@ -606,9 +606,8 @@ public struct ODIconView: View {
             context.stroke(stem, with: .color(color), style: strokeStyle)
 
         case .stop:
-            // Reference SVG: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>
             var square = Path()
-            square.addRoundedRect(in: CGRect(x: 6, y: 6, width: 12, height: 12), cornerSize: CGSize(width: 2, height: 2))
+            square.addRoundedRect(in: CGRect(x: 3, y: 3, width: 18, height: 18), cornerSize: CGSize(width: 2, height: 2))
             context.fill(square, with: .color(color))
 
         case .wave:

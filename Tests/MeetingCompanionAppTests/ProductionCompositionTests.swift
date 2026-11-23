@@ -672,14 +672,21 @@ private actor Capsule28OpenGate {
         try await settle { clock.deadlines.count >= 2 && model.transcriptionJobs == 0 }
         let terminal = try #require(clock.deadlines.last)
         #expect(terminal.due == clock.now + 60 && !model.capsuleDismissed)
+        let previousJob = try #require(model.capsuleProgress)
+        #expect(previousJob.terminal)
+
         model.retryRecording(recording)
+        #expect(model.transcriptionState == .running(nil))
+        #expect(model.capsuleProgress == nil, "Retry must not present the previous terminal job")
         try await settle { await admission.waiting && model.isAdmittingProcessing }
+        #expect(model.capsuleProgress == nil)
         terminal.action()
         #expect(!model.capsuleDismissed)
         await admission.open()
         try await settle { await runner.waiting }
         await runner.emit(progress)
-        try await settle { model.transcriptionState == .running(progress) }
+        try await settle { model.transcriptionState == .running(progress) && model.capsuleProgress?.current == .recognition }
+        #expect(model.capsuleProgress?.jobID != previousJob.jobID)
         await runner.finish(failed: failed)
         try await settle { clock.deadlines.count >= 3 && model.transcriptionJobs == 0 }
         // Same URL, new terminal job: an older job's delivered callback cannot dismiss it.

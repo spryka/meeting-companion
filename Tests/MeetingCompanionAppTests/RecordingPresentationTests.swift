@@ -538,8 +538,19 @@ private final class PresentationLevels: AudioLevelMonitoring, @unchecked Sendabl
         #expect(AppWindowState.activationPolicy(for: [workspaceWindow, panel]) == .accessory)
     }
 
+    @Test func capsuleShowsWholeElapsedMinutes() {
+        #expect(formatElapsedMinutes(0) == "< 1 мин")
+        #expect(formatElapsedMinutes(9) == "< 1 мин")
+        #expect(formatElapsedMinutes(10) == "< 1 мин")
+        #expect(formatElapsedMinutes(59.99) == "< 1 мин")
+        #expect(formatElapsedMinutes(60) == "1 мин")
+        #expect(formatElapsedMinutes(3599.99) == "59 мин")
+        #expect(formatElapsedMinutes(3600) == "1 ч")
+        #expect(formatElapsedMinutes(4379.99) == "1 ч 12 мин")
+        #expect(formatElapsedMinutes(28800) == "8 ч")
+    }
+
     @Test func durationFormattingAcrossBoundaries() {
-        // R03: MM:SS under an hour, H:MM:SS at and above 1 hour, supporting up to 8:00:00 without clipping
         #expect(formatClock(0) == "00:00")
         #expect(formatClock(59) == "00:59")
         #expect(formatClock(3599) == "59:59")

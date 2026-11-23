@@ -50,9 +50,10 @@ final class AppWindowState: NSObject, ObservableObject {
     private var actionsAccessory: NSTitlebarAccessoryViewController?
     private var headerBackground: WorkspaceHeaderBackgroundView?
     static let capsuleFrameKey = "recordingCapsuleFrame"
-    static let recordingCapsuleSize = NSSize(width: 440, height: 64)
-    static let overtimeCapsuleHeight: CGFloat = 64
-    static let processingCapsuleSize = NSSize(width: 420, height: 84)
+    static let capsuleInset: CGFloat = 2
+    static let recordingCapsuleSize = NSSize(width: 340 + 2 * capsuleInset, height: 60 + 2 * capsuleInset)
+    static let overtimeCapsuleHeight = recordingCapsuleSize.height + 28
+    static let processingCapsuleSize = recordingCapsuleSize
     static let workspaceMinimumSize = NSSize(width: 480, height: 500)
 
     static func visibleCapsuleFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {

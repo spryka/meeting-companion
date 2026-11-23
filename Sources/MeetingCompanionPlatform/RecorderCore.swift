@@ -23,7 +23,6 @@ struct MicrophoneCaptureHealth {
     var lastBuffer: Double?
     var lastSignal = 0.0
     var muted = false
-    var reconnecting = false
     var hadMissing = false
 
     mutating func start(at time: Double) {
@@ -31,26 +30,17 @@ struct MicrophoneCaptureHealth {
     }
     mutating func receive(at time: Double, level: Double) {
         lastBuffer = time
-        reconnecting = false
         if level > 0.001 { lastSignal = time }
     }
     mutating func setMuted(_ value: Bool, at time: Double) {
         muted = value
         lastSignal = time
     }
-    mutating func backendState(_ value: MicrophoneRecordingState, at time: Double) {
-        if value == .reconnecting {
-            started = time; lastBuffer = nil; lastSignal = time; reconnecting = true
-        } else if value == .missing {
-            reconnecting = false; lastBuffer = nil; started = time - 4; hadMissing = true
-        }
-    }
     mutating func state(at time: Double) -> MicrophoneRecordingState {
         if time - (lastBuffer ?? started) >= 3 {
             hadMissing = true
             return .missing
         }
-        if reconnecting { return .reconnecting }
         if !muted && time - lastSignal >= 15 { return .silent }
         return .receiving
     }

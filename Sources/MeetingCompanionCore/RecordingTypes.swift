@@ -46,7 +46,7 @@ public struct MicrophoneDevice: Identifiable, Hashable, Sendable {
 
 @available(macOS 15.0, *)
 public enum MicrophoneRecordingState: Sendable, Equatable {
-    case receiving, silent, missing, reconnecting
+    case receiving, silent, missing
 }
 
 public func formatDuration(_ seconds: TimeInterval) -> String {
@@ -60,6 +60,15 @@ public func formatDuration(_ seconds: TimeInterval) -> String {
     }
 
     return "\(minutes)m \(String(format: "%02d", seconds))s"
+}
+
+public func formatElapsedMinutes(_ seconds: TimeInterval) -> String {
+    let minutes = Int(seconds / 60)
+    guard minutes > 0 else { return "< 1 мин" }
+    guard minutes >= 60 else { return "\(minutes) мин" }
+    let hours = minutes / 60
+    let remainder = minutes % 60
+    return remainder == 0 ? "\(hours) ч" : "\(hours) ч \(remainder) мин"
 }
 
 public func formatClock(_ seconds: TimeInterval) -> String {

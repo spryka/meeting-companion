@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "capsule-compact-work/openspec/changes/compact-recording-capsule/reference/capsule-compact.html",
+  "entry": "capsule-compact-work/openspec/changes/compact-recording-capsule/reference/capsule-compact.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-11-18T22:21:26.792Z",
+  "updatedAt": "2026-11-18T22:21:26.792Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}
