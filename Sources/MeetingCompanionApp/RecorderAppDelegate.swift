@@ -6,7 +6,10 @@ import MeetingCompanionApplication
 
 @MainActor
 final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let historyRepository = RecordingHistoryRepository()
+    private let voiceLearning = VoiceLearningCoordinator(catalogue: VoiceProfileCatalogueRepository(
+        applicationDataDirectory: RecorderDiagnostics.dataDirectory
+    ))
+    private lazy var historyRepository = RecordingHistoryRepository(voiceLearning: voiceLearning)
     private lazy var sessionService = RecordingSessionService(historyRepo: historyRepository)
     private lazy var processingService: ProcessingService = ProcessingService(
         transcriptionRunner: PlatformTranscriptionRunner(),
@@ -15,13 +18,24 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         retryAdmission: { [weak self] recording in
             guard let self else { return false }
             return await self.model.prepareRecordingRetry(recording)
+        },
+        voiceLearning: voiceLearning,
+        voiceRunner: PlatformTranscriptionRunner(),
+        isRecordingInCurrentLibrary: { [weak self] url in
+            await self?.isRecordingInCurrentLibrary(url) ?? true
         }
     )
     private lazy var model = RecorderViewModel(
         sessionService: sessionService,
         processingService: processingService,
-        historyRepository: historyRepository
+        historyRepository: historyRepository,
+        voiceLearning: voiceLearning,
+        voiceMatchPolicy: RecorderViewModel.defaultVoiceMatchPolicy
     )
+
+    private func isRecordingInCurrentLibrary(_ url: URL) -> Bool {
+        RecorderViewModel.isInLibrary(url, root: model.outputDirectory)
+    }
     private(set) var capsuleController: RecordingCapsuleController!
     private(set) var window: NSWindow!
     private weak var settingsReturnFocus: NSResponder?

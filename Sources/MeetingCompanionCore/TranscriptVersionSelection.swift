@@ -119,13 +119,17 @@ public struct TranscriptResultStorage: Sendable {
 
     /// Choose the directory BEFORE validating its result; never fall back to older content.
     public func currentResultDirectory() throws -> URL? {
+        try publishedResultDirectories().first
+    }
+
+    public func publishedResultDirectories() throws -> [URL] {
         let recording = recordingURL ?? recordingDirectory.appendingPathComponent(recordingDirectory.lastPathComponent + ".m4a")
         try RecordingPaths.requireStandardLayout(recording)
         guard RecordingEntry.canonicalURL(recording).deletingLastPathComponent() == recordingDirectory.resolvingSymlinksInPath().standardizedFileURL else {
             throw TranscriptStorageError.pathEscapesRecording(recording.path)
         }
         let (directory, exists) = try verifyContainedPath(components: ["raw", "transcripts"], allowFinalAbsence: true, allowIntermediateAbsence: true)
-        guard exists else { return nil }
+        guard exists else { return [] }
         let entries = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         var candidates: [(URL, Date)] = []
         for entry in entries {
@@ -141,7 +145,7 @@ public struct TranscriptResultStorage: Sendable {
         }
         return candidates.sorted {
             $0.1 == $1.1 ? $0.0.lastPathComponent > $1.0.lastPathComponent : $0.1 > $1.1
-        }.first?.0
+        }.map(\.0)
     }
 
     public func currentDocument() throws -> TranscriptDocument? {

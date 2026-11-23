@@ -1,7 +1,23 @@
 {
   "version": "1.0",
-  "total_files": 762,
+  "total_files": 764,
   "files": [
+    {
+      "path": "Sources/MeetingTranscriptionPipeline/Voice/MelFeatureExtractor.swift",
+      "sha256": "3cf96ba5fe2c5f4695c097439013e7b13c344d1fdc162220ce22d9258d02f792",
+      "size": 8855,
+      "upstream_repo": "https://github.com/soniqo/speech-swift",
+      "upstream_revision": "b1287a6c963a38b0d4133c656725b2de7ea6bebf",
+      "status": "patched"
+    },
+    {
+      "path": "Sources/MeetingTranscriptionPipeline/Voice/WeSpeakerModel.swift",
+      "sha256": "bd00c2f287264d424c5355ad04feb27a5f7cd8e6e50a2ac231f5521a98907ef3",
+      "size": 5430,
+      "upstream_repo": "https://github.com/soniqo/speech-swift",
+      "upstream_revision": "b1287a6c963a38b0d4133c656725b2de7ea6bebf",
+      "status": "pristine"
+    },
     {
       "path": "Vendor/GigaAMKit/Audio/AudioLoader.swift",
       "sha256": "54c22e28065ec5a4eb1a20f17a432c0534bb628b09afdb5f74f1db1d1e8429ad",
@@ -490,14 +506,14 @@
     },
     {
       "path": "Vendor/README.md",
-      "sha256": "8c1623204aeb0df950fb1ea29cd33e7eca33effef0933d8f9ba0d5a0bee903bc",
-      "size": 3947,
+      "sha256": "1f01931f9b44b5c55f971707e7053c57a1bcf941db06708382224331c625b4f1",
+      "size": 4432,
       "status": "vendor_metadata"
     },
     {
       "path": "Vendor/dependency-licenses.json",
-      "sha256": "2606b19a8a7017a7521a8fa25128f1fa56fbeef3790caf6db3b19ec1d437c973",
-      "size": 6478,
+      "sha256": "beef6d0a8a21a91c13cf7def30f5a838bf52d2174ee6d9cab1aa71baec61357a",
+      "size": 6775,
       "status": "vendor_metadata"
     },
     {

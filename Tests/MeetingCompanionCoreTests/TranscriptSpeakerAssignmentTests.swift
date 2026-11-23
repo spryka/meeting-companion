@@ -137,7 +137,9 @@ import CryptoKit
         let repo = TranscriptEditsRepository(recordingDirectory: root)
         let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
         _ = try service.assignSpeakerName(resultID: "res_test_turns", turnID: "turn_3", displayName: "Ручное")
-        let preview = try service.previewRemainingAssignment(resultID: "res_test_turns", anchorTurnID: "turn_3", displayName: "Аня")
+        let preview = try service.previewRemainingAssignment(
+            resultID: "res_test_turns", anchorTurnID: "turn_3", displayName: "Аня", replaceManuallyAssigned: true
+        )
         #expect(preview.targetTurnIDs == ["turn_3"])
         #expect(preview.affectedTurnsCount == 1)
         #expect(preview.replacedManualAssignmentsCount == 1)
@@ -149,6 +151,134 @@ import CryptoKit
         #expect(noop.affectedTurnsCount == 0)
         #expect(noop.replacedManualAssignmentsCount == 0)
         #expect(throws: Error.self) { try service.assignSpeakerName(preview: noop, displayName: "Другое") }
+    }
+
+    @Test func remainingPreviewRequiresSeparatePermissionToReplaceSavedName() throws {
+        let root = try temporaryDirectory()
+        _ = try createSyntheticRecordingWithMultiTurns(in: root)
+        let resultID = "res_test_turns"
+        let repository = TranscriptEditsRepository(recordingDirectory: root)
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repository)
+        let original = try service.assignSpeakerName(resultID: resultID, turnID: "turn_3", displayName: "Ручное")
+
+        let preview = try service.previewRemainingAssignment(resultID: resultID, anchorTurnID: "turn_3", displayName: "Аня")
+        #expect(preview.replacedTurnIDs == ["turn_3"])
+        #expect(preview.affectedTurnIDs.isEmpty)
+        #expect(try service.assignSpeakerName(preview: preview, displayName: "Аня") == original)
+    }
+
+    @Test func groupPreviewProtectsManualNamesAndIncludesAutomaticNames() throws {
+        let root = try temporaryDirectory()
+        _ = try createSyntheticRecordingWithMultiTurns(in: root)
+        let resultID = "res_test_turns"
+        let repo = TranscriptEditsRepository(recordingDirectory: root)
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
+        let autoName = TranscriptNameAssignment(personID: UUID(), origin: "automaticVoiceMatch")
+        _ = try repo.saveEdits(resultID: resultID, overrides: [
+            "turn_1": TranscriptTurnOverride(displayName: "Аня", assignment: autoName),
+            "turn_3": TranscriptTurnOverride(displayName: "Ручное")
+        ])
+
+        let preview = try service.previewGroupAssignment(resultID: resultID, speakerID: "spk_h1", replaceManuallyAssigned: false)
+        #expect(preview.affectedTurnIDs == ["turn_1"])
+        #expect(preview.replacedTurnIDs == ["turn_3"])
+        let saved = try service.assignSpeakerName(preview: preview, displayName: "Анна")
+        #expect(saved.overrides["turn_1"]?.displayName == "Анна")
+        #expect(saved.overrides["turn_1"]?.assignment?.origin == "manual")
+        #expect(saved.overrides["turn_3"]?.displayName == "Ручное")
+        #expect(saved.overrides["turn_2"] == nil)
+    }
+
+    @Test func scopedPreviewKeepsDerivedOriginAndDetectsSameNameDifferentPerson() throws {
+        let root = try temporaryDirectory()
+        _ = try createSyntheticRecordingWithMultiTurns(in: root)
+        let resultID = "res_test_turns"
+        let repo = TranscriptEditsRepository(recordingDirectory: root, learningCommitObserver: { _, _ in })
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
+        let firstPerson = UUID()
+        let secondPerson = UUID()
+        let autoName = TranscriptNameAssignment(personID: firstPerson, origin: "automaticVoiceMatch")
+        _ = try repo.saveEdits(resultID: resultID, overrides: [
+            "turn_1": TranscriptTurnOverride(displayName: "Анна", assignment: autoName)
+        ])
+
+        let group = try service.previewAssignment(
+            resultID: resultID, anchorTurnID: "turn_1", scope: .group, displayName: "Анна"
+        )
+        #expect(group.personID == firstPerson)
+        #expect(group.targetTurnIDs == ["turn_1", "turn_3"])
+        #expect(group.affectedTurnIDs == ["turn_3"])
+        let derived = try service.assignSpeakerName(preview: group, displayName: "Анна", learnVoice: true)
+        #expect(derived.overrides["turn_1"]?.assignment == autoName)
+        #expect(derived.overrides["turn_3"]?.assignment?.origin == "derivedVoiceMatch")
+        #expect(derived.overrides["turn_3"]?.assignment?.personID == firstPerson)
+        #expect(derived.pendingLearningEvents?.isEmpty != false)
+
+        let point = try service.previewAssignment(
+            resultID: resultID, anchorTurnID: "turn_3", scope: .single, displayName: "Анна",
+            person: .confirmed(.init(personID: secondPerson, nameToCreate: nil, catalogueID: UUID(),
+                                     catalogueGeneration: 0, personGeneration: 0))
+        )
+        #expect(point.affectedTurnIDs == ["turn_3"])
+        let corrected = try service.assignSpeakerName(preview: point, displayName: "Анна", learnVoice: true)
+        #expect(corrected.overrides["turn_3"]?.displayName == "Анна")
+        #expect(corrected.overrides["turn_3"]?.assignment?.personID == secondPerson)
+        #expect(corrected.pendingLearningEvents?.first?.assignment?.origin == "manual")
+        #expect(corrected.pendingLearningEvents?.first?.allowsLearning == true)
+        #expect(corrected.overrides["turn_2"] == nil)
+        #expect(throws: TranscriptEditsError.self) {
+            try service.assignSpeakerName(preview: point, displayName: "Анна", learnVoice: true)
+        }
+        #expect(try repo.loadEdits(resultID: resultID) == corrected)
+
+        let unbound = try service.previewAssignment(
+            resultID: resultID, anchorTurnID: "turn_3", scope: .single, displayName: "Анна", person: .explicit(nil)
+        )
+        #expect(unbound.affectedTurnIDs == ["turn_3"])
+        let savedUnbound = try service.assignSpeakerName(preview: unbound, displayName: "Анна")
+        #expect(savedUnbound.overrides["turn_3"]?.assignment?.personID == nil)
+        #expect(savedUnbound.pendingLearningEvents?.last?.previousAssignment?.personID == secondPerson)
+        #expect(savedUnbound.pendingLearningEvents?.last?.allowsLearning == false)
+    }
+
+    @Test func spreadingSavedManualNameKeepsTheLinkedPersonWithoutLearning() throws {
+        let root = try temporaryDirectory()
+        _ = try createSyntheticRecordingWithMultiTurns(in: root)
+        let resultID = "res_test_turns"
+        let repo = TranscriptEditsRepository(recordingDirectory: root)
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
+        let manual = TranscriptNameAssignment(personID: UUID(), origin: "manual")
+        _ = try repo.saveEdits(resultID: resultID, overrides: [
+            "turn_1": TranscriptTurnOverride(displayName: "Анна", assignment: manual)
+        ])
+
+        let preview = try service.previewAssignment(
+            resultID: resultID, anchorTurnID: "turn_1", scope: .group, displayName: "Анна"
+        )
+        #expect(preview.affectedTurnIDs == ["turn_3"])
+        let saved = try service.assignSpeakerName(preview: preview, displayName: "Анна", learnVoice: true)
+        #expect(saved.overrides["turn_1"]?.assignment == manual)
+        #expect(saved.overrides["turn_3"]?.assignment?.personID == manual.personID)
+        #expect(saved.pendingLearningEvents?.isEmpty != false)
+    }
+
+    @Test func cosmeticCorrectionKeepsMachineOriginAndPerson() throws {
+        let root = try temporaryDirectory()
+        _ = try createSyntheticRecordingWithMultiTurns(in: root)
+        let resultID = "res_test_turns"
+        let repo = TranscriptEditsRepository(recordingDirectory: root)
+        let service = TranscriptSpeakerAssignmentService(editsRepository: repo)
+        let person = UUID()
+        _ = try repo.saveEdits(resultID: resultID, overrides: [
+            "turn_1": .init(displayName: "Éva", assignment: .init(personID: person, origin: "automaticVoiceMatch"))
+        ])
+        let name = " E\u{301}VA "
+        let preview = try service.previewAssignment(resultID: resultID, anchorTurnID: "turn_1", scope: .single, displayName: name)
+        let saved = try service.assignSpeakerName(preview: preview, displayName: name, learnVoice: true)
+        #expect(saved.overrides["turn_1"]?.displayName == name)
+        #expect(saved.overrides["turn_1"]?.assignment?.origin == "derivedVoiceMatch")
+        #expect(saved.overrides["turn_1"]?.assignment?.personID == person)
+        #expect(saved.pendingLearningEvents?.isEmpty != false)
     }
 
     // MARK: - 1. Single Turn Assignment Only

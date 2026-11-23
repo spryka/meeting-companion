@@ -52,6 +52,14 @@
       "license_path": "Vendor/LICENSES/MLXAudioPython-MIT-LICENSE.txt"
     },
     {
+      "name": "speech-swift WeSpeaker",
+      "revision": "b1287a6c963a38b0d4133c656725b2de7ea6bebf",
+      "license": "Apache-2.0",
+      "spdx": "Apache-2.0",
+      "copyright": "Ivan Digital and contributors",
+      "license_path": "Vendor/LICENSES/SpeechSwift-Apache-LICENSE.txt"
+    },
+    {
       "name": "swift-transformers",
       "version": "1.3.4",
       "revision": "c21fdcde390313a6d98d8e33a346f2c3486c3ab0",

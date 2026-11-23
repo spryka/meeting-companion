@@ -5,10 +5,21 @@ import MeetingCompanionCore
 public struct ProcessingJobSettings: Equatable, Sendable {
     public let parakeet: Bool
     public let echoCancellation: Bool
+    public let voiceMatchPolicy: VoiceMatchPolicy?
+    public let voiceFeatureGeneration: UUID?
 
-    public init(parakeet: Bool, echoCancellation: Bool) {
+    public var voiceIdentification: Bool { voiceMatchPolicy != nil }
+
+    public init(
+        parakeet: Bool,
+        echoCancellation: Bool,
+        voiceMatchPolicy: VoiceMatchPolicy? = nil,
+        voiceFeatureGeneration: UUID? = nil
+    ) {
         self.parakeet = parakeet
         self.echoCancellation = echoCancellation
+        self.voiceMatchPolicy = voiceMatchPolicy
+        self.voiceFeatureGeneration = voiceFeatureGeneration
     }
 }
 
@@ -68,8 +79,33 @@ public protocol AudioExporterProtocol: Sendable {
     func exportMixedAudio(from inputs: [URL], to output: URL) async throws
 }
 
+public protocol VoiceEmbeddingRunnerProtocol: Sendable {
+    func extractVoiceEmbeddings(
+        _ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL
+    ) async throws -> VoiceEmbeddingProtocol.Response
+    func checkOrPrepareVoiceModel(prepare: Bool) async throws
+}
+
+public extension VoiceEmbeddingRunnerProtocol {
+    func checkOrPrepareVoiceModel(prepare: Bool) async throws { throw ProcessingService.VoiceJobError.unavailable }
+}
+
 /// Application service managing the single serial processing queue and job execution off MainActor.
 public actor ProcessingService {
+    public enum VoiceJobKind: Equatable, Sendable { case automaticAssignment, learning }
+
+    public enum VoiceJobError: LocalizedError, Equatable {
+        case unavailable, duplicate, staleResult
+
+        public var errorDescription: String? {
+            switch self {
+            case .unavailable: "Обработка голосов недоступна."
+            case .duplicate: "Это задание для голосов уже в очереди."
+            case .staleResult: "Результат расшифровки изменился."
+            }
+        }
+    }
+
     public enum Event: Sendable {
         case enqueued(ProcessingJob)
         case started(ProcessingJob)
@@ -94,6 +130,7 @@ public actor ProcessingService {
         public let preparation: PreparationState
         public let routes: [URL: ProcessingProgressSnapshot]
         public let progress: [URL: TranscriptionProgress]
+        public let voiceJobCount: Int
         public var jobCount: Int { queued.count + admitting.count + (active == nil ? 0 : 1) }
 
         public init(
@@ -102,13 +139,15 @@ public actor ProcessingService {
             admitting: [ProcessingJob] = [],
             preparation: PreparationState,
             progress: [URL: TranscriptionProgress],
-            routes: [URL: ProcessingProgressSnapshot] = [:]
+            routes: [URL: ProcessingProgressSnapshot] = [:],
+            voiceJobCount: Int = 0
         ) {
             self.active = active
             self.queued = queued
             self.admitting = admitting
             self.preparation = preparation
             self.routes = routes
+            self.voiceJobCount = voiceJobCount
             self.progress = progress
         }
     }
@@ -136,11 +175,12 @@ public actor ProcessingService {
     private var presentationSnapshot: Snapshot {
         Snapshot(
             active: activeJob,
-            queued: queue,
+            queued: queuedTranscriptions,
             admitting: Array(admitting.values),
-            preparation: preparationState,
+            preparation: preparationIsASR ? preparationState : .idle,
             progress: progress,
-            routes: routes
+            routes: routes,
+            voiceJobCount: voiceJobCount
         )
     }
 
@@ -151,28 +191,76 @@ public actor ProcessingService {
 
     private var admitting: [URL: ProcessingJob] = [:]
     private let retryAdmission: (@Sendable (URL) async -> Bool)?
-    private var queue: [ProcessingJob] = []
+    private let voiceLearning: VoiceLearningCoordinator?
+    private var retryWriters: [UUID: TranscriptEditsRepository] = [:]
+
+    /// Keep the retry writers stable throughout the synchronous metadata reconciliation.
+    func reconcileVoiceLibrary(_ coordinator: VoiceLearningCoordinator, recordings: [URL],
+                               scanComplete: Bool, id: UUID, editorWriter: TranscriptEditsRepository?) {
+        var writers = Array(retryWriters.values)
+        if let editorWriter { writers.append(editorWriter) }
+        coordinator.reconcileLibrary(recordings: recordings, scanComplete: scanComplete, id: id, openWriters: writers)
+    }
+    private struct VoiceJob {
+        let id: UUID
+        let recordingURL: URL
+        let kind: VoiceJobKind
+        let request: VoiceEmbeddingProtocol.Request
+        let continuation: CheckedContinuation<VoiceEmbeddingProtocol.Response, any Error>
+    }
+
+    private enum QueuedJob {
+        case transcription(ProcessingJob)
+        case voice(VoiceJob)
+
+        var transcription: ProcessingJob? {
+            if case .transcription(let job) = self { return job }
+            return nil
+        }
+
+        var voice: VoiceJob? {
+            if case .voice(let job) = self { return job }
+            return nil
+        }
+    }
+
+    private var queue: [QueuedJob] = []
+    private var queuedTranscriptions: [ProcessingJob] { queue.compactMap(\.transcription) }
+    private var activeVoiceJob: VoiceJob?
+    private var activeInlineVoiceTask: Task<Void, Never>?
+    private var voiceJobCount: Int {
+        queue.count - queuedTranscriptions.count + (activeVoiceJob == nil ? 0 : 1)
+    }
     private var activeJob: ProcessingJob?
     private var activeTask: Task<Void, Never>?
     private var cancelledJobIDs: Set<UUID> = []
     private var preparationState: PreparationState = .idle
+    private var preparationIsASR = false
     private var preparationID: UUID?
     private var preparationTask: Task<(output: String, succeeded: Bool), Error>?
     private let transcriptionRunner: TranscriptionRunnerProtocol
     private let audioExporter: AudioExporterProtocol
     private let historyRepository: RecordingHistoryRepository?
+    private let voiceRunner: (any VoiceEmbeddingRunnerProtocol)?
+    private let isRecordingInCurrentLibrary: (@Sendable (URL) async -> Bool)?
     private var eventHandlers: [@Sendable (Event) -> Void] = []
 
     public init(
         transcriptionRunner: TranscriptionRunnerProtocol,
         audioExporter: AudioExporterProtocol,
         historyRepository: RecordingHistoryRepository? = nil,
-        retryAdmission: (@Sendable (URL) async -> Bool)? = nil
+        retryAdmission: (@Sendable (URL) async -> Bool)? = nil,
+        voiceLearning: VoiceLearningCoordinator? = nil,
+        voiceRunner: (any VoiceEmbeddingRunnerProtocol)? = nil,
+        isRecordingInCurrentLibrary: (@Sendable (URL) async -> Bool)? = nil
     ) {
         self.transcriptionRunner = transcriptionRunner
         self.audioExporter = audioExporter
         self.historyRepository = historyRepository
         self.retryAdmission = retryAdmission
+        self.voiceLearning = voiceLearning
+        self.voiceRunner = voiceRunner
+        self.isRecordingInCurrentLibrary = isRecordingInCurrentLibrary
     }
 
     /// Registers an event handler and immediately delivers the current state if a job is active.
@@ -184,7 +272,62 @@ public actor ProcessingService {
     }
 
     public func currentSnapshot() -> (active: ProcessingJob?, queued: [ProcessingJob]) {
-        (activeJob, queue + Array(admitting.values))
+        (activeJob, queuedTranscriptions + Array(admitting.values))
+    }
+
+    public var hasPendingWork: Bool { !queue.isEmpty || isBusy }
+
+    public func extractVoiceEmbeddings(
+        _ request: VoiceEmbeddingProtocol.Request, recordingURL: URL, kind: VoiceJobKind
+    ) async throws -> VoiceEmbeddingProtocol.Response {
+        guard voiceRunner != nil else { throw VoiceJobError.unavailable }
+        try VoiceEmbeddingProtocol.validateRequest(request)
+        let recording = RecordingEntry.canonicalURL(recordingURL)
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let response: VoiceEmbeddingProtocol.Response = try await withCheckedThrowingContinuation { continuation in
+                if kind == .automaticAssignment,
+                   (queue.compactMap(\.voice) + [activeVoiceJob].compactMap { $0 }).contains(where: {
+                       $0.kind == kind && $0.recordingURL == recording && $0.request.resultID == request.resultID
+                   }) {
+                    continuation.resume(throwing: VoiceJobError.duplicate)
+                    return
+                }
+                queue.append(.voice(VoiceJob(id: id, recordingURL: recording, kind: kind,
+                                             request: request, continuation: continuation)))
+                publishSnapshot()
+                drainNextIfNeeded()
+            }
+            try Task.checkCancellation()
+            return response
+        } onCancel: {
+            Task { await self.cancelVoiceJob(id: id) }
+        }
+    }
+
+    public func cancelVoiceJobsIfDisabled() async {
+        guard voiceLearning?.isEnabled != true else { return }
+        let queued = queue.compactMap(\.voice)
+        queue.removeAll { $0.voice != nil }
+        for job in queued { job.continuation.resume(throwing: CancellationError()) }
+        publishSnapshot()
+        if let active = activeVoiceJob { await cancelVoiceJob(id: active.id) }
+        if let inline = activeInlineVoiceTask {
+            inline.cancel()
+            await inline.value
+        }
+    }
+
+    private func cancelVoiceJob(id: UUID) async {
+        if let index = queue.firstIndex(where: { $0.voice?.id == id }),
+           let job = queue.remove(at: index).voice {
+            job.continuation.resume(throwing: CancellationError())
+            publishSnapshot()
+        } else if activeVoiceJob?.id == id, let task = activeTask {
+            task.cancel()
+            _ = await task.result
+        }
     }
 
     public var currentPreparationState: PreparationState {
@@ -210,7 +353,7 @@ public actor ProcessingService {
             emit(.failed(job, errorDescription: RecordingPaths.unsupportedLayoutMessage))
             return job
         }
-        if let existing = admitting[canonical] ?? queue.first(where: { $0.recordingURL == canonical }) ?? (activeJob?.recordingURL == canonical ? activeJob : nil) {
+        if let existing = admitting[canonical] ?? queuedTranscriptions.first(where: { $0.recordingURL == canonical }) ?? (activeJob?.recordingURL == canonical ? activeJob : nil) {
             return existing
         }
         let job = ProcessingJob(recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
@@ -243,12 +386,24 @@ public actor ProcessingService {
                 )
                 emit(.enqueued(job))
                 emit(.failed(job, errorDescription: existingEntry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна."))
+                drainNextIfNeeded()
                 return job
             }
             if cached == nil { historyRepository.put(existingEntry, persist: false) }
         }
+        if stoppedCapture == nil, let voiceLearning {
+            let writer = TranscriptEditsRepository(recordingDirectory: canonical.deletingLastPathComponent())
+            do {
+                try voiceLearning.preserveOutboxes(recording: canonical, writer: writer, includeHistory: false)
+                retryWriters[job.id] = writer
+            } catch {
+                emit(.failed(job, errorDescription: error.localizedDescription))
+                drainNextIfNeeded()
+                return job
+            }
+        }
         routes[canonical] = ProcessingProgressSnapshot(job: job)
-        queue.append(job)
+        queue.append(.transcription(job))
         enqueued = true
         if let historyRepository {
             let result = historyRepository.updateStatus(recordingURL) { $0.phase = .queued }
@@ -261,7 +416,7 @@ public actor ProcessingService {
 
     public func isProcessing(recordingURL: URL) -> Bool {
         let key = RecordingEntry.canonicalURL(recordingURL)
-        return admitting[key] != nil || activeJob?.recordingURL == key || queue.contains { $0.recordingURL == key }
+        return admitting[key] != nil || activeJob?.recordingURL == key || queue.contains { $0.transcription?.recordingURL == key }
     }
 
     /// Cancel a queued or active job by its ID.
@@ -269,8 +424,8 @@ public actor ProcessingService {
     public func cancel(jobID: UUID) async {
         cancelledJobIDs.insert(jobID)
 
-        if let index = queue.firstIndex(where: { $0.id == jobID }) {
-            let removed = queue.remove(at: index)
+        if let index = queue.firstIndex(where: { $0.transcription?.id == jobID }),
+           let removed = queue.remove(at: index).transcription {
             var warning: String?
             if let historyRepository {
                 let result = historyRepository.updateStatus(removed.recordingURL) { entry in
@@ -280,6 +435,7 @@ public actor ProcessingService {
                 }
                 warning = result.persistenceWarning
             }
+            retryWriters.removeValue(forKey: removed.id)?.releaseWriteLock()
             historyRepository?.releaseWork(removed.recordingURL, id: removed.id)
             cancelledJobIDs.remove(removed.id)
             emit(.cancelled(removed, persistenceWarning: warning))
@@ -294,11 +450,11 @@ public actor ProcessingService {
 
     /// Number of jobs pending in queue + currently active.
     public var totalJobCount: Int {
-        admitting.count + queue.count + (activeJob != nil ? 1 : 0)
+        admitting.count + queuedTranscriptions.count + (activeJob != nil ? 1 : 0)
     }
 
     public var isBusy: Bool {
-        !admitting.isEmpty || activeJob != nil || preparationState != .idle
+        !admitting.isEmpty || activeTask != nil || preparationState != .idle
     }
 
     public func cancelPreparation() async {
@@ -322,6 +478,30 @@ public actor ProcessingService {
         parakeet: Bool,
         onOutput: (@Sendable (String) -> Void)? = nil
     ) async throws -> (output: String, succeeded: Bool) {
+        let runner = transcriptionRunner
+        return try await runPreparation(prepare: prepare, reportASRResult: true) {
+            try await runner.checkDependenciesWithOutput(
+                prepare: prepare, availability: false, parakeet: parakeet, onOutput: onOutput
+            )
+        }
+    }
+
+    public func checkOrPrepareVoiceModel(prepare: Bool) async throws {
+        guard let voiceRunner else { throw VoiceJobError.unavailable }
+        guard prepare else {
+            try await voiceRunner.checkOrPrepareVoiceModel(prepare: false)
+            return
+        }
+        _ = try await runPreparation(prepare: true, reportASRResult: false) {
+            try await voiceRunner.checkOrPrepareVoiceModel(prepare: true)
+            return ("", true)
+        }
+    }
+
+    private func runPreparation(
+        prepare: Bool, reportASRResult: Bool,
+        operation: @escaping @Sendable () async throws -> (output: String, succeeded: Bool)
+    ) async throws -> (output: String, succeeded: Bool) {
         guard !isBusy else {
             throw NSError(
                 domain: "ProcessingService",
@@ -331,30 +511,60 @@ public actor ProcessingService {
         }
         let id = UUID()
         preparationID = id
+        preparationIsASR = reportASRResult
         preparationState = prepare ? .preparing : .checking
         publishSnapshot()
-        let runner = transcriptionRunner
-        let task = Task { () -> (output: String, succeeded: Bool) in
-            try await runner.checkDependenciesWithOutput(
-                prepare: prepare,
-                availability: false,
-                parakeet: parakeet,
-                onOutput: onOutput
-            )
-        }
+        let task = Task { try await operation() }
         preparationTask = task
         defer { finishPreparation(id: id) }
         let result = try await task.value
         guard !task.isCancelled else { throw CancellationError() }
-        emit(.dependenciesChecked(output: result.output, succeeded: result.succeeded))
+        if reportASRResult { emit(.dependenciesChecked(output: result.output, succeeded: result.succeeded)) }
         return result
     }
 
     private func drainNextIfNeeded() {
         guard preparationState == .idle, admitting.isEmpty else { return }
-        guard activeJob == nil, !queue.isEmpty else { return }
-        let nextJob = queue.removeFirst()
+        guard activeTask == nil, !queue.isEmpty else { return }
+        let nextIndex = queue.firstIndex { $0.transcription != nil } ?? queue.startIndex
+        switch queue.remove(at: nextIndex) {
+        case .transcription(let job): startTranscription(job)
+        case .voice(let job): startVoice(job)
+        }
+    }
 
+    private func startVoice(_ job: VoiceJob) {
+        activeVoiceJob = job
+        activeTask = Task { [self] in
+            let result: Result<VoiceEmbeddingProtocol.Response, any Error>
+            do {
+                try Task.checkCancellation()
+                guard let voiceRunner else { throw VoiceJobError.unavailable }
+                let storage = TranscriptResultStorage(recordingURL: job.recordingURL)
+                guard try storage.currentResultDirectory()?.lastPathComponent == job.request.resultID else {
+                    throw VoiceJobError.staleResult
+                }
+                let response = try await voiceRunner.extractVoiceEmbeddings(
+                    job.request, recordingDirectory: job.recordingURL.deletingLastPathComponent()
+                )
+                try Task.checkCancellation()
+                guard try storage.currentResultDirectory()?.lastPathComponent == job.request.resultID else {
+                    throw VoiceJobError.staleResult
+                }
+                result = .success(response)
+            } catch {
+                result = .failure(Task.isCancelled ? CancellationError() : error)
+            }
+            activeVoiceJob = nil
+            activeTask = nil
+            job.continuation.resume(with: result)
+            publishSnapshot()
+            drainNextIfNeeded()
+        }
+        publishSnapshot()
+    }
+
+    private func startTranscription(_ nextJob: ProcessingJob) {
         activeJob = nextJob
         emit(.started(nextJob))
 
@@ -471,6 +681,14 @@ public actor ProcessingService {
                     transcriptURL = committed
                     warnings.append("Новый результат сохранён; подтверждение обработки прервано: " + error.localizedDescription)
                 }
+                if let policy = nextJob.settings.voiceMatchPolicy {
+                    await self.runInlineVoiceAssignment(
+                        job: nextJob,
+                        transcriptURL: transcriptURL,
+                        policy: policy,
+                        warnings: warnings
+                    )
+                }
                 var terminalWarnings = warnings.values
                 if let historyRepository {
                     let res = historyRepository.updateStatus(nextJob.recordingURL) { entry in
@@ -515,6 +733,7 @@ public actor ProcessingService {
     }
 
     private func finishJob(_ job: ProcessingJob, result: JobInternalResult) {
+        retryWriters.removeValue(forKey: job.id)?.releaseWriteLock()
         historyRepository?.releaseWork(job.recordingURL, id: job.id)
         switch result {
         case .success(_, let warning): routes[job.recordingURL]?.finish(success: true, reason: warning)
@@ -543,11 +762,140 @@ public actor ProcessingService {
         guard !cancelledJobIDs.contains(job.id) else { return }
         routes[job.recordingURL]?.receive(progress, jobID: job.id)
         self.progress[job.recordingURL] = progress
-        if let warning = progress.warning, let historyRepository {
+        if let warning = progress.warning, !(progress.stage == .voices && progress.state == .skipped),
+           let historyRepository {
             let source = progress.channel.map { "[\($0)] " } ?? ""
             _ = historyRepository.updateStatus(job.recordingURL) { $0.addProblem(.transcription, source + warning) }
         }
         emit(.progress(job, progress))
+    }
+
+    private func runInlineVoiceAssignment(
+        job: ProcessingJob,
+        transcriptURL: URL,
+        policy: VoiceMatchPolicy,
+        warnings: ProcessingWarnings
+    ) async {
+        let featureDisabled = "Определение голосов выключено."
+        let libraryUnavailable = "Библиотека ещё не сверена для определения голосов."
+        let noStructuredResult = "Структурированный результат недоступен."
+        func publishVoiceEvent(_ state: TranscriptionProgress.State, warning: String? = nil, skipReason: String? = nil) {
+            let event = TranscriptionProgress(stage: .voices, completed: 0, total: 0, warning: warning, state: state, skipReason: skipReason)
+            if cancelledJobIDs.contains(job.id) {
+                routes[job.recordingURL]?.receive(event, jobID: job.id)
+                publishSnapshot()
+            } else {
+                handleProgress(job: job, progress: event)
+            }
+        }
+
+        publishVoiceEvent(.started)
+
+        if Task.isCancelled || cancelledJobIDs.contains(job.id) {
+            let note = "Новый результат сохранён до отмены определения голосов."
+            warnings.append(note)
+            publishVoiceEvent(.skipped, warning: note)
+            return
+        }
+        guard transcriptURL.lastPathComponent == "transcript.txt" else {
+            publishVoiceEvent(.skipped, skipReason: noStructuredResult)
+            return
+        }
+        guard let voiceLearning, let voiceRunner else {
+            publishVoiceEvent(.skipped, skipReason: "Модель определения голосов недоступна.")
+            return
+        }
+        if let inLibrary = await isRecordingInCurrentLibrary?(job.recordingURL), !inLibrary {
+            publishVoiceEvent(.skipped, skipReason: "Запись вне текущей библиотеки.")
+            return
+        }
+        guard voiceLearning.isEnabled,
+              job.settings.voiceFeatureGeneration == nil || voiceLearning.featureGeneration == job.settings.voiceFeatureGeneration else {
+            publishVoiceEvent(.skipped, skipReason: featureDisabled)
+            return
+        }
+        guard let libraryGeneration = voiceLearning.matchingLibraryGeneration,
+              let featureGeneration = voiceLearning.featureGeneration else {
+            publishVoiceEvent(.skipped, skipReason: libraryUnavailable)
+            return
+        }
+
+        let resultID = transcriptURL.deletingLastPathComponent().lastPathComponent
+        let recordingDirectory = job.recordingURL.deletingLastPathComponent()
+        let storage = TranscriptResultStorage(recordingURL: job.recordingURL)
+        let writer = retryWriters[job.id]
+
+        let inlineTask = Task<VoiceLearningCoordinator.AutomaticAssignmentOutcome, Error> {
+            try await voiceLearning.automaticallyAssign(
+                recordingURL: job.recordingURL,
+                resultID: resultID,
+                policy: policy,
+                expectedLibraryGeneration: libraryGeneration,
+                expectedFeatureGeneration: featureGeneration,
+                openWriter: writer
+            ) { request in
+                try Task.checkCancellation()
+                try VoiceEmbeddingProtocol.validateRequest(request)
+                guard try storage.currentResultDirectory()?.lastPathComponent == request.resultID else {
+                    throw VoiceJobError.staleResult
+                }
+                let response = try await voiceRunner.extractVoiceEmbeddings(request, recordingDirectory: recordingDirectory)
+                try Task.checkCancellation()
+                guard try storage.currentResultDirectory()?.lastPathComponent == request.resultID else {
+                    throw VoiceJobError.staleResult
+                }
+                return response
+            }
+        }
+        let cancellationHandle = Task<Void, Never> {
+            await withTaskCancellationHandler {
+                _ = try? await inlineTask.value
+            } onCancel: {
+                inlineTask.cancel()
+            }
+        }
+        activeInlineVoiceTask = cancellationHandle
+        defer {
+            cancellationHandle.cancel()
+            if activeInlineVoiceTask == cancellationHandle {
+                activeInlineVoiceTask = nil
+            }
+        }
+
+        do {
+            let outcome = try await withTaskCancellationHandler {
+                try await inlineTask.value
+            } onCancel: {
+                inlineTask.cancel()
+            }
+            switch outcome {
+            case .applied:
+                publishVoiceEvent(.completed)
+            case .skippedFeatureDisabled:
+                publishVoiceEvent(.skipped, skipReason: featureDisabled)
+            case .skippedLibraryUnavailable:
+                publishVoiceEvent(.skipped, skipReason: libraryUnavailable)
+            case .skippedInsufficientProfiles:
+                publishVoiceEvent(.skipped, skipReason: "Нужно не менее двух совместимых профилей голосов.")
+            case .skippedNoStructuredResult:
+                publishVoiceEvent(.skipped, skipReason: noStructuredResult)
+            }
+        } catch is CancellationError {
+            if !voiceLearning.isEnabled ||
+                (job.settings.voiceFeatureGeneration != nil && voiceLearning.featureGeneration != job.settings.voiceFeatureGeneration) {
+                publishVoiceEvent(.skipped, skipReason: featureDisabled)
+            } else {
+                let note = "Новый результат сохранён до отмены определения голосов."
+                warnings.append(note)
+                publishVoiceEvent(.skipped, warning: note)
+            }
+        } catch VoiceJobError.staleResult {
+            publishVoiceEvent(.skipped, skipReason: "Текущий результат изменился.")
+        } catch {
+            let message = "Автоопределение голосов не выполнено: " + error.localizedDescription
+            warnings.append(message)
+            publishVoiceEvent(.failed, warning: message)
+        }
     }
 }
 
@@ -561,7 +909,7 @@ private final class ProcessingWarnings: @unchecked Sendable {
 /// Presentation state is transient and belongs to the accepted job, never live Settings.
 public struct ProcessingProgressSnapshot: Equatable, Sendable {
     public enum Station: String, CaseIterable, Sendable {
-        case audio, echo, diarization, recognition, correction, saving
+        case audio, echo, diarization, recognition, correction, saving, voices
         public var title: String {
             switch self {
             case .audio: "Сборка аудио"
@@ -570,6 +918,7 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
             case .recognition: "Распознавание"
             case .correction: "Уточнение терминов"
             case .saving: "Сохранение"
+            case .voices: "Определение голосов"
             }
         }
         public var model: String? {
@@ -578,6 +927,7 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
             case .diarization: "Nemotron"
             case .recognition: "GigaAM"
             case .correction: "Parakeet"
+            case .voices: "WeSpeaker"
             default: nil
             }
         }
@@ -588,7 +938,11 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
     public let route: [Station]
     public private(set) var states: [Station: State] = [:]
     public private(set) var sources: [Station: Set<String>] = [:]
-    public private(set) var reasons: [Station: String] = [:]
+    public private(set) var skipReasons: [Station: String] = [:]
+    private var warningsByStation: [Station: String] = [:]
+    public var reasons: [Station: String] {
+        skipReasons.merging(warningsByStation) { skipReason, warning in skipReason + "\n" + warning }
+    }
     public private(set) var local: TranscriptionProgress?
     public private(set) var terminal = false
     public private(set) var failure: String?
@@ -596,7 +950,11 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
     private var sourceStates: [Station: [String: State]] = [:]
     public init(job: ProcessingJob) {
         jobID = job.id
-        route = Station.allCases.filter { ($0 != .echo || job.settings.echoCancellation) && ($0 != .correction || job.settings.parakeet) }
+        route = Station.allCases.filter {
+            ($0 != .echo || job.settings.echoCancellation)
+                && ($0 != .correction || job.settings.parakeet)
+                && ($0 != .voices || job.settings.voiceIdentification)
+        }
     }
     public var currentIndex: Int { route.firstIndex(of: position) ?? 0 }
     public var current: Station? { local == nil && !terminal ? nil : position }
@@ -609,7 +967,7 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
               [.echo, .gigaam, .speakers, .parakeet].contains(local.stage) else { return nil }
         return local.stageFraction
     }
-    public var warnings: [String] { route.compactMap { reasons[$0] } }
+    public var warnings: [String] { route.compactMap { warningsByStation[$0] } }
     public mutating func receive(_ event: TranscriptionProgress, jobID: UUID) {
         guard self.jobID == jobID, !terminal else { return }
         let station: Station
@@ -620,14 +978,19 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
         case .gigaam, .speakers: station = .recognition
         case .parakeet, .correction: station = .correction
         case .merge, .mix, .publication: station = .saving
+        case .voices: station = .voices
         case .warning:
             if let warning = event.warning { appendReason(warning, to: position) }
             return
         }
         guard route.contains(station) else { return }
+        if station == .voices && (states[.saving] == nil || states[.saving] == .current) {
+            states[.saving] = warningsByStation[.saving] == nil ? .completed : .warning
+        }
         position = station
         local = event
         if let reason = event.warning { appendReason(reason, to: station) }
+        if event.state == .skipped, let reason = event.skipReason { skipReasons[station] = reason }
         var state: State
         switch event.state {
         case .completed: state = .completed
@@ -638,7 +1001,7 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
             // Older start/end-only producers report the two model sources independently.
             state = station == .diarization && event.total > 0 && event.completed == event.total ? .completed : .current
         }
-        if state == .completed, reasons[station] != nil { state = .warning }
+        if state == .completed, warningsByStation[station] != nil { state = .warning }
         if station == .saving { states[station] = .current; return }
         if station.hasSources {
             guard let channel = event.channel else { states[station] = .current; return }
@@ -653,16 +1016,40 @@ public struct ProcessingProgressSnapshot: Equatable, Sendable {
     }
     private mutating func appendReason(_ reason: String, to station: Station) {
         guard !reason.isEmpty else { return }
-        if reasons[station]?.contains(reason) == true { return }
-        reasons[station] = [reasons[station], reason].compactMap { $0 }.joined(separator: "\n")
+        if warningsByStation[station]?.contains(reason) == true { return }
+        warningsByStation[station] = [warningsByStation[station], reason].compactMap { $0 }.joined(separator: "\n")
         if states[station] == .completed { states[station] = .warning }
     }
     public mutating func finish(success: Bool, reason: String?) {
         guard !terminal else { return }
         terminal = true
         local = nil
-        if success { position = .saving; states[.saving] = reasons[.saving] == nil && reason == nil ? .completed : .warning }
-        else { states[position] = .failed; failure = reason }
-        if let reason { appendReason(reason, to: position) }
+        if success {
+            if route.contains(.voices) {
+                let recorded = Set(warningsByStation.values.flatMap { $0.split(separator: "\n").map(String.init) })
+                let unrecorded = (reason ?? "")
+                    .split(separator: "\n")
+                    .map(String.init)
+                    .filter { !$0.isEmpty && !recorded.contains($0) }
+                if !unrecorded.isEmpty {
+                    for line in unrecorded { appendReason(line, to: .saving) }
+                }
+                if states[.saving] == nil || states[.saving] == .current {
+                    states[.saving] = warningsByStation[.saving] == nil ? .completed : .warning
+                }
+                position = .voices
+                if states[.voices] == nil || states[.voices] == .current {
+                    states[.voices] = warningsByStation[.voices] == nil ? .completed : .warning
+                }
+            } else {
+                position = .saving
+                states[.saving] = warningsByStation[.saving] == nil && reason == nil ? .completed : .warning
+                if let reason { appendReason(reason, to: position) }
+            }
+        } else {
+            states[position] = .failed
+            failure = reason
+            if let reason { appendReason(reason, to: position) }
+        }
     }
 }

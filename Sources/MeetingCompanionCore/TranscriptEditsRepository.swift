@@ -1,13 +1,120 @@
+import CryptoKit
 import Foundation
 
-/// Per-turn user overrides stored in `edits.json`.
+public struct TranscriptNameAssignment: Codable, Equatable, Sendable {
+    public let assignmentID: UUID
+    public let personID: UUID?
+    public let origin: String
+    public let version: Int
+
+    public init(assignmentID: UUID = UUID(), personID: UUID?, origin: String, version: Int = 1) {
+        self.assignmentID = assignmentID
+        self.personID = personID
+        self.origin = origin
+        self.version = version
+    }
+
+    public var isMachineAssigned: Bool {
+        origin == "automaticVoiceMatch" || origin == "derivedVoiceMatch"
+    }
+
+    var canContributeVoiceSamples: Bool {
+        personID != nil && (origin == "manual" || origin == "legacyManualImport")
+    }
+
+    fileprivate var isValid: Bool {
+        version > 0 && !origin.isEmpty && (!isMachineAssigned || personID != nil)
+    }
+}
+
+public struct TranscriptVoicePersonIntent: Codable, Equatable, Sendable {
+    public let personID: UUID
+    public let nameToCreate: String?
+    public let catalogueID: UUID?
+    public let catalogueGeneration: UInt64
+    public let personGeneration: UInt64
+    public let featureGeneration: UUID?
+
+    public init(personID: UUID, nameToCreate: String?, catalogueID: UUID, catalogueGeneration: UInt64,
+                personGeneration: UInt64, featureGeneration: UUID? = nil) {
+        self.personID = personID
+        self.nameToCreate = nameToCreate
+        self.catalogueID = catalogueID
+        self.catalogueGeneration = catalogueGeneration
+        self.personGeneration = personGeneration
+        self.featureGeneration = featureGeneration
+    }
+}
+
+public struct TranscriptLearningEvent: Codable, Equatable, Sendable {
+    public let eventID: UUID
+    public let turnID: String
+    public let editsRevision: Int
+    public let allowsLearning: Bool
+    public let previousAssignment: TranscriptNameAssignment?
+    public let assignment: TranscriptNameAssignment?
+    public let personIntent: TranscriptVoicePersonIntent?
+
+    fileprivate init(
+        turnID: String,
+        editsRevision: Int,
+        allowsLearning: Bool,
+        previousAssignment: TranscriptNameAssignment?,
+        assignment: TranscriptNameAssignment?,
+        personIntent: TranscriptVoicePersonIntent?
+    ) {
+        self.eventID = UUID()
+        self.turnID = turnID
+        self.editsRevision = editsRevision
+        self.allowsLearning = allowsLearning
+        self.previousAssignment = previousAssignment
+        self.assignment = assignment
+        self.personIntent = personIntent
+    }
+}
+
+public enum TranscriptVoiceRefusal: String, Codable, Equatable, Sendable {
+    case insufficientProfiles, missingEvidence, insufficientSpeech, overlap, ambiguous, unknownVoice, unavailable
+
+    public var label: String {
+        switch self {
+        case .insufficientProfiles: "Недостаточно знакомых голосов"
+        case .missingEvidence: "Нет подходящих данных о речи"
+        case .insufficientSpeech: "Недостаточно чистой речи"
+        case .overlap: "Голоса перекрываются"
+        case .ambiguous: "Не удалось различить похожие голоса"
+        case .unknownVoice: "Голос не найден в профилях"
+        case .unavailable: "Не удалось определить голос"
+        }
+    }
+}
+
+/// Per-turn edits and voice review data stored in `edits.json`.
 public struct TranscriptTurnOverride: Codable, Equatable, Sendable {
     public var text: String?
     public var displayName: String?
+    public var assignment: TranscriptNameAssignment?
+    public var voiceRefusal: TranscriptVoiceRefusal?
 
-    public init(text: String? = nil, displayName: String? = nil) {
+    public var protectsNameFromBulkReplacement: Bool {
+        displayName != nil && assignment?.isMachineAssigned != true
+    }
+
+    public func legacyImportAssignment(resultID: String, turnID: String, personID: UUID?) -> TranscriptNameAssignment? {
+        guard let displayName, assignment == nil else { return nil }
+        let key = ["legacyManualImport", resultID, turnID, displayName].map { "\($0.utf8.count):\($0)" }.joined()
+        let digest = Array(SHA256.hash(data: Data(key.utf8)).prefix(16))
+        let id = UUID(uuid: (digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+                            digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]))
+        return .init(assignmentID: id, personID: personID, origin: "legacyManualImport")
+    }
+
+    public init(text: String? = nil, displayName: String? = nil, assignment: TranscriptNameAssignment? = nil,
+                voiceRefusal: TranscriptVoiceRefusal? = nil) {
         self.text = text
         self.displayName = displayName
+        self.assignment = assignment
+        self.voiceRefusal = voiceRefusal
     }
 }
 
@@ -17,17 +124,24 @@ public struct TranscriptEdits: Codable, Equatable, Sendable {
     public let resultID: String
     public let revision: Int
     public let overrides: [String: TranscriptTurnOverride]
+    public let pendingLearningEvents: [TranscriptLearningEvent]?
+
+    public static func supports(schemaVersion: Int) -> Bool {
+        schemaVersion == 1 || schemaVersion == 2
+    }
 
     public init(
         schemaVersion: Int = 1,
         resultID: String,
         revision: Int,
-        overrides: [String: TranscriptTurnOverride]
+        overrides: [String: TranscriptTurnOverride],
+        pendingLearningEvents: [TranscriptLearningEvent]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.resultID = resultID
         self.revision = revision
         self.overrides = overrides
+        self.pendingLearningEvents = pendingLearningEvents
     }
 
     public static func initial(resultID: String) -> TranscriptEdits {
@@ -82,9 +196,24 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         public let exists: Bool
     }
 
+    public struct LearningCommit: Sendable {
+        public let writer: TranscriptEditsRepository
+        public let recordingDirectory: URL
+        public let previous: LoadedSnapshot
+        public let saved: LoadedSnapshot
+        public let events: [TranscriptLearningEvent]
+    }
+
+    public enum LearningCommitPhase: Sendable {
+        case preparing, committed, aborted
+    }
+
+    public typealias LearningCommitObserver = @Sendable (LearningCommitPhase, LearningCommit) -> Void
+
     public let recordingDirectory: URL
     public let atomicReplaceHook: AtomicReplaceHook?
     public let stagingWriteHook: StagingWriteHook?
+    private let learningCommitObserver: LearningCommitObserver?
 
     private let lock = NSLock()
     private let operationGate = NSLock()
@@ -97,11 +226,13 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
     public init(
         recordingDirectory: URL,
         atomicReplaceHook: AtomicReplaceHook? = nil,
-        stagingWriteHook: StagingWriteHook? = nil
+        stagingWriteHook: StagingWriteHook? = nil,
+        learningCommitObserver: LearningCommitObserver? = nil
     ) {
         self.recordingDirectory = recordingDirectory
         self.atomicReplaceHook = atomicReplaceHook
         self.stagingWriteHook = stagingWriteHook
+        self.learningCommitObserver = learningCommitObserver
     }
 
     deinit {
@@ -151,13 +282,30 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         recordingDirectory.appendingPathComponent(".transcript-editor.lock")
     }
 
+    private func hasLegacyImportFence() throws -> Bool {
+        try lock.withLock {
+            guard let fd = lockFD else { throw TranscriptEditsError.lockDenied("Missing recording lock") }
+            var info = stat()
+            guard fstat(fd, &info) == 0 else {
+                throw TranscriptEditsError.malformed("Cannot read recording lock: errno \(errno)")
+            }
+            return info.st_size > 0
+        }
+    }
+
     /// Acquires exclusive writer lock for the recording directory.
     ///
     /// Throws `TranscriptEditsError.lockDenied` if already locked by another process.
     public func acquireWriteLock() throws {
+        acquireOperationGate(.save)
+        defer { operationGate.unlock() }
+        _ = try acquireWriteLockGated()
+    }
+
+    private func acquireWriteLockGated() throws -> Bool {
         try lock.withLock {
             if lockFD != nil {
-                return
+                return false
             }
 
             let realRecordingURL = recordingDirectory.resolvingSymlinksInPath().standardizedFileURL
@@ -187,6 +335,7 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
             }
 
             self.lockFD = fd
+            return true
             #else
             throw TranscriptEditsError.notImplemented
             #endif
@@ -197,6 +346,10 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
     public func releaseWriteLock() {
         acquireOperationGate(.release)
         defer { operationGate.unlock() }
+        releaseWriteLockGated()
+    }
+
+    private func releaseWriteLockGated() {
         lock.withLock {
             #if canImport(Darwin)
             if let fd = lockFD {
@@ -410,7 +563,30 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         return try loadEditsGated(resultID: resultID)
     }
 
+    public func withLockedEditsSnapshot<T>(resultID: String, _ body: (LoadedSnapshot) throws -> T) throws -> T {
+        acquireOperationGate(.load)
+        defer { operationGate.unlock() }
+        let acquired = try acquireWriteLockGated()
+        defer { if acquired { releaseWriteLockGated() } }
+        return try body(readEditsSnapshot(resultID: resultID))
+    }
+
     private func loadEditsGated(resultID: String) throws -> TranscriptEdits {
+        let snapshot = try readEditsSnapshot(resultID: resultID)
+        lock.withLock {
+            if let existing = snapshots[resultID], existing.exists != snapshot.exists || existing.data != snapshot.data {
+                undoHistory[resultID] = []
+            }
+            snapshots[resultID] = snapshot
+        }
+        return snapshot.edits
+    }
+
+    public func hasStoredEdits(resultID: String) throws -> Bool {
+        try verifyContainedPath(components: ["raw", "transcripts", resultID, "edits.json"], allowFinalAbsence: true).1
+    }
+
+    public func readEditsSnapshot(resultID: String) throws -> LoadedSnapshot {
         guard !resultID.isEmpty,
               !resultID.contains("/"),
               !resultID.contains("\\"),
@@ -442,14 +618,7 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         )
 
         guard exists else {
-            let initial = TranscriptEdits.initial(resultID: resultID)
-            lock.withLock {
-                if let existing = snapshots[resultID], existing.exists {
-                    undoHistory[resultID] = []
-                }
-                snapshots[resultID] = LoadedSnapshot(edits: initial, data: nil, exists: false)
-            }
-            return initial
+            return LoadedSnapshot(edits: .initial(resultID: resultID), data: nil, exists: false)
         }
 
         let data: Data
@@ -463,7 +632,7 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
               let schemaVersion = Self.parseExactNonnegativeInteger(token: rawSchemaToken) else {
             throw TranscriptEditsError.malformed("schemaVersion must be an integer")
         }
-        guard schemaVersion == 1 else {
+        guard TranscriptEdits.supports(schemaVersion: schemaVersion) else {
             throw TranscriptEditsError.unsupportedVersion(schemaVersion)
         }
 
@@ -533,24 +702,60 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
                 displayName = strName
             }
 
-            parsedOverrides[turnKey] = TranscriptTurnOverride(text: text, displayName: displayName)
+            let assignment = try Self.decodeMetadata(
+                TranscriptNameAssignment.self, from: turnDict["assignment"], version: schemaVersion
+            )
+            let voiceRefusal = try Self.decodeMetadata(
+                String.self, from: turnDict["voiceRefusal"], version: schemaVersion
+            ).map { TranscriptVoiceRefusal(rawValue: $0) ?? .unavailable }
+            if let assignment, displayName == nil || !assignment.isValid {
+                throw TranscriptEditsError.malformed("Invalid assignment for \(turnKey)")
+            }
+            parsedOverrides[turnKey] = TranscriptTurnOverride(text: text, displayName: displayName, assignment: assignment,
+                                                               voiceRefusal: voiceRefusal)
+        }
+
+        let pending = try Self.decodeMetadata(
+            [TranscriptLearningEvent].self, from: dict["pendingLearningEvents"], version: schemaVersion
+        )
+        if let pending {
+            guard Set(pending.map(\.eventID)).count == pending.count,
+                  pending.allSatisfy({ event in
+                      validTurnIDs.contains(event.turnID) &&
+                      event.editsRevision > 0 && event.editsRevision <= revision &&
+                      event.previousAssignment?.isValid != false &&
+                      event.assignment?.isValid != false &&
+                      (!event.allowsLearning || event.assignment?.canContributeVoiceSamples == true) &&
+                      (event.personIntent == nil || (event.assignment?.canContributeVoiceSamples == true &&
+                          event.personIntent?.personID == event.assignment?.personID &&
+                          event.personIntent?.nameToCreate?.allSatisfy(\.isWhitespace) != true)) &&
+                      (event.previousAssignment != nil || event.assignment != nil)
+                  }) else {
+                throw TranscriptEditsError.malformed("Invalid pending learning events")
+            }
         }
 
         let edits = TranscriptEdits(
             schemaVersion: schemaVersion,
             resultID: resultID,
             revision: revision,
-            overrides: parsedOverrides
+            overrides: parsedOverrides,
+            pendingLearningEvents: pending
         )
-        lock.withLock {
-            if let existing = snapshots[resultID] {
-                if !existing.exists || existing.data != data {
-                    undoHistory[resultID] = []
-                }
-            }
-            snapshots[resultID] = LoadedSnapshot(edits: edits, data: data, exists: true)
+        return LoadedSnapshot(edits: edits, data: data, exists: true)
+    }
+
+    private static func decodeMetadata<T: Decodable>(_ type: T.Type, from value: Any?, version: Int) throws -> T? {
+        guard let value else { return nil }
+        guard version == 2 else {
+            throw TranscriptEditsError.malformed("Assignment metadata requires schemaVersion 2")
         }
-        return edits
+        do {
+            let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw TranscriptEditsError.malformed("Invalid assignment metadata: \(error.localizedDescription)")
+        }
     }
 
     private func createStagingFile(in dir: URL) throws -> (url: URL, fd: Int32) {
@@ -597,29 +802,36 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
 
     private func saveOverridesInternal(
         resultID: String,
-        isUndo: Bool = false,
+        learnVoice: Bool = false,
+        personIntent: TranscriptVoicePersonIntent? = nil,
         mutating: (inout [String: TranscriptTurnOverride]) throws -> Void
     ) throws -> TranscriptEdits {
         acquireOperationGate(.save)
         defer { operationGate.unlock() }
-        return try saveOverridesInternalGated(resultID: resultID, isUndo: isUndo, mutating: mutating)
+        return try saveOverridesInternalGated(resultID: resultID, learnVoice: learnVoice,
+                                              personIntent: personIntent, mutating: mutating)
     }
 
     /// Executes an atomic read-modify-write mutation on the current loaded snapshot within the operation gate.
     /// Does not reload from disk if a snapshot already exists, enforcing CAS conflict detection against external changes.
     internal func mutateOverrides(
         resultID: String,
+        learnVoice: Bool = false,
+        personIntent: TranscriptVoicePersonIntent? = nil,
         mutating: (inout [String: TranscriptTurnOverride]) throws -> Void
     ) throws -> TranscriptEdits {
-        try saveOverridesInternal(resultID: resultID, mutating: mutating)
+        try saveOverridesInternal(resultID: resultID, learnVoice: learnVoice, personIntent: personIntent,
+                                  mutating: mutating)
     }
 
     private func saveOverridesInternalGated(
         resultID: String,
+        learnVoice: Bool = false,
+        personIntent: TranscriptVoicePersonIntent? = nil,
         isUndo: Bool = false,
         mutating: (inout [String: TranscriptTurnOverride]) throws -> Void
     ) throws -> TranscriptEdits {
-        try acquireWriteLock()
+        _ = try acquireWriteLockGated()
 
         guard !resultID.isEmpty,
               !resultID.contains("/"),
@@ -697,16 +909,64 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
                     throw TranscriptEditsError.malformed("displayName must not be empty")
                 }
             }
+            if let assignment = overrideVal.assignment, overrideVal.displayName == nil || !assignment.isValid {
+                throw TranscriptEditsError.malformed("Invalid assignment for \(turnID)")
+            }
         }
 
         let words = Dictionary(uniqueKeysWithValues: document.words.map { ($0.id, $0.text) })
         let speakers = Dictionary(uniqueKeysWithValues: document.speakers.map { ($0.id, $0.displayNumber) })
+        let protectLegacy = try hasLegacyImportFence()
+        var schemaVersion = snapshot.edits.schemaVersion
+        var pending = snapshot.edits.pendingLearningEvents ?? []
         for turn in document.turns {
-            guard var value = newOverrides[turn.id] else { continue }
             let prior = snapshot.edits.overrides[turn.id]
+            var currentAssignment: TranscriptNameAssignment?
+            defer {
+                let changedName = prior?.displayName != newOverrides[turn.id]?.displayName
+                if prior?.assignment != currentAssignment || changedName {
+                    let previousAssignment = prior?.assignment ?? (protectLegacy
+                        ? prior?.legacyImportAssignment(resultID: resultID, turnID: turn.id, personID: nil) : nil)
+                    schemaVersion = 2
+                    let intent = currentAssignment?.canContributeVoiceSamples == true &&
+                        currentAssignment?.personID == personIntent?.personID ? personIntent : nil
+                    let allowsLearning = learnVoice && intent?.catalogueID != nil
+                    let importedManual = protectLegacy && previousAssignment?.origin == "manual" && previousAssignment?.personID == nil
+                    if previousAssignment?.canContributeVoiceSamples == true || previousAssignment?.origin == "legacyManualImport" || importedManual ||
+                        allowsLearning || intent != nil {
+                        pending.append(TranscriptLearningEvent(
+                            turnID: turn.id,
+                            editsRevision: nextRevision,
+                            allowsLearning: allowsLearning,
+                            previousAssignment: previousAssignment,
+                            assignment: currentAssignment,
+                            personIntent: intent
+                        ))
+                    }
+                }
+            }
+            guard var value = newOverrides[turn.id] else { continue }
             if prior?.text == nil, value.text?.utf8.elementsEqual(turn.wordIDs.compactMap({ words[$0] }).joined(separator: " ").utf8) == true { value.text = nil }
-            if prior?.displayName == nil, value.displayName == "Speaker \(speakers[turn.speakerID] ?? 1)" { value.displayName = nil }
-            if value.text == nil, value.displayName == nil, prior == nil { newOverrides.removeValue(forKey: turn.id) }
+            if prior?.displayName == nil, value.assignment == nil, value.displayName == "Speaker \(speakers[turn.speakerID] ?? 1)" { value.displayName = nil }
+            let assignmentChanged = value.assignment != prior?.assignment && (isUndo || value.assignment != nil)
+            if value.displayName != prior?.displayName || assignmentChanged {
+                schemaVersion = 2
+                value.voiceRefusal = nil
+                if value.displayName == nil {
+                    value.assignment = nil
+                } else if isUndo {
+                    value.assignment = value.assignment.map {
+                        TranscriptNameAssignment(personID: $0.personID, origin: $0.origin)
+                    }
+                } else if value.assignment == nil || value.assignment == prior?.assignment {
+                    value.assignment = TranscriptNameAssignment(personID: nil, origin: "manual")
+                }
+            } else {
+                value.assignment = prior?.assignment
+            }
+            if value.voiceRefusal != prior?.voiceRefusal { schemaVersion = 2 }
+            currentAssignment = value.assignment
+            if value.text == nil, value.displayName == nil, value.voiceRefusal == nil, prior == nil { newOverrides.removeValue(forKey: turn.id) }
             else { newOverrides[turn.id] = value }
         }
         let unchanged = newOverrides.count == snapshot.edits.overrides.count && newOverrides.allSatisfy { id, value in
@@ -717,20 +977,29 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
             case let (.some(lhs), .some(rhs)): sameText = lhs.utf8.elementsEqual(rhs.utf8)
             default: sameText = false
             }
-            return sameText && value.displayName == prior.displayName
+            return sameText && value.displayName == prior.displayName && value.assignment == prior.assignment && value.voiceRefusal == prior.voiceRefusal
         }
         if unchanged { return snapshot.edits }
 
         let newEdits = TranscriptEdits(
-            schemaVersion: 1,
+            schemaVersion: schemaVersion,
             resultID: resultID,
             revision: nextRevision,
-            overrides: newOverrides
+            overrides: newOverrides,
+            pendingLearningEvents: pending.isEmpty ? nil : pending
         )
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let encodedData = try encoder.encode(newEdits)
+        let saved = LoadedSnapshot(edits: newEdits, data: encodedData, exists: true)
+        let newEvents = Array(pending.dropFirst(snapshot.edits.pendingLearningEvents?.count ?? 0))
+        guard newEvents.isEmpty || learningCommitObserver != nil else {
+            throw TranscriptEditsError.conflict("Нет координатора сохранения голосовых профилей.")
+        }
+        let learningCommit = newEvents.isEmpty ? nil : LearningCommit(
+            writer: self, recordingDirectory: recordingDirectory, previous: snapshot, saved: saved, events: newEvents
+        )
 
         let (tempURL, tempFD) = try createStagingFile(in: editsFile.deletingLastPathComponent())
         var openFD: Int32? = tempFD
@@ -747,6 +1016,8 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         try writeFully(fd: tempFD, data: encodedData)
         close(tempFD)
         openFD = nil
+        if let learningCommit { learningCommitObserver?(.preparing, learningCommit) }
+        defer { if !renamed, let learningCommit { learningCommitObserver?(.aborted, learningCommit) } }
 
         if let hook = atomicReplaceHook {
             try hook(tempURL, editsFile)
@@ -779,7 +1050,7 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         #endif
 
         lock.withLock {
-            snapshots[resultID] = LoadedSnapshot(edits: newEdits, data: encodedData, exists: true)
+            snapshots[resultID] = saved
             if !isUndo {
                 undoHistory[resultID, default: []].append(snapshot.edits.overrides)
             } else {
@@ -789,6 +1060,7 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
                 }
             }
         }
+        if let learningCommit { learningCommitObserver?(.committed, learningCommit) }
         return newEdits
     }
 

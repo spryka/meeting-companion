@@ -20,6 +20,9 @@ func printHelp() {
       --recording --offline   Process recording using platform directory contract
       --check, --availability Check local availability of required model weights and assets
       --prepare               Verify or link verified models into app-owned model directory
+      --check-voice           Check the pinned local voice model
+      --prepare-voice         Prepare the pinned local voice model
+      --voice-embeddings      Read one embeddings request from stdin for a recording directory
       --help, -h              Show this help message
 
     Options:
@@ -62,6 +65,9 @@ do {
     var echoCancel = false
     var checkOnly = false
     var prepareOnly = false
+    var voiceOnly = false
+    var checkVoice = false
+    var prepareVoice = false
     var explicitResultID: String? = nil
     var positional: [String] = []
 
@@ -83,6 +89,15 @@ do {
             idx += 1
         case "--prepare":
             prepareOnly = true
+            idx += 1
+        case "--voice-embeddings":
+            voiceOnly = true
+            idx += 1
+        case "--check-voice":
+            checkVoice = true
+            idx += 1
+        case "--prepare-voice":
+            prepareVoice = true
             idx += 1
         case "--model-root":
             guard idx + 1 < rawArgs.count else {
@@ -114,6 +129,42 @@ do {
             positional.append(arg)
             idx += 1
         }
+    }
+
+    if voiceOnly || checkVoice || prepareVoice {
+        guard !prepareOnly, !checkOnly, !parakeet, !echoCancel, explicitResultID == nil,
+              [voiceOnly, checkVoice, prepareVoice].filter({ $0 }).count == 1,
+              positional.count == (voiceOnly ? 1 : 0) else {
+            throw VoiceEmbeddingProtocol.Invalid.request
+        }
+        if checkVoice {
+            _ = try VoiceEmbeddingWorker.checkLocalWeights(modelRoot: modelRoot, isCancelled: { interrupted != 0 })
+            print("Voice model is ready")
+            exit(0)
+        }
+        if prepareVoice {
+            try ModelAssets.prepareVoice(modelRoot: modelRoot, sourceRoot: sourceRoot, isCancelled: { interrupted != 0 })
+            print("Voice model prepared")
+            exit(0)
+        }
+
+        var input = Data()
+        let limit = VoiceEmbeddingProtocol.requestByteLimit
+        while let chunk = try FileHandle.standardInput.read(upToCount: min(4096, limit - input.count + 1)),
+              !chunk.isEmpty {
+            try checkCancel()
+            input.append(chunk)
+            guard input.count <= limit else { throw VoiceEmbeddingProtocol.Invalid.request }
+        }
+        let request = try VoiceEmbeddingProtocol.decodeRequest(input)
+        let recordingDirectory = URL(fileURLWithPath: positional[0], isDirectory: true)
+        let response = try VoiceEmbeddingWorker.extract(
+            request, recordingDirectory: recordingDirectory, modelRoot: modelRoot, isCancelled: { interrupted != 0 }
+        )
+        let output = try JSONEncoder().encode(response)
+        _ = try VoiceEmbeddingProtocol.decodeResponse(output, for: request)
+        try FileHandle.standardOutput.write(contentsOf: output)
+        exit(0)
     }
 
     if prepareOnly {
@@ -203,6 +254,7 @@ do {
             audioMixURL: res.audioMixURL,
             aecAudioURL: res.aecAudioURL,
             correctionJournalData: res.correctionJournalData,
+            voiceQuality: res.voiceQuality,
             recordingStem: stem,
             hostAudioRelPath: sources.hostRelPath,
             remoteAudioRelPath: sources.remoteRelPath,
@@ -242,6 +294,7 @@ do {
         audioMixURL: pipelineResult.audioMixURL,
         aecAudioURL: pipelineResult.aecAudioURL,
         correctionJournalData: pipelineResult.correctionJournalData,
+        voiceQuality: pipelineResult.voiceQuality,
         recordingStem: sources.stem,
         hostAudioRelPath: sources.hostRelPath,
         remoteAudioRelPath: sources.remoteRelPath,

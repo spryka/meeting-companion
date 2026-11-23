@@ -69,6 +69,7 @@ public final class SubprocessRunner: @unchecked Sendable {
 
 public enum Transcription {
     private static let queue = DispatchQueue(label: "MeetingCompanion.transcription")
+    private static let voiceModelCheckQueue = DispatchQueue(label: "MeetingCompanion.voiceModelCheck", qos: .utility)
 
     public static func locateWorkerExecutable() -> URL? {
         if let env = ProcessInfo.processInfo.environment["MEETING_TRANSCRIPTION_WORKER"], !env.isEmpty {
@@ -108,6 +109,82 @@ public enum Transcription {
         process.executableURL = worker
         process.arguments = arguments
         return process
+    }
+
+    public static func checkVoiceModel() async throws {
+        _ = try await runVoiceWorker(arguments: ["--check-voice"], input: nil, on: voiceModelCheckQueue)
+    }
+
+    public static func prepareVoiceModel() async throws {
+        _ = try await runVoiceWorker(arguments: ["--prepare-voice"], input: nil)
+    }
+
+    public static func extractVoiceEmbeddings(
+        _ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL
+    ) async throws -> VoiceEmbeddingProtocol.Response {
+        try VoiceEmbeddingProtocol.validateRequest(request)
+        let input = try JSONEncoder().encode(request)
+        guard input.count <= VoiceEmbeddingProtocol.requestByteLimit else { throw VoiceEmbeddingProtocol.Invalid.request }
+        let output = try await runVoiceWorker(arguments: ["--voice-embeddings", recordingDirectory.path], input: input)
+        return try VoiceEmbeddingProtocol.decodeResponse(output, for: request)
+    }
+
+    private static func runVoiceWorker(arguments: [String], input: Data?, on workerQueue: DispatchQueue = queue) async throws -> Data {
+        let process = try makeProcess(arguments: arguments)
+        let runner = SubprocessRunner(process: process)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                workerQueue.async {
+                    let inputPipe = Pipe()
+                    let outputPipe = Pipe()
+                    let inputWriter = inputPipe.fileHandleForWriting
+                    defer {
+                        try? inputWriter.close()
+                        runner.cancelTerminationTimer()
+                    }
+                    do {
+                        guard fcntl(inputWriter.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                        }
+                        process.standardInput = inputPipe
+                        process.standardOutput = outputPipe
+                        if input == nil { process.standardError = outputPipe }
+                        else { process.standardError = FileHandle.nullDevice }
+                        try runner.start()
+                        if let input { try inputWriter.write(contentsOf: input) }
+                        try inputWriter.close()
+                        let limit = VoiceEmbeddingProtocol.responseByteLimit
+                        let reader = outputPipe.fileHandleForReading
+                        var output = Data()
+                        while let chunk = try reader.read(upToCount: min(8192, limit - output.count + 1)),
+                              !chunk.isEmpty {
+                            output.append(chunk)
+                            guard output.count <= limit else { throw VoiceEmbeddingProtocol.Invalid.response }
+                        }
+                        process.waitUntilExit()
+                        if runner.cancelled { throw CancellationError() }
+                        guard process.terminationStatus == 0 else {
+                            let detail = input == nil ? String(decoding: output, as: UTF8.self)
+                                .split(whereSeparator: \.isNewline).last.map(String.init) : nil
+                            let fallback = input == nil ? "Не удалось проверить или подготовить модель голосов." :
+                                "Не удалось получить признаки голоса."
+                            throw NSError(domain: "VoiceEmbeddings", code: Int(process.terminationStatus),
+                                userInfo: [NSLocalizedDescriptionKey: detail ?? fallback])
+                        }
+                        continuation.resume(returning: output)
+                    } catch {
+                        let cancelled = runner.cancelled
+                        if process.isRunning {
+                            runner.terminate(timeoutSeconds: 2)
+                            process.waitUntilExit()
+                        }
+                        continuation.resume(throwing: cancelled ? CancellationError() : error)
+                    }
+                }
+            }
+        } onCancel: {
+            runner.terminate(timeoutSeconds: 2)
+        }
     }
 
     public static func run(

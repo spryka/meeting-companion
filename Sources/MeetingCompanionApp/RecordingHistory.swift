@@ -19,6 +19,9 @@ public final class RecordingHistory: ObservableObject {
     private var refreshRequest: UUID?
     private var revision = -1
     private var observation: Task<Void, Never>?
+    var onRefreshFinished: ((URL) -> Void)?
+    var openEditsWriter: (@MainActor @Sendable () -> TranscriptEditsRepository?)?
+    var processing: ProcessingService?
 
     public init(repository: RecordingHistoryRepository = RecordingHistoryRepository()) {
         self.repository = repository
@@ -76,15 +79,19 @@ public final class RecordingHistory: ObservableObject {
         let request = repository.beginRefresh()
         loading = true
         refreshError = nil
+        let openEditsWriter = self.openEditsWriter
+        let processing = self.processing
         let result = await Task.detached {
             await repository.refresh(root: root, request: request, allowMissingRoot: !manual,
-                                     preservingMissing: preservingMissing)
+                                     openWriter: { await openEditsWriter?() },
+                                     preservingMissing: preservingMissing, processing: processing)
         }.value
         guard refreshRequest == id else { return }
         await synchronize()
         guard refreshRequest == id else { return }
         loading = false
         initialLoadComplete = true
+        onRefreshFinished?(root)
         if manual {
             refreshError = result.error.map { "Не удалось полностью обновить библиотеку. Повторите обновление. " + $0 }
             if result.error == nil { refreshCompletion = id }

@@ -82,8 +82,11 @@ public final class TranscriptWindowState: Identifiable {
 public final class TranscriptWindowCoordinator {
 
     public private(set) var openWindows: [URL: TranscriptWindowState] = [:]
+    private let learningCommitObserver: TranscriptEditsRepository.LearningCommitObserver?
 
-    public init() {}
+    public init(learningCommitObserver: TranscriptEditsRepository.LearningCommitObserver? = nil) {
+        self.learningCommitObserver = learningCommitObserver
+    }
 
     public static func canonicalURL(for url: URL) -> URL {
         let standard = url.standardizedFileURL
@@ -155,7 +158,9 @@ public final class TranscriptWindowCoordinator {
         if case .review(let id) = assessment.mode {
             session = TranscriptReviewSession(recordingDirectory: directory, recordingURL: recording,
                 activeResultID: id,
-                editsRepository: TranscriptEditsRepository(recordingDirectory: directory))
+                editsRepository: TranscriptEditsRepository(
+                    recordingDirectory: directory, learningCommitObserver: learningCommitObserver
+                ))
         }
         let text: URL?
         switch assessment.mode {

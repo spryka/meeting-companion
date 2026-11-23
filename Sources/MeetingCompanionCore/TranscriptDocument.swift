@@ -151,25 +151,44 @@ public struct TranscriptDocument: Codable, Sendable {
             message = try c.decode(String.self, forKey: .message)
         }
     }
+    public struct CalendarParticipant: Codable, Hashable, Sendable {
+        public let displayName: String
+        public let address: String
+
+        public init?(displayName: String?, contactURL: URL) {
+            guard let contact = URLComponents(url: contactURL, resolvingAgainstBaseURL: false),
+                  contact.scheme?.lowercased() == "mailto", contact.host == nil,
+                  contact.query == nil, contact.fragment == nil else { return nil }
+            let parts = contact.path.split(separator: "@", omittingEmptySubsequences: false)
+            guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty }),
+                  !contact.path.contains(where: { $0.isWhitespace || $0 == "," || $0 == ";" }) else { return nil }
+            address = parts[0] + "@" + parts[1].lowercased()
+            self.displayName = displayName ?? address
+        }
+    }
+
     public struct Context: Codable, Sendable {
         public let title: String?
         public let startAt: String?
         public let timeZone: String?
         public let agenda: String?
         public let attendees: [String]?
+        public let calendarParticipants: [CalendarParticipant]?
 
         public init(
             title: String? = nil,
             startAt: String? = nil,
             timeZone: String? = nil,
             agenda: String? = nil,
-            attendees: [String]? = nil
+            attendees: [String]? = nil,
+            calendarParticipants: [CalendarParticipant]? = nil
         ) {
             self.title = title
             self.startAt = startAt
             self.timeZone = timeZone
             self.agenda = agenda
             self.attendees = attendees
+            self.calendarParticipants = calendarParticipants
         }
     }
     public let schemaVersion: Int
@@ -307,6 +326,7 @@ public struct TranscriptDocument: Codable, Sendable {
         let timezone: String?
         let agenda: String?
         let attendees: [String]?
+        let calendarParticipants: [CalendarParticipant]?
     }
 
     /// Older results omitted the saved meeting; enrich in memory without changing recognition files.
@@ -321,7 +341,8 @@ public struct TranscriptDocument: Codable, Sendable {
             let saved = try JSONDecoder().decode(SavedContext.self, from: Data(contentsOf: root.appendingPathComponent(name)))
             if let start = saved.start { try Self.validateDate(start) }
             savedContext = Context(title: saved.summary, startAt: saved.start, timeZone: saved.timezone,
-                                   agenda: saved.agenda, attendees: saved.attendees)
+                                   agenda: saved.agenda, attendees: saved.attendees,
+                                   calendarParticipants: saved.calendarParticipants)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             return self
         } catch {

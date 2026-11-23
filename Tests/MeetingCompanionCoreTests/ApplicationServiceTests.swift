@@ -64,6 +64,22 @@ private final class MockAudioExporter: AudioExporterProtocol, @unchecked Sendabl
     }
 }
 
+private struct MockVoiceRunner: VoiceEmbeddingRunnerProtocol {
+    var onModelCheck: @Sendable (Bool) async -> Void = { _ in }
+    let onRun: @Sendable () async -> Void
+
+    func checkOrPrepareVoiceModel(prepare: Bool) async throws { await onModelCheck(prepare) }
+
+    func extractVoiceEmbeddings(
+        _ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL
+    ) async throws -> VoiceEmbeddingProtocol.Response {
+        await onRun()
+        return .init(requestID: request.id, features: request.windows.map {
+            .init(windowID: $0.id, pcmFingerprint: $0.sourceFingerprint, embedding: nil)
+        })
+    }
+}
+
 private final class MockAudioCaptureController: AudioCaptureControllerProtocol, @unchecked Sendable {
     var duration: TimeInterval = 15.0
     var outputURL: URL
@@ -125,6 +141,143 @@ private final class FlatStoppedCapture: StoppedCaptureProtocol, @unchecked Senda
 
 @Suite("Application Service Tests")
 struct ApplicationServiceTests {
+    private func voiceFixture() throws -> (root: URL, recording: URL, request: VoiceEmbeddingProtocol.Request) {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        let recording = root.appendingPathComponent("meeting_voice/meeting_voice.m4a")
+        try FileManager.default.createDirectory(
+            at: recording.deletingLastPathComponent().appendingPathComponent("raw/transcripts/res_voice"),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: recording)
+        return (root, recording, .init(resultID: "res_voice", windows: [
+            .init(sourceID: .host, sourceFingerprint: String(repeating: "a", count: 64), startFrame: 0, endFrame: 48_000)
+        ]))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func queuedASRStartsBeforeLearningOnTheSameLane() async throws {
+        let (root, recording, request) = try voiceFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (log, trace) = AsyncStream<String>.makeStream()
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        defer { release.finish(); trace.finish() }
+        let runner = MockTranscriptionRunner()
+        runner.delayNanoseconds = 0
+        runner.onRun = {
+            trace.yield("asr")
+            for await _ in gate {}
+        }
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter(),
+                                        voiceRunner: MockVoiceRunner(onModelCheck: {
+            #expect(!$0)
+            trace.yield("check")
+        }) { trace.yield("voice") })
+        let settings = ProcessingJobSettings(parakeet: false, echoCancellation: false)
+        let first = root.appendingPathComponent("first/first.m4a")
+        let second = root.appendingPathComponent("second/second.m4a")
+        for url in [first, second] {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: url)
+        }
+        await service.addEventHandler { event in
+            if case .failed(_, let reason, _) = event {
+                trace.yield(reason)
+                trace.finish()
+            }
+        }
+        var activity = log.makeAsyncIterator()
+        _ = await service.enqueue(recordingURL: first, settings: settings)
+        #expect(await activity.next() == "asr")
+        do {
+            try await service.checkOrPrepareVoiceModel(prepare: false)
+            #expect(await activity.next() == "check")
+        } catch { Issue.record(error) }
+        let updates = await service.observe()
+        let voice = Task { try await service.extractVoiceEmbeddings(request, recordingURL: recording, kind: .learning) }
+        for await update in updates {
+            if case .snapshot(let snapshot) = update, snapshot.voiceJobCount == 1 { break }
+        }
+        #expect(await service.isProcessing(recordingURL: recording) == false)
+        _ = await service.enqueue(recordingURL: second, settings: settings)
+        release.finish()
+        #expect(await activity.next() == "asr")
+        #expect(await activity.next() == "voice")
+        #expect(try await voice.value.requestID == request.id)
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func voiceLateReplyIsRejectedAndDoesNotOwnASRState(cancel: Bool) async throws {
+        let (root, recording, request) = try voiceFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        defer { signal.finish(); release.finish() }
+        let runner = MockVoiceRunner {
+            signal.yield(())
+            for await _ in gate {}
+        }
+        let service = ProcessingService(transcriptionRunner: MockTranscriptionRunner(), audioExporter: MockAudioExporter(),
+                                        voiceRunner: runner)
+        let task = Task { try await service.extractVoiceEmbeddings(request, recordingURL: recording, kind: .automaticAssignment) }
+        var activity = started.makeAsyncIterator()
+        _ = await activity.next()
+        #expect(await service.isProcessing(recordingURL: recording) == false)
+        #expect(await service.totalJobCount == 0)
+        await #expect(throws: ProcessingService.VoiceJobError.duplicate) {
+            try await service.extractVoiceEmbeddings(request, recordingURL: recording, kind: .automaticAssignment)
+        }
+        if cancel {
+            task.cancel()
+            release.finish()
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            let result = recording.deletingLastPathComponent().appendingPathComponent("raw/transcripts/res_voice")
+            try FileManager.default.moveItem(at: result, to: result.deletingLastPathComponent().appendingPathComponent("res_new"))
+            release.finish()
+            await #expect(throws: ProcessingService.VoiceJobError.staleResult) { try await task.value }
+        }
+        #expect(await service.hasPendingWork == false)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancellingVoiceKeepsLaneUntilWorkerExits() async throws {
+        let (root, recording, request) = try voiceFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (started, signal) = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+        defer { signal.finish() }
+        let runner = MockVoiceRunner {
+            await withCheckedContinuation { signal.yield($0) }
+        }
+        let processing = ProcessingService(transcriptionRunner: MockTranscriptionRunner(), audioExporter: MockAudioExporter(),
+                                           voiceRunner: runner)
+        let voice = Task { try await processing.extractVoiceEmbeddings(request, recordingURL: recording, kind: .learning) }
+        var start = started.makeAsyncIterator()
+        let gate = try #require(await start.next())
+        var released = false
+        defer { if !released { gate.resume() } }
+        let asr = root.appendingPathComponent("asr/asr.m4a")
+        try FileManager.default.createDirectory(at: asr.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: asr)
+        let capture = RecordingSessionService()
+        let controller = MockAudioCaptureController(outputURL: root.appendingPathComponent("capture/capture.m4a"))
+        try FileManager.default.createDirectory(at: controller.outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        _ = try await capture.start(controller: controller, outputURL: controller.outputURL)
+        #expect(controller.isStarted)
+        let asrJob = await processing.enqueue(recordingURL: asr, settings: .init(parakeet: false, echoCancellation: false))
+        voice.cancel()
+        let pending = await processing.currentSnapshot()
+        #expect(pending.active == nil)
+        #expect(pending.queued.map(\.id) == [asrJob.id])
+        released = true
+        gate.resume()
+        await #expect(throws: CancellationError.self) { try await voice.value }
+        let events = await processing.observe()
+        for await event in events {
+            if case .snapshot(let snapshot) = event, snapshot.jobCount == 0 { break }
+        }
+        #expect(controller.isStarted)
+        _ = try await capture.stop(expectedSessionID: (await capture.currentSnapshot).sessionID)
+    }
+
 
     @Test func queuedProgressWaitsForActualAudioStart() async throws {
         let runner = QueuedProgressRunner()
@@ -175,6 +328,29 @@ struct ApplicationServiceTests {
             #expect(snapshot.states[.diarization] != .completed)
             snapshot.receive(.init(stage: .diarization, channel: "remote", completed: 1, total: 1), jobID: job.id)
             #expect(snapshot.states[.diarization] == .completed)
+        }
+    }
+
+    @Test func processingRouteIncludesVoicesWhenVoiceMatchPolicyEnabled() throws {
+        let policy = try #require(VoiceMatchPolicy(threshold: 0.60, margin: 0.15, calendarBonus: 0, maximumAcousticGap: 0))
+        for (aec, parakeet, baseCount) in [(false, false, 4), (true, false, 5), (false, true, 5), (true, true, 6)] {
+            let settings = ProcessingJobSettings(parakeet: parakeet, echoCancellation: aec, voiceMatchPolicy: policy)
+            #expect(settings.voiceIdentification)
+            let job = ProcessingJob(recordingURL: URL(fileURLWithPath: "/synthetic/a/a.m4a"), settings: settings)
+            var snapshot = ProcessingProgressSnapshot(job: job)
+            let total = baseCount + 1
+            #expect(snapshot.route.count == total)
+            #expect(snapshot.route.last == .voices)
+            #expect(ProcessingProgressSnapshot.Station.voices.title == "Определение голосов")
+            #expect(ProcessingProgressSnapshot.Station.voices.model == "WeSpeaker")
+            #expect(snapshot.countText == "В очереди · \(total) этапов")
+            snapshot.receive(.init(stage: .publication, completed: 0, total: 1), jobID: job.id)
+            #expect(snapshot.states[.saving] == .current)
+            snapshot.receive(.init(stage: .voices, completed: 0, total: 0, state: .started), jobID: job.id)
+            #expect(snapshot.states[.saving] == .completed)
+            #expect(snapshot.current == .voices)
+            #expect(snapshot.states[.voices] == .current)
+            #expect(snapshot.countText == "Этап \(total) из \(total)")
         }
     }
 
@@ -259,6 +435,274 @@ struct ApplicationServiceTests {
             }
         }
         Issue.record("Service observation ended without accepted terminal snapshot")
+    }
+
+    private func makeInlineVoiceRecording(
+        resultID: String = "res_inline",
+        olderResultID: String? = nil
+    ) throws -> (root: URL, folder: URL, recording: URL, catalogue: VoiceProfileCatalogueRepository, alice: VoiceProfilePerson) {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("inline-voice-" + UUID().uuidString)
+        let folder = root.appendingPathComponent("meeting")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        let recording = folder.appendingPathComponent("meeting.m4a")
+        for name in ["meeting.m4a", "raw/meeting.host_record.wav", "raw/meeting.remote_record.wav"] {
+            try Data([0, 0]).write(to: folder.appendingPathComponent(name))
+        }
+        let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: root.appendingPathComponent("appData"))
+        let alice = VoiceProfilePerson(displayName: "Алиса")
+        let bob = VoiceProfilePerson(displayName: "Боб")
+        _ = try catalogue.update(catalogue.load()) { value in
+            let vAlice: [Float] = [1] + Array(repeating: 0, count: 255)
+            let vBob: [Float] = [0, 1] + Array(repeating: 0, count: 254)
+            value.people = [alice, bob]
+            value.samples = zip([alice, bob], [vAlice, vBob]).map { person, vector in
+                .init(personID: person.id, embeddingSpaceID: VoiceEmbeddingProtocol.embeddingSpaceID, embedding: vector,
+                      recordingLocator: "/synthetic/seed", resultID: "seed", turnID: "seed",
+                      sourceID: .host, start: 0, end: 5, pcmFingerprint: person.id.uuidString,
+                      assignment: .init(personID: person.id, origin: "manual"), policyID: "test")
+            }
+            value.aggregates = value.samples.map {
+                .init(personID: $0.personID, embeddingSpaceID: $0.embeddingSpaceID, centroid: $0.embedding,
+                      activeSampleIDs: [$0.id], policyID: "test")
+            }
+        }
+        if let olderResultID {
+            try writeInlineVoiceResult(resultID: olderResultID, in: folder, createdAt: Date(timeIntervalSince1970: 100))
+        }
+        return (root, folder, recording, catalogue, alice)
+    }
+
+    private func writeInlineVoiceResult(resultID: String, in folder: URL, createdAt: Date) throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/valid_empty_voices.json")
+        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+        json["resultID"] = resultID
+        if var playback = json["playback"] as? [String: Any] {
+            playback["mixPath"] = "raw/transcripts/" + resultID + "/mix.m4a"
+            json["playback"] = playback
+        }
+        for key in ["words", "baselineWords", "turns"] {
+            var items = try #require(json[key] as? [[String: Any]])
+            items[0]["end"] = 5.0
+            json[key] = items
+        }
+        let resultDir = folder.appendingPathComponent("raw/transcripts/" + resultID)
+        try FileManager.default.createDirectory(at: resultDir, withIntermediateDirectories: true)
+        let resultFile = resultDir.appendingPathComponent("result.json")
+        try JSONSerialization.data(withJSONObject: json).write(to: resultFile)
+        try Data("00:00 [Собеседник 1] Монолог\n".utf8).write(to: resultDir.appendingPathComponent("transcript.txt"))
+        let doc = try TranscriptDocument.load(from: resultFile, recordingDirectory: folder)
+        let host = try #require(doc.sources.first { $0.id == .host })
+        let remote = try #require(doc.sources.first { $0.id == .remote })
+        let quality = VoiceAudioQuality(resultID: resultID, producer: "test", sources: [
+            .init(id: .host, recognitionAudioPath: host.recognitionAudioPath,
+                  fingerprint: String(repeating: "a", count: 64), duration: 5,
+                  speech: [.init(start: 0, end: 5)], overlap: []),
+            .init(id: .remote, recognitionAudioPath: remote.recognitionAudioPath,
+                  fingerprint: String(repeating: "b", count: 64), duration: 5,
+                  speech: nil, overlap: [])
+        ], recordingFingerprint: String(repeating: "c", count: 64))
+        try quality.encoded(for: doc).write(to: resultDir.appendingPathComponent(VoiceAudioQuality.filename))
+        try FileManager.default.setAttributes([.creationDate: createdAt], ofItemAtPath: resultDir.path)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func inlineVoiceAssignmentBlocksCompletionUntilAutoNamesSaved() async throws {
+        let fx = try makeInlineVoiceRecording()
+        defer { try? FileManager.default.removeItem(at: fx.root) }
+        let coordinator = VoiceLearningCoordinator(catalogue: fx.catalogue)
+        coordinator.setEnabled(true)
+        coordinator.reconcileLibrary(recordings: [], scanComplete: true, id: coordinator.beginLibraryReconciliation())
+        let policy = try #require(VoiceMatchPolicy(threshold: 0.60, margin: 0.15, calendarBonus: 0, maximumAcousticGap: 0))
+
+        let (voiceEntered, signalEntered) = AsyncStream<Void>.makeStream()
+        let (voiceGate, openVoiceGate) = AsyncStream<Void>.makeStream()
+        defer { signalEntered.finish(); openVoiceGate.finish() }
+
+        let asrRunner = InlineVoiceASRRunner {
+            try self.writeInlineVoiceResult(resultID: "res_inline", in: fx.folder, createdAt: Date())
+            return fx.folder.appendingPathComponent("raw/transcripts/res_inline/transcript.txt")
+        }
+        let voiceRunner = InlineVoiceEmbeddingRunner { request in
+            signalEntered.yield(())
+            for await _ in voiceGate {}
+            let vAlice: [Float] = [1] + Array(repeating: 0, count: 255)
+            return .init(requestID: request.id, features: request.windows.map {
+                .init(windowID: $0.id, pcmFingerprint: String(repeating: "f", count: 64), embedding: vAlice)
+            })
+        }
+        let repo = RecordingHistoryRepository(voiceLearning: coordinator)
+        try repo.putThrowing(RecordingEntry.load(recording: fx.recording))
+        let service = ProcessingService(
+            transcriptionRunner: asrRunner,
+            audioExporter: MockAudioExporter(),
+            historyRepository: repo,
+            voiceLearning: coordinator,
+            voiceRunner: voiceRunner
+        )
+        let updates = await service.observe()
+        let job = await service.enqueue(
+            recordingURL: fx.recording,
+            settings: .init(parakeet: false, echoCancellation: false,
+                            voiceMatchPolicy: policy, voiceFeatureGeneration: coordinator.featureGeneration)
+        )
+
+        var entered = voiceEntered.makeAsyncIterator()
+        _ = await entered.next()
+
+        var sawBlockedInVoices = false
+        for await update in updates {
+            if case .snapshot(let snap) = update, let route = snap.routes[fx.recording], route.current == .voices {
+                #expect(route.jobID == job.id && route.route.count == 5 && !route.terminal)
+                #expect(route.states[.saving] == .completed)
+                #expect(await service.isProcessing(recordingURL: fx.recording))
+                #expect(repo.entry(fx.recording)?.phase == .processing)
+                #expect(try !TranscriptEditsRepository(recordingDirectory: fx.folder).hasStoredEdits(resultID: "res_inline"))
+                sawBlockedInVoices = true
+                break
+            }
+        }
+        #expect(sawBlockedInVoices)
+
+        openVoiceGate.finish()
+        var finished = false
+        for await update in updates {
+            if case .snapshot(let snap) = update, let route = snap.routes[fx.recording], route.terminal {
+                #expect(route.states[.voices] == .completed && route.failure == nil)
+                finished = true
+                break
+            }
+        }
+        #expect(finished)
+        #expect(repo.entry(fx.recording)?.phase == .completed)
+        #expect(!(await service.isProcessing(recordingURL: fx.recording)))
+        let edits = try TranscriptEditsRepository(recordingDirectory: fx.folder).loadEdits(resultID: "res_inline")
+        #expect(edits.overrides["turn_1"]?.displayName == fx.alice.displayName)
+        #expect(edits.overrides["turn_1"]?.assignment?.origin == "automaticVoiceMatch")
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: ["workerError", "insufficientProfiles", "noCatalogue", "featureDisabledMidStage", "cancelledMidStage", "retryWithHeldWriteLock"])
+    func inlineVoiceAssignmentDegradesSafelyAndSupportsRetryLock(scenario: String) async throws {
+        let older = scenario == "retryWithHeldWriteLock" ? "res_old" : nil
+        let fx = try makeInlineVoiceRecording(olderResultID: older)
+        defer { try? FileManager.default.removeItem(at: fx.root) }
+        let coordinator = VoiceLearningCoordinator(catalogue: fx.catalogue)
+        coordinator.setEnabled(true)
+        coordinator.reconcileLibrary(recordings: [], scanComplete: true, id: coordinator.beginLibraryReconciliation())
+        if scenario == "insufficientProfiles" {
+            let people = try fx.catalogue.load().catalogue.people
+            try coordinator.resetPerson(people[1].id, delete: true)
+        } else if scenario == "noCatalogue" {
+            try FileManager.default.removeItem(at: fx.catalogue.directory)
+        }
+        let policy = try #require(VoiceMatchPolicy(threshold: 0.60, margin: 0.15, calendarBonus: 0, maximumAcousticGap: 0))
+
+        let (voiceEntered, signalEntered) = AsyncStream<Void>.makeStream()
+        let (voiceGate, openVoiceGate) = AsyncStream<Void>.makeStream()
+        defer { signalEntered.finish(); openVoiceGate.finish() }
+        let workerCalls = AsyncStream<Void>.makeStream()
+        workerCalls.continuation.finish()
+
+        let callCounter = BoxedCounter()
+        let asrRunner = InlineVoiceASRRunner {
+            try self.writeInlineVoiceResult(resultID: "res_new", in: fx.folder, createdAt: Date().addingTimeInterval(60))
+            return fx.folder.appendingPathComponent("raw/transcripts/res_new/transcript.txt")
+        }
+        let voiceRunner = InlineVoiceEmbeddingRunner { request in
+            callCounter.increment()
+            if scenario == "workerError" {
+                throw NSError(domain: "InlineVoiceTest", code: 7, userInfo: [NSLocalizedDescriptionKey: "Worker offline"])
+            }
+            if scenario == "featureDisabledMidStage" || scenario == "cancelledMidStage" {
+                signalEntered.yield(())
+                for await _ in voiceGate {}
+            }
+            let vAlice: [Float] = [1] + Array(repeating: 0, count: 255)
+            return .init(requestID: request.id, features: request.windows.map {
+                .init(windowID: $0.id, pcmFingerprint: String(repeating: "f", count: 64), embedding: vAlice)
+            })
+        }
+        let repo = RecordingHistoryRepository(voiceLearning: coordinator)
+        var initialEntry = RecordingEntry.load(recording: fx.recording)
+        if older != nil { initialEntry.phase = .completed }
+        try repo.putThrowing(initialEntry)
+        let service = ProcessingService(
+            transcriptionRunner: asrRunner,
+            audioExporter: MockAudioExporter(),
+            historyRepository: repo,
+            voiceLearning: coordinator,
+            voiceRunner: voiceRunner
+        )
+        let updates = await service.observe()
+        let job = await service.enqueue(
+            recordingURL: fx.recording,
+            settings: .init(parakeet: false, echoCancellation: false,
+                            voiceMatchPolicy: policy, voiceFeatureGeneration: coordinator.featureGeneration)
+        )
+
+        if scenario == "featureDisabledMidStage" || scenario == "cancelledMidStage" {
+            var it = voiceEntered.makeAsyncIterator()
+            _ = await it.next()
+            if scenario == "featureDisabledMidStage" {
+                coordinator.setEnabled(false)
+                await service.cancelVoiceJobsIfDisabled()
+            } else {
+                await service.cancel(jobID: job.id)
+            }
+            openVoiceGate.finish()
+        }
+
+        var terminalRoute: ProcessingProgressSnapshot?
+        for await update in updates {
+            if case .snapshot(let snap) = update, let route = snap.routes[fx.recording], route.terminal {
+                terminalRoute = route
+                break
+            }
+        }
+        let route = try #require(terminalRoute)
+        let entry = try #require(repo.entry(fx.recording))
+        #expect(entry.phase == .completed)
+        #expect(route.failure == nil)
+        #expect(route.states[.saving] == .completed)
+        #expect(entry.problems.filter(\.isError).isEmpty)
+
+        let edits = try TranscriptEditsRepository(recordingDirectory: fx.folder).loadEdits(resultID: "res_new")
+        switch scenario {
+        case "workerError":
+            #expect(route.states[.voices] == .failed)
+            #expect(route.warnings.contains { $0.contains("Автоопределение голосов не выполнено") })
+        case "insufficientProfiles", "noCatalogue":
+            #expect(callCounter.value == 0)
+            #expect(route.states[.voices] == .skipped)
+            #expect(route.reasons[.voices]?.contains("профил") == true)
+            #expect(route.warnings.isEmpty)
+            #expect(entry.problems.isEmpty)
+            #expect(edits.overrides["turn_1"]?.voiceRefusal == .insufficientProfiles)
+            if scenario == "noCatalogue" {
+                #expect(!FileManager.default.fileExists(atPath: fx.catalogue.directory.path))
+            }
+        case "featureDisabledMidStage":
+            #expect(route.states[.voices] == .skipped)
+            #expect(route.reasons[.voices]?.contains("выключено") == true)
+            #expect(route.warnings.isEmpty)
+            #expect(entry.problems.isEmpty)
+            #expect(edits.overrides["turn_1"]?.displayName == nil)
+        case "cancelledMidStage":
+            let warning = "Новый результат сохранён до отмены определения голосов."
+            #expect(route.states[.voices] == .skipped)
+            #expect(route.warnings == [warning])
+            #expect(entry.problems.map(\.message) == [warning])
+            #expect(edits.overrides["turn_1"]?.displayName == nil)
+        case "retryWithHeldWriteLock":
+            #expect(route.states[.voices] == .completed)
+            #expect(edits.overrides["turn_1"]?.displayName == fx.alice.displayName)
+            #expect(edits.overrides["turn_1"]?.assignment?.origin == "automaticVoiceMatch")
+            let lockCheck = TranscriptEditsRepository(recordingDirectory: fx.folder)
+            try lockCheck.acquireWriteLock()
+            lockCheck.releaseWriteLock()
+        default: Issue.record("Unexpected scenario")
+        }
     }
 
     @Test func handoffMissingIdentityCannotMutateSuccessor() async throws {
@@ -507,6 +951,106 @@ struct ApplicationServiceTests {
         for channel in ["host", "remote"] {
             #expect(try Data(contentsOf: root.appendingPathComponent("raw/meeting_before_raw." + channel + "_record.wav")) == Data([1, 2, 3]))
         }
+    }
+
+    @Test func retryPreservesPendingVoiceEventsBeforeStartingTheWorker() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let directory = root.appendingPathComponent("meeting")
+        let recording = directory.appendingPathComponent("meeting.m4a")
+        let resultID = "res_valid_empty_voices"
+        let writer = TranscriptEditsRepository(recordingDirectory: directory, learningCommitObserver: { _, _ in })
+        let result = writer.resultURL(for: resultID)
+        try FileManager.default.createDirectory(at: result.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/valid_empty_voices.json")
+        try FileManager.default.copyItem(at: fixture, to: result)
+        try Data().write(to: recording)
+        for channel in ["host", "remote"] {
+            try Data([1, 2, 3]).write(to: directory.appendingPathComponent("raw/meeting." + channel + "_record.wav"))
+        }
+        let profiles = VoiceProfileCatalogueRepository(applicationDataDirectory: root)
+        let coordinator = VoiceLearningCoordinator(catalogue: profiles)
+        let choice = try coordinator.personSelection(.new(UUID()), displayName: "Анна")
+        let assignments = TranscriptSpeakerAssignmentService(editsRepository: writer)
+        let preview = try assignments.previewAssignment(resultID: resultID, anchorTurnID: "turn_1", scope: .single,
+            displayName: "Анна", person: choice)
+        _ = try assignments.assignSpeakerName(preview: preview, displayName: "Анна", learnVoice: true)
+        writer.releaseWriteLock()
+
+        let unavailable = root.appendingPathComponent("not-a-catalogue")
+        let savedCatalogue = root.appendingPathComponent("saved-catalogue")
+        try FileManager.default.moveItem(at: profiles.directory, to: savedCatalogue)
+        try FileManager.default.createSymbolicLink(at: profiles.directory, withDestinationURL: unavailable)
+        let history = RecordingHistoryRepository(voiceLearning: coordinator)
+        let runner = MockTranscriptionRunner()
+        runner.delayNanoseconds = 0
+        runner.onRun = { () async throws in
+            let rival = TranscriptEditsRepository(recordingDirectory: directory)
+            #expect(throws: TranscriptEditsError.self) { try rival.acquireWriteLock() }
+            let stages = try profiles.load().catalogue.learningRecords?.map(\.stage)
+            #expect(stages == [.committed])
+        }
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter(),
+            historyRepository: history, voiceLearning: coordinator)
+        let settings = ProcessingJobSettings(parakeet: false, echoCancellation: false)
+        _ = await service.enqueue(recordingURL: recording, settings: settings)
+        #expect(await service.totalJobCount == 0)
+        #expect(runner.runCallCount == 0)
+        try FileManager.default.removeItem(at: profiles.directory)
+        try FileManager.default.moveItem(at: savedCatalogue, to: profiles.directory)
+        let (events, continuation) = AsyncStream<ProcessingService.Event>.makeStream()
+        await service.addEventHandler { event in
+            continuation.yield(event)
+            switch event { case .completed, .failed, .cancelled: continuation.finish(); default: break }
+        }
+        _ = await service.enqueue(recordingURL: recording, settings: settings)
+        for await _ in events {}
+        #expect(runner.runCallCount == 1)
+        try writer.acquireWriteLock()
+        writer.releaseWriteLock()
+    }
+
+    @Test func anotherJobStartsWhenVoiceAdmissionRejectsTheFirstRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let first = root.appendingPathComponent("first/first.m4a")
+        let second = root.appendingPathComponent("second/second.m4a")
+        for recording in [first, second] {
+            try FileManager.default.createDirectory(at: recording.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let held = TranscriptEditsRepository(recordingDirectory: first.deletingLastPathComponent())
+        try held.acquireWriteLock()
+        defer { held.releaseWriteLock() }
+        let voice = VoiceLearningCoordinator(catalogue: VoiceProfileCatalogueRepository(applicationDataDirectory: root))
+        let (entered, enter) = AsyncStream<Void>.makeStream()
+        let (release, releaseAdmission) = AsyncStream<Void>.makeStream()
+        let (worker, releaseWorker) = AsyncStream<Void>.makeStream()
+        let runner = MockTranscriptionRunner()
+        runner.onRun = {
+            var iterator = worker.makeAsyncIterator()
+            _ = await iterator.next()
+        }
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: MockAudioExporter(), retryAdmission: {
+            if $0 == first {
+                enter.yield(())
+                var iterator = release.makeAsyncIterator()
+                _ = await iterator.next()
+            }
+            return true
+        }, voiceLearning: voice)
+        let settings = ProcessingJobSettings(parakeet: false, echoCancellation: false)
+        let firstTask = Task { await service.enqueue(recordingURL: first, settings: settings) }
+        var enteredIterator = entered.makeAsyncIterator()
+        _ = await enteredIterator.next()
+        _ = await service.enqueue(recordingURL: second, settings: settings)
+        #expect(await service.currentSnapshot().active == nil)
+        releaseAdmission.yield(())
+        _ = await firstTask.value
+        let snapshot = await service.currentSnapshot()
+        #expect(snapshot.active?.recordingURL == second)
+        releaseWorker.finish()
+        if let active = snapshot.active { await service.cancel(jobID: active.id) }
     }
 
     @Test func testSettingsAreFixedAtEnqueueTime() async throws {
@@ -1158,5 +1702,35 @@ private actor QueuedProgressRunner: TranscriptionRunnerProtocol {
         onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL {
         await withCheckedContinuation { continuations[recording] = $0 }
         return recording.appendingPathExtension("txt")
+    }
+}
+
+private final class BoxedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
+private struct InlineVoiceASRRunner: TranscriptionRunnerProtocol {
+    let publish: @Sendable () throws -> URL
+    func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
+        onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) { ("ok", true) }
+    func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL {
+        onProgress?(.init(stage: .diarization, channel: "host", completed: 0, total: 0, state: .completed))
+        onProgress?(.init(stage: .diarization, channel: "remote", completed: 0, total: 0, state: .completed))
+        onProgress?(.init(stage: .gigaam, channel: "host", completed: 1, total: 1, state: .completed))
+        onProgress?(.init(stage: .gigaam, channel: "remote", completed: 1, total: 1, state: .completed))
+        onProgress?(.init(stage: .publication, completed: 1, total: 1, state: .completed))
+        return try publish()
+    }
+}
+
+private struct InlineVoiceEmbeddingRunner: VoiceEmbeddingRunnerProtocol {
+    let runExtract: @Sendable (VoiceEmbeddingProtocol.Request) async throws -> VoiceEmbeddingProtocol.Response
+    func checkOrPrepareVoiceModel(prepare: Bool) async throws {}
+    func extractVoiceEmbeddings(_ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL) async throws -> VoiceEmbeddingProtocol.Response {
+        try await runExtract(request)
     }
 }

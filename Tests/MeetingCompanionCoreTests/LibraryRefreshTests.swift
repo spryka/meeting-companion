@@ -192,6 +192,23 @@ struct LibraryRefreshTests {
         #expect(result.error != nil)
     }
 
+    @Test func rootAppearingAfterAnEmptyScanRequiresAnotherScan() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let recording = root.appendingPathComponent("meeting_new/meeting_new.m4a")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = RecordingHistoryRepository()
+        let offline = repository.scanRecordings(in: root)
+        try FileManager.default.createDirectory(at: recording.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: recording)
+
+        #expect(offline.entries.isEmpty)
+        #expect(offline.error == nil)
+        #expect(!offline.complete)
+        let online = repository.scanRecordings(in: root)
+        #expect(online.complete)
+        #expect(online.entries.map(\.id) == [RecordingEntry.canonicalURL(recording)])
+    }
+
     @Test func fileInsteadOfRootReportsFailure() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

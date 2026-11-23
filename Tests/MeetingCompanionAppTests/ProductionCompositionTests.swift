@@ -1049,6 +1049,31 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
             editor.confirmGroupAssignment(confirmation: preview)
         }
     }
+
+    @Test func remainingScopeKeepsProtectedNameWithoutExplicitReplacement() async throws {
+        let root = try fixtureRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        try published("res_valid_parakeet_off", in: root)
+        let state = try await TranscriptWindowCoordinator().openWindow(for: root.appendingPathComponent("meeting.m4a")).state
+        let session = try #require(state.session)
+        _ = try session.assignSpeakerName(turnID: "turn_1", displayName: "Сохранённое имя")
+        let editor = try await TranscriptReviewWindowModel(state: state)
+        defer { editor.close(); state.close() }
+
+        editor.openSpeakerAssignment(for: "turn_1")
+        editor.updateDraftName("Новое имя")
+        editor.selectDraftScope(.allVoiceGroup)
+        let preview = try #require(editor.activeDraft?.pendingConfirmation?.preview)
+        #expect(preview.affectedTurnIDs.isEmpty)
+        #expect(preview.replacedTurnIDs == ["turn_1"])
+        #expect(preview.replacedManualAssignmentsCount == 0)
+        let draftID = try #require(editor.activeDraft?.id)
+        editor.setDraftReplaceManual(true, draftID: draftID)
+        let replacement = try #require(editor.activeDraft?.pendingConfirmation)
+        #expect(replacement.preview?.affectedTurnIDs == ["turn_1"])
+        #expect(replacement.willReplaceManual)
+        editor.confirmGroupAssignment(confirmation: replacement)
+        #expect(editor.rows.first { $0.id == "turn_1" }?.name == "Новое имя")
+    }
     @Test(arguments: ["one", "remaining"])
     func solSpeakerRecheckNeverCommits(scope: String) async throws {
         let root = try fixtureRoot()
@@ -2253,4 +2278,236 @@ private actor HeldPresentationRunner: TranscriptionRunnerProtocol {
         editor.close(); state.close()
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func defaultVoiceMatchPolicyAndProductionDelegateConfiguration() async throws {
+        #expect(RecorderViewModel.defaultVoiceMatchPolicy == VoiceMatchPolicy(
+            threshold: 0.60, margin: 0.15, calendarBonus: 0, maximumAcousticGap: 0,
+            mixedClusterRescue: VoiceMixedClusterRescuePolicy(threshold: 0.65, margin: 0.20)
+        ))
+
+        let parent = try fixtureRoot()
+        let root = parent.appendingPathComponent("meeting_retry")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        let appData = root.appendingPathComponent("appData")
+        defer { try? FileManager.default.removeItem(at: parent.deletingLastPathComponent()) }
+        try sources(in: root, stem: "meeting_retry")
+        let catalogueRepo = VoiceProfileCatalogueRepository(applicationDataDirectory: appData)
+        let learning = VoiceLearningCoordinator(catalogue: catalogueRepo)
+        let alice = VoiceProfilePerson(displayName: "Алиса")
+        let bob = VoiceProfilePerson(displayName: "Боб")
+        _ = try catalogueRepo.update(catalogueRepo.load()) { value in
+            let vAlice: [Float] = [1] + Array(repeating: 0, count: 255)
+            let vBob: [Float] = [0, 1] + Array(repeating: 0, count: 254)
+            value.people = [alice, bob]
+            value.samples = zip([alice, bob], [vAlice, vBob]).map { person, vector in
+                .init(personID: person.id, embeddingSpaceID: VoiceEmbeddingProtocol.embeddingSpaceID, embedding: vector,
+                      recordingLocator: "/synthetic/seed", resultID: "seed", turnID: "seed",
+                      sourceID: .host, start: 0, end: 5, pcmFingerprint: person.id.uuidString,
+                      assignment: .init(personID: person.id, origin: "manual"), policyID: "test")
+            }
+            value.aggregates = value.samples.map {
+                .init(personID: $0.personID, embeddingSpaceID: $0.embeddingSpaceID, centroid: $0.embedding,
+                      activeSampleIDs: [$0.id], policyID: "test")
+            }
+        }
+        learning.reconcileLibrary(recordings: [], scanComplete: true, id: learning.beginLibraryReconciliation())
+
+        let url = root.appendingPathComponent("meeting_retry.m4a")
+        let repo = RecordingHistoryRepository(voiceLearning: learning)
+        try publishedVoiceFixture("res_before_retry", in: root)
+        try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 100)],
+                                              ofItemAtPath: root.appendingPathComponent("raw/transcripts/res_before_retry").path)
+        try repo.putThrowing(RecordingEntry.load(recording: url))
+
+        let (asrEntered, signalASR) = AsyncStream<Void>.makeStream()
+        let (asrGate, openASRGate) = AsyncStream<Void>.makeStream()
+        let (voiceEntered, signalEntered) = AsyncStream<Void>.makeStream()
+        let (voiceGate, openVoiceGate) = AsyncStream<Void>.makeStream()
+        defer { signalASR.finish(); openASRGate.finish(); signalEntered.finish(); openVoiceGate.finish() }
+
+        let asr = CompositionVoiceASRRunner {
+            signalASR.yield(())
+            for await _ in asrGate {}
+            try self.publishedVoiceFixture("res_comp_voice", in: root)
+            return root.appendingPathComponent("raw/transcripts/res_comp_voice/transcript.txt")
+        }
+        let voiceRunner = CompositionVoiceRunner { request in
+            signalEntered.yield(())
+            for await _ in voiceGate {}
+            let vAlice: [Float] = [1] + Array(repeating: 0, count: 255)
+            return .init(requestID: request.id, features: request.windows.map {
+                .init(windowID: $0.id, pcmFingerprint: String(repeating: "f", count: 64), embedding: vAlice)
+            })
+        }
+
+        let suite = "comp-voice-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.deletingLastPathComponent().path, forKey: "recordingsDirectory")
+        defaults.set(true, forKey: "localVoiceIdentityEnabled")
+
+        let service = ProcessingService(
+            transcriptionRunner: asr,
+            audioExporter: Exporter(),
+            historyRepository: repo,
+            voiceLearning: learning,
+            voiceRunner: voiceRunner
+        )
+        let model = RecorderViewModel(
+            sessionService: RecordingSessionService(historyRepo: repo),
+            processingService: service,
+            historyRepository: repo,
+            voiceLearning: learning,
+            voiceMatchPolicy: RecorderViewModel.defaultVoiceMatchPolicy,
+            defaults: defaults,
+            appDataDirectory: appData,
+            startBackgroundServices: false,
+            microphoneProvider: { [] },
+            accessProvider: { [] },
+            calendarCatalogProvider: { [] }
+        )
+        for _ in 0..<1000 { if model.isAttached { break }; try await Task.sleep(for: .milliseconds(1)) }
+        try #require(model.isAttached)
+        #expect(model.automaticVoiceNamesAvailable)
+        #expect(model.voiceIdentityEnabled)
+        await model.history.synchronize()
+
+        model.retryRecording(url)
+        var asrEvents = asrEntered.makeAsyncIterator()
+        _ = await asrEvents.next()
+        await model.history.refresh(root: root.deletingLastPathComponent(), manual: true)
+        #expect(learning.failure(for: root) == nil)
+        try #require(learning.canMatchVoices)
+        openASRGate.finish()
+        var it = voiceEntered.makeAsyncIterator()
+        _ = await it.next()
+        for _ in 0..<1000 {
+            if model.capsuleProgress?.current == .voices { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(model.capsuleProgress?.route.last == .voices)
+        #expect(model.capsuleProgress?.current == .voices)
+        #expect(model.transcriptionJobs == 1)
+        let pendingEntry = try #require(model.history.entry(url))
+        #expect(pendingEntry.phase == .processing)
+        let historyView = RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: {})
+        #expect(historyView.processingDetails(for: pendingEntry) != nil)
+
+        openVoiceGate.finish()
+        for _ in 0..<1000 {
+            if model.transcriptionJobs == 0, model.history.entry(url)?.phase == .completed { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(model.transcriptionJobs == 0)
+        #expect(model.history.entry(url)?.phase == .completed)
+        #expect(model.capsuleProgress?.terminal == true)
+        #expect(model.capsuleProgress?.states[.voices] == .completed)
+        #expect(model.capsuleProgress?.failure == nil)
+
+        let opened = try #require(model.showTranscript(url))
+        #expect(await model.loadWorkspace(opened))
+        let rows = try #require(model.workspace.current?.rows)
+        #expect(rows.first?.name == alice.displayName)
+        #expect(rows.first?.nameOriginLabel == "Автоимя")
+        model.workspace.closeCurrent()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func voiceModelPreparationDoesNotOverwriteASRDiagnostics() async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let (entered, signalEntered) = AsyncStream<Void>.makeStream()
+        let (gate, openGate) = AsyncStream<Void>.makeStream()
+        defer { signalEntered.finish(); openGate.finish() }
+        let worker = CompositionVoiceRunner(prepareModel: {
+            signalEntered.yield(())
+            for await _ in gate {}
+        }) { _ in throw TranscriptEditsError.notImplemented }
+        let service = ProcessingService(
+            transcriptionRunner: CompositionVoiceASRRunner { throw TranscriptEditsError.notImplemented },
+            audioExporter: Exporter(), voiceRunner: worker
+        )
+        let suite = "voice-prepare-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        let model = isolatedRecorderModel(processingService: service, defaults: defaults)
+        for _ in 0..<1000 { if model.isAttached { break }; try await Task.sleep(for: .milliseconds(1)) }
+        try #require(model.isAttached)
+        model.diagnosticReport = "Предыдущая проверка"
+        model.checkVoiceModel(prepare: true)
+        try #require(model.voiceModelStatus == .preparing)
+        var events = entered.makeAsyncIterator()
+        _ = await events.next()
+        #expect(!model.canChangeTranscriptionModels)
+        await model.checkTranscription(prepare: true)
+        #expect(model.diagnosticReport == "Предыдущая проверка")
+        openGate.finish()
+        for _ in 0..<1000 {
+            if model.voiceModelStatus == .ready { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(model.voiceModelStatus == .ready)
+        #expect(model.canChangeTranscriptionModels)
+    }
+
+    private nonisolated func publishedVoiceFixture(_ id: String, in root: URL) throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Tests/Fixtures/transcript-document/valid_empty_voices.json")
+        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        json["resultID"] = id
+        if var playback = json["playback"] as? [String: Any] {
+            playback["mixPath"] = "raw/transcripts/" + id + "/mix.m4a"
+            json["playback"] = playback
+        }
+        for key in ["words", "baselineWords", "turns"] {
+            var items = try #require(json[key] as? [[String: Any]])
+            items[0]["end"] = 5.0
+            json[key] = items
+        }
+        let dir = root.appendingPathComponent("raw/transcripts/" + id)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let resultFile = dir.appendingPathComponent("result.json")
+        try JSONSerialization.data(withJSONObject: json).write(to: resultFile)
+        try Data("00:00 [Собеседник 1] Монолог\n".utf8).write(to: dir.appendingPathComponent("transcript.txt"))
+        let doc = try TranscriptDocument.load(from: resultFile, recordingDirectory: root)
+        let host = try #require(doc.sources.first { $0.id == .host })
+        let remote = try #require(doc.sources.first { $0.id == .remote })
+        let quality = VoiceAudioQuality(resultID: id, producer: "test", sources: [
+            .init(id: .host, recognitionAudioPath: host.recognitionAudioPath,
+                  fingerprint: String(repeating: "a", count: 64), duration: 5,
+                  speech: [.init(start: 0, end: 5)], overlap: []),
+            .init(id: .remote, recognitionAudioPath: remote.recognitionAudioPath,
+                  fingerprint: String(repeating: "b", count: 64), duration: 5,
+                  speech: nil, overlap: [])
+        ], recordingFingerprint: String(repeating: "c", count: 64))
+        try quality.encoded(for: doc).write(to: dir.appendingPathComponent(VoiceAudioQuality.filename))
+    }
+
+}
+
+private struct CompositionVoiceASRRunner: TranscriptionRunnerProtocol {
+    let publish: @Sendable () async throws -> URL
+    func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
+        onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) { ("ok", true) }
+    func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL {
+        onProgress?(.init(stage: .diarization, channel: "host", completed: 0, total: 0, state: .completed))
+        onProgress?(.init(stage: .diarization, channel: "remote", completed: 0, total: 0, state: .completed))
+        onProgress?(.init(stage: .gigaam, channel: "host", completed: 1, total: 1, state: .completed))
+        onProgress?(.init(stage: .gigaam, channel: "remote", completed: 1, total: 1, state: .completed))
+        onProgress?(.init(stage: .publication, completed: 1, total: 1, state: .completed))
+        return try await publish()
+    }
+}
+
+private struct CompositionVoiceRunner: VoiceEmbeddingRunnerProtocol {
+    var prepareModel: @Sendable () async -> Void = {}
+    let runExtract: @Sendable (VoiceEmbeddingProtocol.Request) async throws -> VoiceEmbeddingProtocol.Response
+    func checkOrPrepareVoiceModel(prepare: Bool) async throws {
+        if prepare { await prepareModel() }
+    }
+    func extractVoiceEmbeddings(_ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL) async throws -> VoiceEmbeddingProtocol.Response {
+        try await runExtract(request)
+    }
 }

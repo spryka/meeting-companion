@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Darwin
+import MeetingCompanionCore
 
 public struct ModelFileSpec: Sendable, Equatable {
     public let filename: String
@@ -31,6 +32,13 @@ private final class DownloadResultBox: @unchecked Sendable {
 }
 
 public enum ModelAssets {
+    public static let voiceSpec = ModelSpec(
+        name: "voice",
+        repo: "aufklarer/WeSpeaker-ResNet34-LM-MLX",
+        revision: "26499ce11ad1b48ac96aacc8d6fa433f941bdc96",
+        files: [.init(filename: "model.safetensors", sha256: VoiceEmbeddingProtocol.weightsSHA256)]
+    )
+
     /// Pinned specification for GigaAM v3 MLX (exact SHA-256 for all required assets)
     public static let gigaamSpec = ModelSpec(
         name: "gigaam",
@@ -110,14 +118,20 @@ public enum ModelAssets {
         verifyChecksums: Bool = true,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) -> (ready: Bool, missingFiles: [String]) {
-        let fm = FileManager.default
-        var missing: [String] = []
-
         var specs = [gigaamSpec, nemotronSpec]
         if parakeet {
             specs.append(parakeetSpec)
         }
+        return checkAvailability(modelRoot: modelRoot, specs: specs,
+                                 verifyChecksums: verifyChecksums, onProgress: onProgress)
+    }
 
+    private static func checkAvailability(
+        modelRoot: URL, specs: [ModelSpec], verifyChecksums: Bool,
+        onProgress: (@Sendable (String) -> Void)?
+    ) -> (ready: Bool, missingFiles: [String]) {
+        let fm = FileManager.default
+        var missing: [String] = []
         let totalFiles = specs.reduce(0) { $0 + $1.files.count }
         var currentFile = 0
         for spec in specs {
@@ -164,6 +178,24 @@ public enum ModelAssets {
         isCancelled: (@Sendable () -> Bool)? = nil,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) throws {
+        var specs = [gigaamSpec, nemotronSpec]
+        if parakeet { specs.append(parakeetSpec) }
+        try prepareModels(modelRoot: modelRoot, sourceRoot: sourceRoot, specs: specs,
+                          allowDownload: allowDownload, isCancelled: isCancelled, onProgress: onProgress)
+    }
+
+    public static func prepareVoice(
+        modelRoot: URL, sourceRoot: URL? = nil, allowDownload: Bool = true,
+        isCancelled: (@Sendable () -> Bool)? = nil, onProgress: (@Sendable (String) -> Void)? = nil
+    ) throws {
+        try prepareModels(modelRoot: modelRoot, sourceRoot: sourceRoot, specs: [voiceSpec],
+                          allowDownload: allowDownload, isCancelled: isCancelled, onProgress: onProgress)
+    }
+
+    private static func prepareModels(
+        modelRoot: URL, sourceRoot: URL?, specs: [ModelSpec], allowDownload: Bool,
+        isCancelled: (@Sendable () -> Bool)?, onProgress: (@Sendable (String) -> Void)?
+    ) throws {
         if isCancelled?() == true {
             throw PipelineError("cancelled")
         }
@@ -180,18 +212,13 @@ public enum ModelAssets {
         }
 
         let standardizedRoot = modelRoot.standardizedFileURL
-        let (initialReady, _) = checkAvailability(modelRoot: standardizedRoot, parakeet: parakeet, verifyChecksums: true, onProgress: onProgress)
+        let (initialReady, _) = checkAvailability(modelRoot: standardizedRoot, specs: specs, verifyChecksums: true, onProgress: onProgress)
         if initialReady {
             onProgress?("Все модели уже проверены и готовы.")
             return
         }
 
         try fm.createDirectory(at: standardizedRoot, withIntermediateDirectories: true)
-
-        var specs = [gigaamSpec, nemotronSpec]
-        if parakeet {
-            specs.append(parakeetSpec)
-        }
 
         for spec in specs {
             if isCancelled?() == true {
@@ -350,7 +377,7 @@ public enum ModelAssets {
             }
         }
 
-        let (finalReady, missing) = checkAvailability(modelRoot: standardizedRoot, parakeet: parakeet, verifyChecksums: true, onProgress: onProgress)
+        let (finalReady, missing) = checkAvailability(modelRoot: standardizedRoot, specs: specs, verifyChecksums: true, onProgress: onProgress)
         guard finalReady else {
             throw NSError(
                 domain: "ModelAssets",
