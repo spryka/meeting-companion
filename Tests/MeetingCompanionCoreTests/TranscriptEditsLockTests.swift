@@ -100,11 +100,11 @@ import Darwin
         #endif
     }
 
-    private func launchHelper(recordingDirectory: URL) throws -> (process: Process, stdin: Pipe, stdout: Pipe) {
+    private func launchHelper(recordingDirectory: URL, voiceCatalogue: Bool = false) throws -> (process: Process, stdin: Pipe, stdout: Pipe) {
         let helperBinary = try findHelperBinary()
         let process = Process()
         process.executableURL = helperBinary
-        process.arguments = [recordingDirectory.path]
+        process.arguments = voiceCatalogue ? ["--voice-catalogue", recordingDirectory.path] : [recordingDirectory.path]
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -223,6 +223,24 @@ import Darwin
             reapProcess(process, timeoutSeconds: 2.0)
             throw ProcessExitTimeoutError(pid: process.processIdentifier)
         }
+    }
+
+    @Test func voiceCatalogueLockRejectsAnotherProcessUntilTransactionEnds() throws {
+        let root = try temporaryDirectory().resolvingSymlinksInPath()
+        let repo = VoiceProfileCatalogueRepository(applicationDataDirectory: root)
+        let saved = try repo.update(repo.load()) { $0.people.append(.init(displayName: "Анна")) }
+        let (child, input, output) = try launchHelper(recordingDirectory: root, voiceCatalogue: true)
+        try #require(try readLineWithTimeout(from: output.fileHandleForReading) == "ACQUIRED\n")
+        #expect(throws: VoiceProfileCatalogueError.conflict) {
+            try repo.update(saved) { $0.people = [] }
+        }
+        #expect(try repo.load().catalogue == saved.catalogue)
+        try input.fileHandleForWriting.write(contentsOf: Data("RELEASE\n".utf8))
+        #expect(try readLineWithTimeout(from: output.fileHandleForReading) == "RELEASED\n")
+        try waitForProcessExit(child)
+        #expect(child.terminationStatus == 0)
+        let updated = try repo.update(saved) { $0.people = [] }
+        #expect(updated.catalogue.revision == saved.catalogue.revision + 1)
     }
 
     @Test func testLockRejectsSecondProcessAndReleasesOnExplicitClose() throws {

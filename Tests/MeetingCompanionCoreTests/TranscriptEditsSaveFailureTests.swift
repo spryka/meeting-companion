@@ -105,7 +105,7 @@ struct InjectedSaveError: Error, Equatable, Sendable {}
 
                 let stagedData = try Data(contentsOf: tempURL)
                 let staged = try JSONDecoder().decode(TranscriptEdits.self, from: stagedData)
-                #expect(staged.schemaVersion == 1)
+                #expect(staged.schemaVersion == 2)
                 #expect(staged.resultID == resultID)
                 #expect(staged.revision == 2)
                 #expect(staged.overrides["turn_1"]?.text == "Новый неотправленный текст")
@@ -177,7 +177,7 @@ struct InjectedSaveError: Error, Equatable, Sendable {}
             text: pendingDraft.text,
             displayName: pendingDraft.displayName
         )
-        #expect(saved.schemaVersion == 1)
+        #expect(saved.schemaVersion == 2)
         #expect(saved.resultID == resultID)
         #expect(saved.revision == 2)
         #expect(saved.overrides["turn_1"]?.text == "Новый неотправленный текст")
@@ -216,7 +216,7 @@ struct InjectedSaveError: Error, Equatable, Sendable {}
 
                 let stagedData = try Data(contentsOf: tempURL)
                 let staged = try JSONDecoder().decode(TranscriptEdits.self, from: stagedData)
-                #expect(staged.schemaVersion == 1)
+                #expect(staged.schemaVersion == 2)
                 #expect(staged.resultID == resultID)
                 #expect(staged.revision == 1)
                 #expect(staged.overrides["turn_1"]?.text == "Черновик первой редакции")
@@ -283,7 +283,7 @@ struct InjectedSaveError: Error, Equatable, Sendable {}
             text: pendingDraft.text,
             displayName: pendingDraft.displayName
         )
-        #expect(saved.schemaVersion == 1)
+        #expect(saved.schemaVersion == 2)
         #expect(saved.resultID == resultID)
         #expect(saved.revision == 1)
         #expect(saved.overrides["turn_1"]?.text == "Черновик первой редакции")

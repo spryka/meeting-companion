@@ -15,6 +15,7 @@ struct RecorderSettingsView: View {
         case general = "Основные"
         case recording = "Запись", transcription = "Транскрибация"
         case calendar = "Календарь", diagnostics = "Диагностика"
+        case voices = "Голоса"
 
         var symbol: String {
             switch self {
@@ -23,6 +24,7 @@ struct RecorderSettingsView: View {
             case .transcription: "text.alignleft"
             case .calendar: "calendar"
             case .diagnostics: "stethoscope"
+            case .voices: "person.wave.2"
             }
         }
         var introduction: String {
@@ -32,6 +34,7 @@ struct RecorderSettingsView: View {
             case .transcription: "Локальное распознавание и подготовка моделей."
             case .calendar: "Встречи для выбора перед записью и напоминаний."
             case .diagnostics: "Разрешения и проверки, если что-то работает не так."
+            case .voices: "Локальные профили участников."
             }
         }
         var icon: ODIcon {
@@ -41,6 +44,7 @@ struct RecorderSettingsView: View {
             case .transcription: .wave
             case .calendar: .calendar
             case .diagnostics: .shield
+            case .voices: .people
             }
         }
     }
@@ -57,6 +61,7 @@ struct RecorderSettingsView: View {
             case .transcription: transcription
             case .calendar: CalendarSettingsView(calendar: model.calendar)
             case .diagnostics: diagnostics
+            case .voices: VoiceSettingsView(model: model)
             }
         }
         .toggleStyle(.switch)
@@ -186,7 +191,7 @@ struct RecorderSettingsView: View {
         Group {
             ODSettingsGroup {
                 ODSettingsToggle("Улучшать технические термины", hint: "Дополнительная модель Parakeet, около 740 МБ.", isOn: $model.improveTerms)
-                    .disabled(model.isRecording || model.isBusy || model.diagnosticRunning || model.transcriptionJobs > 0)
+                    .disabled(!model.canChangeTranscriptionModels)
             } header: {
                 Text("Распознавание")
             } footer: {
@@ -212,7 +217,7 @@ struct RecorderSettingsView: View {
                 } label: {
                     ODSettingsLabel("Подготовка транскрибации", hint: "Проверить модели или скачать компоненты.")
                 }
-                .disabled(model.diagnosticRunning || model.isRecording || model.isBusy || model.transcriptionJobs > 0)
+                .disabled(!model.canChangeTranscriptionModels)
                 if let progress = model.preparationProgress {
                     LabeledContent("Файлы подготовки", value: "\(progress.fileCount) (\(ByteCountFormatter.string(fromByteCount: progress.bytes, countStyle: .file)))")
                     if let changed = progress.lastModified {
@@ -402,38 +407,23 @@ struct SettingsShell: View {
                 }
                 .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 16)
                 .background(ODColors.toolbar)
-                if geometry.size.width <= 600 {
+                let compact = geometry.size.width <= 600
+                Rectangle().fill(ODColors.line).frame(height: 1)
+                if compact {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Раздел настроек").font(.system(size: 12)).foregroundStyle(ODColors.muted)
                         ODMenuField(title: "Раздел настроек", selection: $model.settingsPage,
                             options: RecorderSettingsView.Page.allCases.map { ($0.rawValue, $0) })
                     }.padding(.horizontal, 20).padding(.vertical, 12)
-                } else {
-                    HStack(spacing: 4) {
-                        ForEach(RecorderSettingsView.Page.allCases, id: \.self) { page in
-                            Button { model.settingsPage = page } label: {
-                                VStack(spacing: 8) {
-                                    ODIconView(page.icon, size: 22, color: page == model.settingsPage ? ODColors.selectedInk : ODColors.muted)
-                                    Text(page.rawValue)
-                                }
-                                .font(.system(size: 12, weight: .medium))
-                                .frame(maxWidth: .infinity)
-                                .padding(.horizontal, 4).frame(height: 72)
-                                .foregroundStyle(page == model.settingsPage ? ODColors.selectedInk : ODColors.muted)
-                                .background(page == model.settingsPage ? ODColors.selected : .clear, in: RoundedRectangle(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(page == model.settingsPage ? ODColors.accent.opacity(0.16) : .clear))
-                                .contentShape(Rectangle())
-                            }.buttonStyle(.plain).accessibilityAddTraits(page == model.settingsPage ? .isSelected : [])
-                        }
-                    }.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12).background(ODColors.toolbar)
+                    Rectangle().fill(ODColors.line).frame(height: 1)
                 }
-                Rectangle().fill(ODColors.line).frame(height: 1)
-                ScrollView {
-                    RecorderSettingsView(model: model, page: model.settingsPage, onCheckForUpdates: model.onCheckForUpdates)
-                        .id(model.settingsPage)
-                        .padding(.horizontal, geometry.size.width <= 600 ? 20 : 32)
-                        .padding(.top, geometry.size.width <= 600 ? 20 : 24)
-                        .padding(.bottom, geometry.size.width <= 600 ? 20 : 32)
+                HStack(spacing: 0) {
+                    if !compact {
+                        sectionSidebar
+                            .frame(width: geometry.size.width <= 800 ? 144 : 168)
+                        Rectangle().fill(ODColors.line).frame(width: 1)
+                    }
+                    pageContent(padding: geometry.size.width <= 800 ? 20 : 24)
                 }
                 Rectangle().fill(ODColors.line).frame(height: 1)
                 HStack {
@@ -453,6 +443,45 @@ struct SettingsShell: View {
         .focusSection()
         .onAppear { closeFocused = true }
     }
+
+    private var sectionSidebar: some View {
+        ScrollView {
+            VStack(spacing: 4) {
+                ForEach(RecorderSettingsView.Page.allCases, id: \.self) { page in
+                    let selected = page == model.settingsPage
+                    Button { model.settingsPage = page } label: {
+                        HStack(spacing: 8) {
+                            ODIconView(page.icon, size: 18, color: selected ? ODColors.selectedInk : ODColors.muted)
+                            Text(page.rawValue)
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 8)
+                        .foregroundStyle(selected ? ODColors.selectedInk : ODColors.ink)
+                        .background(selected ? ODColors.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 12)
+        }
+        .background(ODColors.sidebar)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Разделы настроек")
+    }
+
+    private func pageContent(padding: CGFloat) -> some View {
+        ScrollView {
+            RecorderSettingsView(model: model, page: model.settingsPage,
+                                 onCheckForUpdates: model.onCheckForUpdates)
+                .id(model.settingsPage)
+                .padding(padding)
+        }
+        .frame(maxWidth: .infinity)
+    }
 }
 
 struct WorkspaceSettingsOverlay: View {
@@ -463,7 +492,7 @@ struct WorkspaceSettingsOverlay: View {
                 Color.black.opacity(0.3).contentShape(Rectangle()).onTapGesture { }
                     .accessibilityHidden(true)
                 SettingsShell(model: model)
-                    .frame(width: min(760, max(0, bounds.size.width - 32)), height: min(740, max(0, bounds.size.height - 32)))
+                    .frame(width: min(1000, max(0, bounds.size.width - 32)), height: min(820, max(0, bounds.size.height - 32)))
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .accessibilityAddTraits(.isModal)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -74,7 +74,7 @@ public struct TranscriptExportFormatter: Sendable {
         guard document.resultID == edits.resultID else {
             throw TranscriptExportError.resultMismatch(expected: document.resultID, got: edits.resultID)
         }
-        guard edits.schemaVersion == 1 else {
+        guard TranscriptEdits.supports(schemaVersion: edits.schemaVersion) else {
             throw TranscriptExportError.writeFailed("Unsupported edits schemaVersion: \(edits.schemaVersion)")
         }
         guard edits.revision >= 0 else {

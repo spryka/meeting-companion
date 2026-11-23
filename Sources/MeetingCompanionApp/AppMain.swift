@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import os
 import EventKit
 import MeetingCompanionCore
 import MeetingCompanionPlatform
@@ -75,6 +76,21 @@ enum StartMeetingOutcome: Equatable, Sendable {
 
 @MainActor
 final class RecorderViewModel: ObservableObject {
+    enum VoiceModelStatus: Equatable {
+        case unchecked, checking, preparing, ready, unavailable(String)
+
+        var isBusy: Bool { self == .checking || self == .preparing }
+
+        var title: String {
+            switch self {
+            case .unchecked, .checking: "Проверка модели…"
+            case .preparing: "Подготовка модели…"
+            case .ready: "Модель голосов готова"
+            case .unavailable(let reason): reason
+            }
+        }
+    }
+
     typealias AudioLevelMonitorFactory = @Sendable (
         _ micID: String?,
         _ backend: AudioCaptureBackend,
@@ -94,10 +110,13 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
+    private let libraryRootLock: OSAllocatedUnfairLock<URL>
     @Published var outputDirectory: URL {
         willSet { history.invalidateRefresh() }
         didSet {
-            defaults.set(outputDirectory.path, forKey: "recordingsDirectory")
+            let directory = outputDirectory
+            libraryRootLock.withLock { $0 = directory }
+            defaults.set(directory.path, forKey: "recordingsDirectory")
             let root = outputDirectory
             Task {
                 guard outputDirectory == root else { return }
@@ -109,6 +128,48 @@ final class RecorderViewModel: ObservableObject {
     let historyRepository: RecordingHistoryRepository
     let recordingSessionService: RecordingSessionService
     let processingService: ProcessingService
+    let voiceLearning: VoiceLearningCoordinator
+    private let voiceMatchPolicy: VoiceMatchPolicy?
+    var automaticVoiceNamesAvailable: Bool { voiceMatchPolicy != nil }
+    nonisolated static let defaultVoiceMatchPolicy = VoiceMatchPolicy(
+        threshold: 0.60,
+        margin: 0.15,
+        calendarBonus: 0,
+        maximumAcousticGap: 0,
+        mixedClusterRescue: VoiceMixedClusterRescuePolicy(threshold: 0.65, margin: 0.20)
+    )!
+    nonisolated private static let manualVoicePolicy = VoiceProfileUpdatePolicy(id: "manual-v1-agreement-0.60", minimumAgreement: 0.6)
+    private static let voiceGenerationKey = "localVoiceIdentityGeneration"
+    @Published private(set) var voiceModelStatus: VoiceModelStatus = .unchecked
+    @Published private(set) var voiceCatalogueUpdate = 0
+    @Published var voiceIdentityEnabled = false {
+        didSet {
+            guard voiceIdentityEnabled != oldValue else { return }
+            defaults.set(voiceIdentityEnabled, forKey: "localVoiceIdentityEnabled")
+            let generation = voiceIdentityEnabled ? UUID() : nil
+            defaults.set(generation?.uuidString, forKey: Self.voiceGenerationKey)
+            voiceLearning.setEnabled(voiceIdentityEnabled, generation: generation)
+            if !voiceIdentityEnabled {
+                let processing = processingService
+                Task { await processing.cancelVoiceJobsIfDisabled() }
+            }
+        }
+    }
+
+    func checkVoiceModel(prepare: Bool) {
+        guard !voiceModelStatus.isBusy, !isResettingCache,
+              !prepare || !preventsSettingsOperation else { return }
+        voiceModelStatus = prepare ? .preparing : .checking
+        Task {
+            do {
+                try await processingService.checkOrPrepareVoiceModel(prepare: prepare)
+                voiceModelStatus = .ready
+            } catch {
+                voiceModelStatus = .unavailable(prepare ? error.localizedDescription : "Модель голосов не готова")
+            }
+        }
+    }
+
     let history: RecordingHistory
     let workspace: TranscriptReviewWindowManager
     @Published private(set) var recordingTrash: RecordingTrashPresentation?
@@ -274,6 +335,7 @@ final class RecorderViewModel: ObservableObject {
 
     func dismissSettings() {
         settingsPresented = false
+        workspace.current?.refreshVoiceIdentityState()
         onSettingsVisibilityChange?()
     }
     enum MainPage: String, CaseIterable, Identifiable {
@@ -534,6 +596,7 @@ final class RecorderViewModel: ObservableObject {
     @Published private(set) var transcriptionState: TranscriptionState = .idle
     var lastTranscriptURL: URL? { transcriptionState.transcript }
     @Published var transcriptionJobs = 0
+    @Published private(set) var voiceJobs = 0
     @Published var transcriptionReady: Bool {
         didSet { defaults.set(transcriptionReady, forKey: "transcriptionPrepared") }
     }
@@ -554,6 +617,9 @@ final class RecorderViewModel: ObservableObject {
     @Published private var localDiagnosticRunning = false
     @Published private var preparationState: ProcessingService.PreparationState = .idle
     var diagnosticRunning: Bool { localDiagnosticRunning || preparationState != .idle }
+    var canChangeTranscriptionModels: Bool {
+        voiceModelStatus != .preparing && !diagnosticRunning && !isRecording && !isBusy && transcriptionJobs == 0
+    }
     var diagnosticStatusText: String {
         if isResettingCache { return "Сброс кэша…" }
         if diagnosticRunning { return preparationState == .preparing ? "Скачивание и проверка моделей…" : "Проверка моделей…" }
@@ -613,7 +679,7 @@ final class RecorderViewModel: ObservableObject {
         resetCommitBlockedByWork || localDiagnosticRunning || isResettingCache
     }
     private var resetCommitBlockedByWork: Bool {
-        !sessionAttached || !processingAttached || preparingCapture || sessionStarting || sessionStopping || isRecording || isBusy || transcriptionJobs > 0 || isAdmittingProcessing || !pendingProcessingEnqueues.isEmpty || preparationState != .idle || isCheckingAudio
+        !sessionAttached || !processingAttached || preparingCapture || sessionStarting || sessionStopping || isRecording || isBusy || transcriptionJobs > 0 || voiceJobs > 0 || voiceModelStatus.isBusy || isAdmittingProcessing || !pendingProcessingEnqueues.isEmpty || preparationState != .idle || isCheckingAudio
     }
 
     var onRecordingStarted: (() -> Void)?
@@ -731,6 +797,8 @@ final class RecorderViewModel: ObservableObject {
         processingService: ProcessingService? = nil,
         historyRepository: RecordingHistoryRepository? = nil,
         workspace: TranscriptReviewWindowManager? = nil,
+        voiceLearning: VoiceLearningCoordinator? = nil,
+        voiceMatchPolicy: VoiceMatchPolicy? = nil,
         defaults: UserDefaults = .standard,
         appDataDirectory: URL = RecorderDiagnostics.dataDirectory,
         startBackgroundServices: Bool = true,
@@ -761,26 +829,75 @@ final class RecorderViewModel: ObservableObject {
         self.defaults = defaults
         self.appDataDirectory = appDataDirectory
         self.appearance = AppAppearance(rawValue: defaults.string(forKey: "appAppearance") ?? "") ?? .system
-        self.outputDirectory = defaults.string(forKey: "recordingsDirectory").map { URL(fileURLWithPath: $0) } ?? RecordingPaths.defaultOutputDirectory
+        let initialOutputDirectory = defaults.string(forKey: "recordingsDirectory").map { URL(fileURLWithPath: $0) } ?? RecordingPaths.defaultOutputDirectory
+        let rootLock = OSAllocatedUnfairLock(initialState: initialOutputDirectory)
+        self.libraryRootLock = rootLock
+        self.outputDirectory = initialOutputDirectory
         self.improveTerms = defaults.bool(forKey: "improveTechnicalTerms")
         self.echoCancellation = defaults.bool(forKey: "echoCancellation")
         self.transcriptionReady = defaults.bool(forKey: "transcriptionPrepared")
         self.captureBackend = AudioCaptureBackend(rawValue: defaults.string(forKey: "captureBackend") ?? "") ?? .coreAudioTap
         self.selectedMicrophoneID = defaults.string(forKey: Self.selectedMicrophoneIDKey) ?? Self.defaultMicrophoneID
         self.calendar = MeetingCalendar(defaults: defaults, calendarCatalogProvider: calendarCatalogProvider)
-        let repo = historyRepository ?? RecordingHistoryRepository()
+        let profiles = voiceLearning ?? VoiceLearningCoordinator(
+            catalogue: VoiceProfileCatalogueRepository(applicationDataDirectory: appDataDirectory)
+        )
+        self.voiceLearning = profiles
+        self.voiceMatchPolicy = voiceMatchPolicy
+        let voiceEnabled = defaults.bool(forKey: "localVoiceIdentityEnabled")
+        self.voiceIdentityEnabled = voiceEnabled
+        let voiceGeneration = voiceEnabled ? (defaults.string(forKey: Self.voiceGenerationKey).flatMap(UUID.init(uuidString:)) ?? UUID()) : nil
+        if let voiceGeneration { defaults.set(voiceGeneration.uuidString, forKey: Self.voiceGenerationKey) }
+        profiles.setEnabled(voiceEnabled, generation: voiceGeneration)
+        let repo = historyRepository ?? RecordingHistoryRepository(voiceLearning: profiles)
         self.historyRepository = repo
         self.recordingSessionService = sessionService ?? RecordingSessionService(historyRepo: repo)
         let proc = processingService ?? ProcessingService(
             transcriptionRunner: PlatformTranscriptionRunner(),
             audioExporter: PlatformAudioExporter(),
-            historyRepository: repo
+            historyRepository: repo,
+            voiceLearning: profiles,
+            voiceRunner: PlatformTranscriptionRunner(),
+            isRecordingInCurrentLibrary: { url in Self.isInLibrary(url, root: rootLock.withLock { $0 }) }
         )
-        self.workspace = workspace ?? TranscriptReviewWindowManager(isProcessing: { await proc.isProcessing(recordingURL: $0) })
+        self.workspace = workspace ?? TranscriptReviewWindowManager(
+            isProcessing: { await proc.isProcessing(recordingURL: $0) },
+            learningCommitObserver: { phase, commit in
+                profiles.observe(phase, commit)
+                guard case .committed = phase, let generation = profiles.featureGeneration,
+                      let policy = Self.manualVoicePolicy else { return }
+                guard commit.events.contains(where: \.allowsLearning) else { return }
+                Task(priority: .utility) {
+                    await profiles.learnCommitted(events: commit.events, writer: commit.writer, processing: proc,
+                                                  policy: policy, expectedGeneration: generation)
+                }
+            }
+        )
         self.processingService = proc
         self.history = RecordingHistory(repository: repo)
+        self.workspace.voiceIdentityActions = VoiceIdentityEditActions(
+            people: { (try? profiles.catalogue.load().catalogue.people) ?? [] },
+            selectPerson: { id, name in
+                try profiles.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name)
+            },
+            confirmCalendarBinding: { person, address, document in
+                try profiles.confirmCalendarBinding(personID: person, address: address, in: document)
+            },
+            isEnabled: { profiles.isEnabled },
+            learningFailure: { profiles.failure(for: $0) },
+            resolveTypedPerson: { try profiles.personForManuallyEnteredName($0) },
+            readyPersonIDs: {
+                let aggregates = (try? profiles.catalogue.load().catalogue.availableAggregates) ?? []
+                return Set(aggregates.filter { $0.embeddingSpaceID == VoiceEmbeddingProtocol.embeddingSpaceID }.map(\.personID))
+            }
+        )
         self.workspace.settingsInput = { [weak self] in self?.settingsPresented ?? false }
+        self.history.openEditsWriter = { [weak self] in self?.workspace.current?.state.session?.editsRepository }
+        self.history.processing = processingService
         self.workspace.trashInput = { [weak self] in self?.trashOwnsInput ?? false }
+        profiles.setLearningObserver { [weak self] in
+            Task { @MainActor in self?.voiceCatalogueUpdate &+= 1 }
+        }
 
         self.workspaceSubscription = self.workspace.$current.sink { [weak self] current in
             self?.rebindCurrentEditor(current)
@@ -798,6 +915,7 @@ final class RecorderViewModel: ObservableObject {
         }
         historySubscription = history.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if startBackgroundServices {
+            history.onRefreshFinished = { [weak self] root in self?.resumeVoiceLearning(in: root) }
             Task { await history.refresh(root: outputDirectory) }
             refreshMicrophones()
             refreshAccess()
@@ -878,6 +996,7 @@ final class RecorderViewModel: ObservableObject {
         defer { checkDependenciesAfterAttachment() }
         preparationState = snapshot.preparation
         transcriptionJobs = snapshot.jobCount
+        voiceJobs = snapshot.voiceJobCount
         isAdmittingProcessing = !snapshot.admitting.isEmpty
         history.progress = snapshot.progress
         processingRoutes = snapshot.routes
@@ -899,6 +1018,24 @@ final class RecorderViewModel: ObservableObject {
         guard sessionAttached, processingAttached, shouldCheckDependenciesAfterAttachment else { return }
         shouldCheckDependenciesAfterAttachment = false
         Task { await checkTranscription(prepare: false) }
+    }
+
+    private func resumeVoiceLearning(in root: URL) {
+        guard root == outputDirectory, voiceIdentityEnabled, let policy = Self.manualVoicePolicy,
+              let generation = voiceLearning.completedLibraryGeneration else { return }
+        let recordings = history.entries.map(\.recording).filter { Self.isInLibrary($0, root: root) }
+        let profiles = voiceLearning
+        let processing = processingService
+        let openWriter = workspace.current?.state.session?.editsRepository
+        Task(priority: .utility) {
+            await profiles.resumeCommitted(recordings: recordings, processing: processing, policy: policy,
+                                           openWriter: openWriter, expectedLibraryGeneration: generation)
+        }
+    }
+
+    nonisolated static func isInLibrary(_ recording: URL, root: URL) -> Bool {
+        let directory = root.resolvingSymlinksInPath().standardizedFileURL
+        return RecordingEntry.canonicalURL(recording).pathComponents.starts(with: directory.pathComponents)
     }
 
     private func handleProcessingEvent(_ event: ProcessingService.Event) async {
@@ -1117,9 +1254,8 @@ final class RecorderViewModel: ObservableObject {
                 confirmed = (alert.runModal() == .alertSecondButtonReturn)
             }
             guard confirmed, !Task.isCancelled else { return }
-            let work = await processingService.currentSnapshot()
-            let preparation = await processingService.currentPreparationState
-            guard work.active == nil, work.queued.isEmpty, preparation == .idle,
+            let hasPendingWork = await processingService.hasPendingWork
+            guard !hasPendingWork,
                   !Task.isCancelled, !workspace.hasForeignInput, !resetCommitBlockedByWork,
                   isResettingCache, localDiagnosticRunning, outputDirectory == recordings else { return }
             // No async handoff between final admission and the destructive operation.
@@ -1128,6 +1264,7 @@ final class RecorderViewModel: ObservableObject {
             diagnosticReport = "Удаление локального кэша моделей и подготовки…"
             if let resetOperation { try resetOperation(directory, recordings) }
             else { try RecorderDiagnostics.resetCache(in: directory, recordings: recordings) }
+            voiceModelStatus = .unchecked
             preparationProgress = nil
             transcriptionState = .idle
             let summary = "Кэш сброшен. Нажмите «Скачать модели» перед транскрибацией."
@@ -1150,7 +1287,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func checkTranscription(prepare: Bool) async {
-        guard sessionAttached, processingAttached, !sessionStopping, !diagnosticRunning, !isRecording, !isBusy, transcriptionJobs == 0 else { return }
+        guard sessionAttached, processingAttached, !sessionStopping, canChangeTranscriptionModels else { return }
         lastTerminalSummary = nil
         localDiagnosticRunning = true
         diagnosticStartedAt = Date()
@@ -1358,9 +1495,12 @@ final class RecorderViewModel: ObservableObject {
             history.reportError(entry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.", recording: recording)
             return
         }
+        let voicePolicy = voiceIdentityEnabled ? voiceMatchPolicy : nil
         let settings = ProcessingJobSettings(
             parakeet: improveTerms,
-            echoCancellation: echoCancellation
+            echoCancellation: echoCancellation,
+            voiceMatchPolicy: voicePolicy,
+            voiceFeatureGeneration: voicePolicy != nil ? voiceLearning.featureGeneration : nil
         )
         let presentationID = UUID()
         guard historyRepository.reserveWork(recording, id: presentationID) else {

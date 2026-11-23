@@ -81,7 +81,11 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         return stream
     }
 
-    public init() {}
+    private let voiceLearning: VoiceLearningCoordinator?
+
+    public init(voiceLearning: VoiceLearningCoordinator? = nil) {
+        self.voiceLearning = voiceLearning
+    }
 
     @discardableResult
     private func withLock<T>(_ work: () throws -> T) rethrows -> T {
@@ -253,6 +257,8 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         do { try writer.acquireWriteLock() }
         catch { throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: true) }
         defer { writer.releaseWriteLock() }
+        do { try voiceLearning?.preserveOutboxes(recording: target.recording, writer: writer, includeHistory: true) }
+        catch { throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: true) }
         // No async handoff between the last identity check and the native path operation.
         try withLock { try validateTrash(target, reservation: reservation) }
         let outcome: RecordingTrashOutcome
@@ -523,16 +529,20 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         return true
     }
 
-    /// Scans a directory recursively for recordings and returns entries + possible scanning error.
-    public func scanRecordings(in directory: URL) -> (entries: [RecordingEntry], error: String?) {
+    /// Scans a directory recursively. A missing root is an incomplete scan even without an error.
+    public func scanRecordings(in directory: URL) -> (entries: [RecordingEntry], error: String?, complete: Bool) {
         var files = Set<URL>()
         var failure: String?
-        guard fileManager.fileExists(atPath: directory.path) else { return ([], nil) }
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory) else {
+            return ([], nil, false)
+        }
+        guard isDirectory.boolValue else { return ([], "Папка записей недоступна.", false) }
 
         guard let enumerator = historyEnumerator(directory, { _, error in
             failure = error.localizedDescription
             return true
-        }) else { return ([], failure ?? "Папка записей недоступна.") }
+        }) else { return ([], failure ?? "Папка записей недоступна.", false) }
 
         while let url = enumerator.nextObject() as? URL {
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
@@ -557,7 +567,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
             var entry = RecordingEntry.load(recording: url)
             if entry.phase.isWorking { entry.phase = .interrupted }
             return entry
-        }, failure)
+        }, failure, failure == nil)
     }
 
     /// Refreshes entries from disk, guarding against overwriting active jobs or concurrent updates.
@@ -565,26 +575,44 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         fileprivate let generation: Int
         fileprivate let revisions: [URL: Int]
         fileprivate let entries: Set<URL>
+        fileprivate let voiceRecovery: UUID?
     }
 
     /// Reserve ordering before handing filesystem work to another executor.
     public func beginRefresh() -> RefreshRequest {
         withLock {
             generation += 1
-            return RefreshRequest(generation: generation, revisions: revisions, entries: Set(entriesMap.keys))
+            return RefreshRequest(generation: generation, revisions: revisions, entries: Set(entriesMap.keys),
+                                  voiceRecovery: voiceLearning?.beginLibraryReconciliation())
         }
     }
 
     public func refresh(root: URL, request: RefreshRequest? = nil, allowMissingRoot: Bool = false,
-                        preservingMissing: @Sendable () async -> Set<URL> = { [] }) async -> (entries: [RecordingEntry], error: String?) {
+                        openWriter: @Sendable () async -> TranscriptEditsRepository? = { nil },
+                        preservingMissing: @Sendable () async -> Set<URL> = { [] },
+                        processing: ProcessingService? = nil) async -> (entries: [RecordingEntry], error: String?) {
         let request = request ?? beginRefresh()
         var scanResult = scanRecordings(in: root)
-        if !allowMissingRoot, !fileManager.fileExists(atPath: root.path) {
+        var isDirectory: ObjCBool = false
+        let rootAvailable = fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        if !allowMissingRoot, !rootAvailable || (!scanResult.complete && scanResult.error == nil) {
             scanResult.error = "Папка записей недоступна."
+        }
+        let scanComplete = scanResult.complete && rootAvailable
+        if let voiceLearning, let recovery = request.voiceRecovery, withLock({ request.generation == generation }) {
+            let editorWriter = await openWriter()
+            let recordings = scanResult.entries.map(\.recording)
+            if let processing {
+                await processing.reconcileVoiceLibrary(voiceLearning, recordings: recordings, scanComplete: scanComplete,
+                                                       id: recovery, editorWriter: editorWriter)
+            } else {
+                voiceLearning.reconcileLibrary(recordings: recordings, scanComplete: scanComplete, id: recovery,
+                                               openWriters: editorWriter.map { [$0] } ?? [])
+            }
         }
         let scannedIDs = Set(scanResult.entries.map(\.id))
         let rootComponents = root.standardizedFileURL.resolvingSymlinksInPath().pathComponents
-        let canPrune = scanResult.error == nil && fileManager.fileExists(atPath: root.path)
+        let canPrune = scanComplete
         let protectedIDs: Set<URL>
         if canPrune, withLock({ request.generation == generation }) {
             protectedIDs = await preservingMissing()

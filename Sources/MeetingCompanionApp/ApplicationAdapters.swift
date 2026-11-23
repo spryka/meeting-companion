@@ -4,8 +4,19 @@ import MeetingCompanionApplication
 import MeetingCompanionPlatform
 
 /// App/Platform adapter implementing TranscriptionRunnerProtocol using Platform Transcription runner.
-public final class PlatformTranscriptionRunner: TranscriptionRunnerProtocol, Sendable {
+public final class PlatformTranscriptionRunner: TranscriptionRunnerProtocol, VoiceEmbeddingRunnerProtocol, Sendable {
     public init() {}
+
+    public func extractVoiceEmbeddings(
+        _ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL
+    ) async throws -> VoiceEmbeddingProtocol.Response {
+        try await Transcription.extractVoiceEmbeddings(request, recordingDirectory: recordingDirectory)
+    }
+
+    public func checkOrPrepareVoiceModel(prepare: Bool) async throws {
+        if prepare { try await Transcription.prepareVoiceModel() }
+        else { try await Transcription.checkVoiceModel() }
+    }
 
     public func checkDependencies(availability: Bool, parakeet: Bool) async throws -> Bool {
         let result = try await Transcription.checkDependencies(

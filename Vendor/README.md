@@ -33,6 +33,12 @@ This directory contains offline source closures, pinned package dependencies, li
 - Pinned source set: `Package.swift`, `Package.resolved`, `LICENSE`, `Sources/`, `Tests/`.
 - Cleanup patch: `Vendor/patches/remove-unused-detector.patch` applies after the manifest patch and removes the unused detector implementation, segmentation helper, optional detector API branches and related tests/documentation. Parakeet remains unchanged.
 
+### 4. WeSpeaker voice embeddings
+
+- The network and frontend come from Speech Swift. Copyright 2025 Ivan Digital and contributors. [Pinned source](https://github.com/soniqo/speech-swift/tree/b1287a6c963a38b0d4133c656725b2de7ea6bebf/Sources/SpeechVAD)
+- The source uses Apache-2.0. [License](LICENSES/SpeechSwift-Apache-LICENSE.txt)
+- `Sources/MeetingTranscriptionPipeline/Voice` carries the PoC network and its Swift-safe CMN buffer update. The worker loads the weight file locally.
+
 ## Transitive Dependency Graph & Embedded Licenses
 
 See `Vendor/dependency-licenses.json` for full machine-readable licensing and notice metadata.

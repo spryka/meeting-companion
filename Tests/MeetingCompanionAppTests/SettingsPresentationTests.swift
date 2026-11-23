@@ -9,6 +9,32 @@ import Testing
 
 @MainActor
 struct SettingsPresentationTests {
+    @Test func closingVoiceSettingsRefreshesPeopleInOpenEditor() async throws {
+        let fixture = try SpeakerReviewFixture()
+        let (defaults, suite) = createTestDefaults()
+        defer { fixture.close(); defaults.removePersistentDomain(forName: suite) }
+        defaults.set(fixture.root.path, forKey: "recordingsDirectory")
+        let model = isolatedRecorderModel(workspace: fixture.manager, defaults: defaults)
+        let catalogue = model.voiceLearning.catalogue
+        let person = VoiceProfilePerson(displayName: "Мария")
+        _ = try catalogue.update(catalogue.load()) { $0.people = [person] }
+        let editor = try await fixture.open()
+        editor.openVoiceReview(anchorTurnID: "t0")
+        #expect(editor.voicePeople == [person])
+        try #require(model.presentSettings())
+        model.settingsPage = .voices
+        model.voiceIdentityEnabled = true
+        try model.voiceLearning.resetPerson(person.id, delete: true)
+        model.dismissSettings()
+        #expect(editor.voicePeople.isEmpty)
+        #expect(editor.canConfirmSavedVoiceName)
+
+        try #require(model.presentSettings())
+        model.voiceIdentityEnabled = false
+        model.dismissSettings()
+        #expect(!editor.canConfirmSavedVoiceName)
+    }
+
     @Test(arguments: [false, true])
     func updateCheckFollowsWorkState(workBusy: Bool) throws {
         let (defaults, suite) = createTestDefaults()
@@ -300,14 +326,13 @@ struct SettingsPresentationTests {
         return (root, appData)
     }
 
-    // MARK: - P01: Five Settings Sections
+    // MARK: - P01: Settings Sections
 
-    @Test func p01_fiveSettingsSectionsPreserved() {
+    @Test func p01_voiceSettingsIsSixthSection() {
         let pages = RecorderSettingsView.Page.allCases
-        #expect(pages.count == 5)
-        #expect(pages == [.general, .recording, .transcription, .calendar, .diagnostics])
+        #expect(pages == [.general, .recording, .transcription, .calendar, .diagnostics, .voices])
 
-        let expectedTitles = ["Основные", "Запись", "Транскрибация", "Календарь", "Диагностика"]
+        let expectedTitles = ["Основные", "Запись", "Транскрибация", "Календарь", "Диагностика", "Голоса"]
         let actualTitles = pages.map(\.rawValue)
         #expect(actualTitles == expectedTitles)
     }

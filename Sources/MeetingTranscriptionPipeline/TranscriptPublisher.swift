@@ -94,6 +94,7 @@ public struct TranscriptPublisher: Sendable {
         audioMixData: Data? = nil,
         aecAudioURL: URL? = nil,
         correctionJournalData: Data? = nil,
+        voiceQuality: VoiceAudioQuality? = nil,
         recordingStem: String? = nil,
         hostAudioRelPath: String? = nil,
         remoteAudioRelPath: String? = nil,
@@ -162,6 +163,15 @@ public struct TranscriptPublisher: Sendable {
         if let journalData = correctionJournalData {
             let journalURL = stagingDir.appendingPathComponent("correction_journal.json")
             try journalData.write(to: journalURL, options: .atomic)
+        }
+
+        if let voiceQuality {
+            do {
+                let bytes = try voiceQuality.encoded(for: document)
+                try bytes.write(to: stagingDir.appendingPathComponent(VoiceAudioQuality.filename), options: .atomic)
+            } catch {
+                onWarning("Не удалось сохранить данные о речи: " + error.localizedDescription)
+            }
         }
 
         // Validate that playback ready has an existing and readable mix file

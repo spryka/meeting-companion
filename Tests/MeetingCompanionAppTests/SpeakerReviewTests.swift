@@ -1,24 +1,216 @@
+import AppKit
 import Foundation
 import Testing
+import MeetingCompanionApplication
 import MeetingCompanionCore
 import MeetingCompanionPlatform
 @testable import MeetingCompanionApp
 
 @Suite(.serialized) @MainActor
 struct SpeakerReviewTests {
+    @Test func emptyUnrecognizedFilterCanReturnToSavedGroup() async throws {
+        let fixture = try SpeakerReviewFixture(voiceCount: 1)
+        defer { fixture.close() }
+        let model = try await fixture.open()
+        model.openVoiceReview()
+        let anchor = model.voiceDraft?.anchorTurnID
+        model.setUnrecognizedVoiceFilter(true)
+        #expect(model.voiceReviewComplete && model.voiceDraft == nil)
+        model.setUnrecognizedVoiceFilter(false)
+        #expect(!model.voiceReviewComplete && model.voiceDraft?.anchorTurnID == anchor)
+        #expect(model.voiceDraft?.inputName == "Мария")
+    }
+
+    @Test func unifiedEditorPreservesDraftAcrossTurnFilterAndTranscript() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let model = try await fixture.open()
+        let saved = try Data(contentsOf: fixture.result.appendingPathComponent("edits.json"))
+        model.openVoiceReview(anchorTurnID: "t8")
+        #expect(model.voiceDraft?.scope == .single && model.voiceDraft?.inputName == "")
+        model.updateVoiceName("Анна")
+        model.setVoiceScope(.remaining)
+        model.selectVoice(model.voiceGroups[0].id)
+        #expect(model.voiceDraft?.anchorTurnID == "t0")
+        model.setUnrecognizedVoiceFilter(true)
+        #expect(model.showOnlyUnrecognizedVoices)
+        #expect(model.voiceDraft?.anchorTurnID != "t0")
+        model.returnToTranscript(turnID: "t8")
+        #expect(!model.voiceReviewVisible && model.highlightedTurnID == "t8")
+        #expect(!(await fixture.manager.prepareForRetry(fixture.recording)))
+        model.openVoiceReview(anchorTurnID: "t8")
+        #expect(model.voiceDraft?.inputName == "Анна" && model.voiceDraft?.scope == .remaining)
+        model.cancelVoiceInput()
+        #expect(!model.hasUnsavedChanges)
+        #expect(try Data(contentsOf: fixture.result.appendingPathComponent("edits.json")) == saved)
+    }
+
+    @Test func untouchedDraftUsesEntryScopeAndExplicitScopeSurvivesReturn() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let model = try await fixture.open()
+        model.openVoiceReview()
+        let anchor = try #require(model.voiceDraft?.anchorTurnID)
+        model.returnToTranscript()
+        model.openVoiceReview(anchorTurnID: anchor)
+        #expect(model.voiceDraft?.scope == .single)
+        model.setVoiceScope(.remaining)
+        model.returnToTranscript()
+        model.openVoiceReview()
+        #expect(model.voiceDraft?.anchorTurnID == anchor && model.voiceDraft?.scope == .remaining)
+    }
+
+    @Test func headerReopensHiddenDirtyDraftAfterReturningFromAnotherVoice() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let model = try await fixture.open()
+        model.openVoiceReview(anchorTurnID: "t0")
+        model.updateVoiceName("Исправленное имя")
+        model.setUnrecognizedVoiceFilter(true)
+        model.returnToTranscript()
+        #expect(model.hasUnsavedChanges && !model.voiceReviewVisible)
+
+        model.openVoiceReview()
+        #expect(model.voiceDraft?.anchorTurnID == "t0")
+        #expect(model.voiceDraft?.inputName == "Исправленное имя")
+        #expect(!model.showOnlyUnrecognizedVoices)
+        model.cancelVoiceInput()
+        #expect(!model.hasUnsavedChanges && fixture.manager.admitNavigation())
+    }
+
+    @Test(arguments: [0, 1, 2]) func applyingTypedNameResolvesPersonOnlyOnSave(matches: Int) async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("test-data"))
+        let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+        coordinator.setEnabled(true)
+        let name = "Новое имя"
+        let enteredName = " \(name) "
+        let people = (0..<matches).map { _ in VoiceProfilePerson(displayName: name) }
+        _ = try catalogue.update(catalogue.load()) { $0.people = people }
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root, learningCommitObserver: coordinator.observe)
+        let model = try await fixture.open(repository: writer)
+        model.voiceIdentityActions = .init(
+            people: { (try? catalogue.load().catalogue.people) ?? [] }, selectPerson: { _, _ in .asEntered },
+            confirmCalendarBinding: { _, _, _ in }, isEnabled: { true }, learningFailure: coordinator.failure,
+            resolveTypedPerson: coordinator.personForManuallyEnteredName
+        )
+        model.openVoiceReview(anchorTurnID: "t8")
+        let before = try catalogue.load().catalogue
+        model.updateVoiceName(enteredName)
+        #expect(try catalogue.load().catalogue == before)
+        model.confirmVoiceAssignment(try #require(model.voiceDraft))
+        let edits = try writer.loadEdits(resultID: "v1")
+        if matches == 2 {
+            #expect(model.error?.contains("несколько людей") == true)
+            #expect(model.isVoiceDraftDirty && edits.overrides["t8"] == nil)
+            #expect(try catalogue.load().catalogue == before)
+        } else {
+            let person = try #require(catalogue.load().catalogue.people.first)
+            #expect(person.displayName == name)
+            if let existing = people.first { #expect(person.id == existing.id) }
+            #expect(edits.overrides["t8"]?.displayName == enteredName)
+            #expect(edits.overrides["t8"]?.assignment?.personID == person.id)
+            #expect(edits.pendingLearningEvents?.last?.allowsLearning == true)
+        }
+    }
+
+    @Test(arguments: [0, 1, 2])
+    func confirmingSavedNameEnrollsOnlyTheSelectedTurn(profileCount: Int) async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("test-data"))
+        let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+        coordinator.setEnabled(true)
+        let existing = (0..<profileCount).map { _ in VoiceProfilePerson(displayName: "Мария") }
+        if !existing.isEmpty { _ = try catalogue.update(catalogue.load()) { $0.people = existing } }
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root, learningCommitObserver: coordinator.observe)
+        _ = try writer.saveTurnOverride(resultID: "v1", turnID: "t0", text: nil, displayName: " Мария ")
+        let model = try await fixture.open(repository: writer)
+        model.voiceIdentityActions = .init(
+            people: { (try? catalogue.load().catalogue.people) ?? [] }, selectPerson: { _, _ in .asEntered },
+            confirmCalendarBinding: { _, _, _ in }, isEnabled: { coordinator.isEnabled }, learningFailure: coordinator.failure,
+            resolveTypedPerson: coordinator.personForManuallyEnteredName
+        )
+        model.openVoiceReview(anchorTurnID: "t0")
+        model.setVoiceScope(.group)
+        let draft = try #require(model.voiceDraft)
+        #expect(draft.anchorTurnID == "t0" && draft.scope == .group)
+        #expect(model.canConfirmSavedVoiceName)
+        let before = try writer.loadEdits(resultID: "v1")
+        model.confirmVoiceAssignment(draft, confirmSavedName: true)
+
+        let edits = try writer.loadEdits(resultID: "v1")
+        if profileCount == 2 {
+            #expect(edits == before && model.voiceDraft?.scope == .single)
+            #expect(model.error?.contains("несколько людей") == true)
+            #expect(model.matchingVoicePeople == existing)
+            return
+        }
+        let person = try #require(catalogue.load().catalogue.people.first)
+        #expect(person.displayName == "Мария")
+        if let prior = existing.first { #expect(person.id == prior.id) }
+        #expect(edits.overrides["t0"]?.displayName == before.overrides["t0"]?.displayName)
+        #expect(edits.overrides["t0"]?.assignment?.personID == person.id)
+        #expect(edits.overrides["t7"] == before.overrides["t7"])
+        #expect(edits.overrides["t14"] == before.overrides["t14"])
+        #expect(edits.pendingLearningEvents?.filter(\.allowsLearning).map(\.turnID) == ["t0"])
+        #expect(model.selectedVoice?.mixedNames == false)
+        #expect(model.selectedVoice?.title.trimmingCharacters(in: .whitespacesAndNewlines) == "Мария")
+        #expect(model.voiceDraft?.anchorTurnID == "t0" && !model.canConfirmVoice)
+        #expect(model.voiceLearningConfirmedTurnID == "t0")
+        #expect(!model.canConfirmSavedVoiceName)
+        model.confirmVoiceAssignment(draft, confirmSavedName: true)
+        #expect(try writer.loadEdits(resultID: "v1") == edits)
+    }
+
+    @Test func sameNameWithTwoKnownProfilesIsStillMixed() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root)
+        _ = try writer.saveEdits(resultID: "v1", overrides: [
+            "t0": .init(displayName: "Мария", assignment: .init(personID: UUID(), origin: "manual")),
+            "t7": .init(displayName: "Мария", assignment: .init(personID: UUID(), origin: "manual")),
+            "t14": .init(displayName: "Мария")
+        ])
+        let model = try await fixture.open(repository: writer)
+        #expect(model.voiceGroups[0].mixedNames && model.voiceGroups[0].title == "Speaker 1")
+    }
+
+    @Test func parkedDraftCanBeCancelledAfterNewCurrentAppears() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let model = try await fixture.open()
+        model.openVoiceReview(anchorTurnID: "t8")
+        model.updateVoiceName("Проверка")
+        model.returnToTranscript()
+        let next = fixture.result.deletingLastPathComponent().appendingPathComponent("v2")
+        try FileManager.default.createDirectory(at: next, withIntermediateDirectories: true)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.result.appendingPathComponent("result.json"))) as? [String: Any])
+        json["resultID"] = "v2"
+        json["playback"] = ["status": "ready", "mixPath": "raw/transcripts/v2/mix.m4a"]
+        try JSONSerialization.data(withJSONObject: json).write(to: next.appendingPathComponent("result.json"))
+        try FileManager.default.setAttributes([.creationDate: Date().addingTimeInterval(60)], ofItemAtPath: next.path)
+
+        model.openVoiceReview(anchorTurnID: "t8")
+        #expect(model.voiceReviewVisible && model.voiceRequiresReopen)
+        #expect(model.voiceDraft?.inputName == "Проверка" && !model.canConfirmVoice)
+        model.cancelVoiceInput()
+        #expect(!model.hasUnsavedChanges && model.state.isClosed)
+        #expect(fixture.manager.current == nil)
+        let reopened = try await fixture.open()
+        #expect(reopened !== model && !reopened.state.isClosed)
+    }
     @Test func listRequestCannotHideDirtyDetailsAfterWideToCompactTransition() async throws {
         let fixture = try SpeakerReviewFixture()
         defer { fixture.close() }
         let model = try await fixture.open()
         model.openVoiceReview()
-        for _ in 0..<6 { model.skipVoice() }
-        #expect(model.voiceReviewComplete)
-        model.selectVoice(try #require(model.selectedVoiceID))
         #expect(model.requestVoiceList() && model.voiceListVisible) // Wide: list and details visible.
         model.updateVoiceName("Новое имя")
         #expect(!model.voiceListVisible) // Compact must retain the details, Save and Cancel.
         #expect(model.isVoiceDraftDirty && model.canConfirmVoice)
-        #expect(!model.requestVoiceList())
+        #expect(model.requestVoiceList())
         #expect(model.voiceDraft?.inputName == "Новое имя")
         model.cancelVoiceInput()
         #expect(model.requestVoiceList() && model.voiceListVisible)
@@ -28,9 +220,9 @@ struct SpeakerReviewTests {
         defer { fixture.close() }
         let model = try await fixture.open()
         model.openVoiceReview(); model.updateVoiceName("Новое имя")
-        #expect(!model.requestVoiceList())
+        #expect(model.requestVoiceList())
         #expect(model.voiceReviewVisible && model.voiceDraft?.inputName == "Новое имя")
-        #expect(model.error != nil)
+        #expect(model.error == nil)
         model.cancelVoiceInput()
         #expect(model.requestVoiceList())
     }
@@ -129,7 +321,7 @@ struct SpeakerReviewTests {
         #expect(model.fragmentTurnID == nil && model.playbackState == .ready)
         #expect(model.highlightedTurnID == "t6")
     }
-    @Test func groupSavePreservesManualTextAndAdvancesOnlyAfterCommit() async throws {
+    @Test func groupSavePreservesManualTextAndNextIsSeparate() async throws {
         let fixture = try SpeakerReviewFixture()
         defer { fixture.close() }
         let model = try await fixture.open()
@@ -146,8 +338,10 @@ struct SpeakerReviewTests {
         #expect(model.rows.first { $0.id == "t8" }?.name == "Анна")
         #expect(model.rows.first { $0.id == "t15" }?.name == "Анна")
         #expect(model.voiceGroups[1].mixedNames)
-        #expect(model.selectedVoice?.originalName == "Speaker 3")
+        #expect(model.selectedVoice?.originalName == "Speaker 2")
         let saved = try Data(contentsOf: fixture.result.appendingPathComponent("edits.json"))
+        model.nextVoice()
+        #expect(model.selectedVoice?.originalName == "Speaker 3")
         model.confirmVoiceAssignment(confirmation) // Late/double confirm cannot touch next group.
         #expect(try Data(contentsOf: fixture.result.appendingPathComponent("edits.json")) == saved)
         model.selectVoice(model.voiceGroups[1].id)
@@ -166,19 +360,19 @@ struct SpeakerReviewTests {
         let reopened = try await fixture.open()
         #expect(reopened.voiceGroups[1].title == "Мария")
         #expect(reopened.rows.first { $0.id == "t1" }?.editText == "Правка текста")
-        #expect(reopened.skippedVoices.isEmpty)
     }
 
-    @Test func skipWrapCompletionAndNoOpDoNotWrite() async throws {
+    @Test func nextVoiceWrapsAndNoOpDoesNotWrite() async throws {
         let fixture = try SpeakerReviewFixture()
         defer { fixture.close() }
         let model = try await fixture.open()
         let saved = try Data(contentsOf: fixture.result.appendingPathComponent("edits.json"))
         model.openVoiceReview()
-        for _ in 0..<6 { model.skipVoice() }
-        #expect(model.voiceReviewComplete && model.reviewedVoiceCount == 7)
-        #expect(model.skippedVoices.count == 6)
+        let originalGroup = model.selectedVoiceID
+        for _ in 0..<7 { model.nextVoice() }
+        #expect(model.selectedVoiceID == originalGroup && model.reviewedVoiceCount == 1)
         model.selectVoice(model.voiceGroups[0].id)
+        #expect(!model.canConfirmVoice)
         model.confirmVoiceAssignment(try #require(model.voiceDraft)) // All names protected, zero targets.
         #expect(try Data(contentsOf: fixture.result.appendingPathComponent("edits.json")) == saved)
         model.returnToTranscript()
@@ -197,13 +391,15 @@ struct SpeakerReviewTests {
         #expect(model.activeDraft == nil && model.voiceReviewVisible)
         #expect(model.selectedVoice?.originalName == "Speaker 7")
         #expect(model.voiceDraft?.inputName == "Поздний")
-        #expect(model.voiceDraft?.preview?.totalTurnsInGroup == 3)
+        #expect(model.voiceDraft?.preview?.totalTurnsInGroup == 1)
         #expect(!(await fixture.manager.prepareForRetry(fixture.recording)))
         model.selectVoice(model.voiceGroups[0].id)
         model.returnToTranscript()
         var closed = false
         model.requestWindowClose { closed = true }
-        #expect(!closed && model.voiceReviewVisible && model.voiceDraft?.inputName == "Поздний")
+        #expect(!closed && !model.voiceReviewVisible)
+        model.openVoiceReview(anchorTurnID: "t6")
+        #expect(model.voiceDraft?.inputName == "Поздний")
         #expect(try Data(contentsOf: fixture.result.appendingPathComponent("edits.json")) == saved)
         model.cancelVoiceInput()
         model.returnToTranscript(turnID: "t6")
@@ -288,6 +484,7 @@ struct SpeakerReviewTests {
         defer { fixture.close() }
         let model = try await fixture.open()
         #expect(model.availableCalendarNames == ["Анна", "Éva"])
+        #expect(model.savedMeetingNames == ["Мария", "Алексей"])
         #expect(model.contextAttendees == [" МАРИЯ ", "Алексей", "Анна", "анна", "Éva", "E\u{301}VA"])
         model.openSpeakerAssignment(for: "t1")
         #expect(model.activeDraft?.calendarAttendees == model.availableCalendarNames)
@@ -295,10 +492,440 @@ struct SpeakerReviewTests {
         model.confirmGroupAssignment()
         #expect(model.rows.first { $0.id == "t1" }?.name == "Анна")
         #expect(model.availableCalendarNames == ["Алексей", "Éva"])
+        #expect(model.savedMeetingNames == ["Мария", "Анна"])
         model.openSpeakerAssignment(for: "t8")
         model.updateDraftName("Мария") // Repeated manual input remains legal.
         model.confirmGroupAssignment()
         #expect(model.rows.first { $0.id == "t8" }?.name == "Мария")
+    }
+
+    @Test func suggestionSectionsDeduplicateParticipantsPreserveHomonymsAndVerifyIcons() async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("voice-data"))
+        let alexey = VoiceProfilePerson(displayName: "Алексей")
+        let maria = VoiceProfilePerson(displayName: "Мария")
+        let roman1 = VoiceProfilePerson(displayName: "Роман", calendarBindings: ["roman1@example.com"])
+        let roman2 = VoiceProfilePerson(displayName: "Роман")
+        let vadim = VoiceProfilePerson(displayName: "Вадим", calendarBindings: ["vadim@example.com"])
+        let centroid: [Float] = [1] + Array(repeating: 0, count: 255)
+        let allPeople = [vadim, roman1, maria, alexey, roman2]
+        _ = try catalogue.update(catalogue.load()) { value in
+            value.people = allPeople
+            // Mark maria and vadim ready; alexey stays collecting (not ready).
+            for person in [maria, vadim] {
+                let sample = VoiceProfileSample(
+                    personID: person.id, embeddingSpaceID: VoiceEmbeddingProtocol.embeddingSpaceID,
+                    embedding: centroid, recordingLocator: "/seed", resultID: "seed", turnID: "seed",
+                    sourceID: .host, start: 0, end: 5, pcmFingerprint: "fp-\(person.id.uuidString)",
+                    assignment: .init(personID: person.id, origin: "manual"), policyID: "test"
+                )
+                value.samples.append(sample)
+                value.aggregates.append(.init(
+                    personID: person.id, embeddingSpaceID: VoiceEmbeddingProtocol.embeddingSpaceID,
+                    centroid: centroid, activeSampleIDs: [sample.id], policyID: "test"
+                ))
+            }
+        }
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root)
+        _ = try writer.saveEdits(resultID: "v1", overrides: [
+            "t2": .init(displayName: "АвтоГость", assignment: .init(personID: UUID(), origin: "automaticVoiceMatch")),
+            "t3": .init(displayName: "Дмитрий")
+        ])
+        writer.releaseWriteLock()
+
+        let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+        let model = try await fixture.open(repository: writer)
+        model.voiceIdentityActions = .init(
+            people: { (try? catalogue.load().catalogue.people) ?? [] },
+            selectPerson: { id, name in
+                try coordinator.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name)
+            },
+            confirmCalendarBinding: { _, _, _ in },
+            isEnabled: { true },
+            learningFailure: { _ in nil },
+            readyPersonIDs: {
+                let agg = (try? catalogue.load().catalogue.availableAggregates) ?? []
+                return Set(agg.filter { $0.embeddingSpaceID == VoiceEmbeddingProtocol.embeddingSpaceID }.map(\.personID))
+            }
+        )
+        model.openVoiceReview(anchorTurnID: "t8")
+
+        let sections = model.voiceNameSuggestionSections(query: "")
+        #expect(sections.map(\.title) == ["Участники встречи", "Сохранённые голоса"])
+
+        let meetingItems = sections[0].items
+        // Calendar has: " МАРИЯ " (-> maria), "Алексей" (-> alexey), "Анна", "анна", "Éva", "ÉVA"; plus manual-only "Дмитрий".
+        #expect(meetingItems.map(\.displayName) == ["Мария", "Алексей", "Анна", "Éva", "Дмитрий"])
+        let mariaItem = try #require(meetingItems.first { $0.displayName == "Мария" })
+        #expect(mariaItem.selection == .existingPerson(maria))
+        #expect(mariaItem.hasSavedProfile && mariaItem.isVoiceReady && mariaItem.isCalendarAttendee)
+        #expect(mariaItem.subtitle == nil)
+
+        let alexeyItem = try #require(meetingItems.first { $0.displayName == "Алексей" })
+        #expect(alexeyItem.selection == .existingPerson(alexey))
+        #expect(alexeyItem.hasSavedProfile && !alexeyItem.isVoiceReady)
+        #expect(alexeyItem.subtitle == nil)
+
+        let annaItem = try #require(meetingItems.first { $0.displayName == "Анна" })
+        #expect(annaItem.selection == .plainName("Анна") && !annaItem.hasSavedProfile && annaItem.isCalendarAttendee)
+        let dmitryItem = try #require(meetingItems.first { $0.displayName == "Дмитрий" })
+        #expect(dmitryItem.selection == .plainName("Дмитрий") && !dmitryItem.hasSavedProfile && !dmitryItem.isCalendarAttendee)
+        #expect(!meetingItems.contains { $0.displayName == "АвтоГость" })
+
+        let savedItems = sections[1].items
+        #expect(savedItems.count == 3) // Vadim + 2 Roman homonyms (Maria and Alexey are not duplicated!)
+        let vadimItem = try #require(savedItems.first { $0.displayName == "Вадим" })
+        #expect(vadimItem.selection == .existingPerson(vadim) && vadimItem.isVoiceReady && vadimItem.subtitle == "vadim@example.com")
+        let romans = savedItems.filter { $0.displayName == "Роман" }
+        #expect(romans.count == 2)
+        #expect(romans.map(\.subtitle) == ["roman1@example.com", "Профиль 2"])
+        for item in meetingItems + savedItems {
+            if let sub = item.subtitle {
+                #expect(!sub.contains(String(maria.id.uuidString.suffix(4))))
+                #expect(!sub.contains(String(roman2.id.uuidString.suffix(4))))
+            }
+        }
+
+        // Live Unicode/email search across both sections.
+        let emailFilter = model.voiceNameSuggestionSections(query: "vadim@")
+        #expect(emailFilter.flatMap(\.items).map(\.displayName) == ["Вадим"])
+        let evaFilter = model.voiceNameSuggestionSections(query: "e\u{301}va")
+        #expect(evaFilter.flatMap(\.items).map(\.displayName) == ["Éva"])
+
+        // Selection paths.
+        model.selectVoiceSuggestion(mariaItem)
+        #expect(model.voiceDraft?.inputName == "Мария")
+        if case .confirmed(let intent) = model.voiceDraft?.person {
+            #expect(intent.personID == maria.id)
+        } else {
+            Issue.record("Expected confirmed person selection for existing saved profile")
+        }
+        model.selectVoiceSuggestion(annaItem)
+        #expect(model.voiceDraft?.inputName == "Анна")
+        #expect(model.voiceDraft?.person == .asEntered)
+
+        for symbol in ["waveform", "person.crop.circle", "calendar", "xmark.circle.fill", "chevron.down", "chevron.up", "plus.circle"] {
+            #expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil)
+        }
+    }
+
+    @Test func homonymCalendarAndManualResolutionDoesNotPullAllHomonymsIntoMeetingParticipants() async throws {
+        // Case A: Calendar attendee "Роман" WITHOUT confirmed email + 2 homonyms -> stays plainName in meeting, both Romans in savedVoices.
+        do {
+            let fixture = try SpeakerReviewFixture()
+            defer { fixture.close() }
+            let resultURL = fixture.result.appendingPathComponent("result.json")
+            var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: resultURL)) as? [String: Any])
+            json["context"] = ["title": "Встреча", "attendees": ["Роман"]]
+            try JSONSerialization.data(withJSONObject: json).write(to: resultURL)
+
+            let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("voice-a"))
+            let roman1 = VoiceProfilePerson(displayName: "Роман", calendarBindings: ["roman1@example.com"])
+            let roman2 = VoiceProfilePerson(displayName: "Роман")
+            _ = try catalogue.update(catalogue.load()) { $0.people = [roman1, roman2] }
+            let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+            let model = try await fixture.open()
+            model.voiceIdentityActions = .init(
+                people: { (try? catalogue.load().catalogue.people) ?? [] },
+                selectPerson: { id, name in try coordinator.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name) },
+                confirmCalendarBinding: { _, _, _ in }, isEnabled: { true }, learningFailure: { _ in nil }
+            )
+            model.openVoiceReview(anchorTurnID: "t8")
+            let sections = model.voiceNameSuggestionSections(query: "")
+            let meeting = sections.first { $0.id == "meeting" }?.items ?? []
+            let saved = sections.first { $0.id == "saved" }?.items ?? []
+            #expect(meeting.map(\.displayName) == ["Роман", "Мария", "Алексей"])
+            let romanMeeting = try #require(meeting.first { $0.displayName == "Роман" })
+            #expect(romanMeeting.selection == .plainName("Роман"))
+            #expect(!romanMeeting.hasSavedProfile && romanMeeting.isCalendarAttendee)
+            #expect(saved.count == 2)
+            #expect(Set(saved.compactMap {
+                if case .existingPerson(let p) = $0.selection { return p.id }
+                return nil
+            }) == [roman1.id, roman2.id])
+            #expect(saved.allSatisfy { !$0.isCalendarAttendee })
+        }
+
+        // A confirmed invite, an unbound invite and a manually identified homonym are independent.
+        for moreInvites in [false, true] {
+            let fixture = try SpeakerReviewFixture()
+            defer { fixture.close() }
+            let resultURL = fixture.result.appendingPathComponent("result.json")
+            var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: resultURL)) as? [String: Any])
+            var attendees = ["Роман"]
+            var contacts = [["displayName": "Роман", "address": "roman1@example.com"]]
+            if moreInvites {
+                attendees.append("mailto:denis@example.com")
+                contacts.append(["displayName": "Роман", "address": "guest@example.com"])
+                contacts.append(["displayName": "Роман", "address": "other@example.com"])
+                contacts.append(["displayName": "denis@example.com", "address": "denis@example.com"])
+            }
+            json["context"] = [
+                "title": "Встреча",
+                "attendees": attendees,
+                "calendarParticipants": contacts
+            ]
+            try JSONSerialization.data(withJSONObject: json).write(to: resultURL)
+
+            let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("voice-b"))
+            let roman1 = VoiceProfilePerson(displayName: "Роман", calendarBindings: ["roman1@example.com"])
+            let roman2 = VoiceProfilePerson(displayName: "Роман")
+            let denis = VoiceProfilePerson(displayName: "Денис", calendarBindings: ["denis@example.com"])
+            _ = try catalogue.update(catalogue.load()) { $0.people = moreInvites ? [roman1, roman2, denis] : [roman1, roman2] }
+            let writer = TranscriptEditsRepository(recordingDirectory: fixture.root)
+            var overrides: [String: TranscriptTurnOverride] = [
+                "t3": .init(displayName: "Роман", assignment: .init(personID: roman2.id, origin: "manual"))
+            ]
+            if moreInvites { overrides["t5"] = .init(displayName: "Роман") }
+            _ = try writer.saveEdits(resultID: "v1", overrides: overrides)
+            writer.releaseWriteLock()
+            let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+            let model = try await fixture.open(repository: writer)
+            model.voiceIdentityActions = .init(
+                people: { (try? catalogue.load().catalogue.people) ?? [] },
+                selectPerson: { id, name in try coordinator.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name) },
+                confirmCalendarBinding: { _, _, _ in }, isEnabled: { true }, learningFailure: { _ in nil }
+            )
+            model.openVoiceReview(anchorTurnID: "t8")
+            let sections = model.voiceNameSuggestionSections(query: "")
+            let meeting = sections.first { $0.id == "meeting" }?.items ?? []
+            let saved = sections.first { $0.id == "saved" }?.items ?? []
+            #expect(meeting.first?.selection == .existingPerson(roman1))
+            #expect(meeting.first?.isCalendarAttendee == true)
+            let manual = try #require(meeting.first { $0.selection == .existingPerson(roman2) })
+            #expect(!manual.isCalendarAttendee)
+            #expect(saved.isEmpty)
+            let invited = meeting.filter { $0.displayName == "Роман" && $0.isCalendarAttendee }
+            #expect(invited.count == (moreInvites ? 3 : 1))
+            #expect(Set(invited.map(\.id)).count == invited.count)
+            if moreInvites {
+                let guest = model.voiceNameSuggestionSections(query: "guest@example.com").flatMap(\.items)
+                #expect(guest.map(\.selection) == [.plainName("Роман")])
+                #expect(guest.first?.isCalendarAttendee == true)
+                let denisItems = model.voiceNameSuggestionSections(query: "denis@example.com").flatMap(\.items)
+                #expect(denisItems.map(\.selection) == [.existingPerson(denis)])
+                let legacy = meeting.filter { !$0.isCalendarAttendee && $0.selection == .plainName("Роман") }
+                #expect(legacy.count == 1)
+            }
+        }
+
+        // An unbound invite and a manually identified homonym remain separate suggestions.
+        do {
+            let fixture = try SpeakerReviewFixture()
+            defer { fixture.close() }
+            let resultURL = fixture.result.appendingPathComponent("result.json")
+            var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: resultURL)) as? [String: Any])
+            json["context"] = [
+                "title": "Встреча",
+                "attendees": ["Роман"],
+                "calendarParticipants": [["displayName": "Роман", "address": "guest@example.com"]]
+            ]
+            try JSONSerialization.data(withJSONObject: json).write(to: resultURL)
+
+            let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("voice-c"))
+            let roman1 = VoiceProfilePerson(displayName: "Роман", calendarBindings: ["roman1@example.com"])
+            let roman2 = VoiceProfilePerson(displayName: "Роман")
+            _ = try catalogue.update(catalogue.load()) { $0.people = [roman1, roman2] }
+            let writer = TranscriptEditsRepository(recordingDirectory: fixture.root)
+            _ = try writer.saveEdits(resultID: "v1", overrides: [
+                "t3": .init(displayName: "Роман", assignment: .init(personID: roman2.id, origin: "manual"))
+            ])
+            writer.releaseWriteLock()
+
+            let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+            let model = try await fixture.open(repository: writer)
+            model.voiceIdentityActions = .init(
+                people: { (try? catalogue.load().catalogue.people) ?? [] },
+                selectPerson: { id, name in try coordinator.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name) },
+                confirmCalendarBinding: { _, _, _ in }, isEnabled: { true }, learningFailure: { _ in nil }
+            )
+            model.openVoiceReview(anchorTurnID: "t8")
+            let sections = model.voiceNameSuggestionSections(query: "")
+            let meeting = sections.first { $0.id == "meeting" }?.items ?? []
+            let saved = sections.first { $0.id == "saved" }?.items ?? []
+            #expect(meeting.first?.selection == .plainName("Роман"))
+            #expect(meeting.first?.isCalendarAttendee == true)
+            let manual = try #require(meeting.first { $0.selection == .existingPerson(roman2) })
+            #expect(!manual.isCalendarAttendee)
+            #expect(!meeting.contains { $0.selection == .existingPerson(roman1) })
+            #expect(saved.map(\.selection) == [.existingPerson(roman1)])
+            #expect(saved.first?.isCalendarAttendee == false)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func calendarSuggestionsPreservePositionSearchAliasesAndExplicitHomonymSelection(fromDraft: Bool) async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let resultURL = fixture.result.appendingPathComponent("result.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: resultURL)) as? [String: Any])
+        let contacts = [
+            ("denis@example.com", "other@example.com"),
+            ("denis@example.com", "denis@example.com"),
+            ("Роман", "guest@example.com"),
+            ("Александр", "alex1@example.com"),
+            ("Александр", "alex2@example.com"),
+            ("Иван", "ivan@example.com"),
+            ("Денис из календаря", "alias@example.com"),
+            ("Софья", "sofia@example.com")
+        ]
+        json["context"] = [
+            "title": "Встреча",
+            "attendees": ["denis@example.com", "Мария", "mailto:denis@example.com", "Роман",
+                          "Александр", "Александр", "Иван", "Иван", "Денис из календаря"],
+            "calendarParticipants": contacts.map { ["displayName": $0.0, "address": $0.1] }
+        ]
+        try JSONSerialization.data(withJSONObject: json).write(to: resultURL)
+
+        let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("ordered-voices"))
+        let denis = VoiceProfilePerson(displayName: "Денис", calendarBindings: ["denis@example.com", "alias@example.com"])
+        let roman = VoiceProfilePerson(displayName: "Роман")
+        _ = try catalogue.update(catalogue.load()) { $0.people = [denis, roman] }
+        let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+        coordinator.setEnabled(true)
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root, learningCommitObserver: coordinator.observe)
+        _ = try writer.saveTurnOverride(resultID: "v1", turnID: "t5", text: nil, displayName: "Денис")
+        let model = try await fixture.open(repository: writer)
+        model.voiceIdentityActions = .init(
+            people: { (try? catalogue.load().catalogue.people) ?? [] },
+            selectPerson: { id, name in
+                try coordinator.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name)
+            }, confirmCalendarBinding: { _, _, _ in }, isEnabled: { coordinator.isEnabled },
+            learningFailure: coordinator.failure, resolveTypedPerson: coordinator.personForManuallyEnteredName
+        )
+        if fromDraft {
+            model.openSpeakerAssignment(for: "t8")
+            model.openDraftVoiceReview()
+        } else {
+            model.openVoiceReview(anchorTurnID: "t8")
+        }
+        func suggestions(_ query: String = "") -> [TranscriptReviewWindowModel.VoiceNameSuggestion] {
+            model.voiceNameSuggestionSections(query: query).flatMap(\.items)
+        }
+        let invited = suggestions().filter(\.isCalendarAttendee)
+        #expect(invited.map(\.id) == [
+            "calendar-other@example.com", "name-мария", "person-\(denis.id.uuidString)", "person-\(roman.id.uuidString)",
+            "calendar-alex1@example.com", "calendar-alex2@example.com", "calendar-ivan@example.com", "name-иван",
+            "calendar-sofia@example.com"
+        ])
+        for query in ["alias@", "Денис из календаря"] {
+            #expect(suggestions(query).map(\.selection) == [.existingPerson(denis)])
+        }
+        #expect(suggestions("guest@").map(\.selection) == [.existingPerson(roman)])
+        #expect(suggestions("guest@").first?.subtitle == "guest@example.com")
+        #expect(suggestions("denis@example.com").contains { $0.selection == .existingPerson(denis) })
+
+        let namesake = try #require(suggestions().first { !$0.isCalendarAttendee && $0.selection == .plainName("Денис") })
+        model.selectVoiceSuggestion(namesake)
+        let draft = try #require(model.voiceDraft)
+        model.confirmVoiceAssignment(draft)
+        #expect(model.error?.contains("Создать человека") == true)
+        #expect(try writer.loadEdits(resultID: "v1").overrides["t8"] == nil)
+        model.selectVoicePerson(nil)
+        model.confirmVoiceAssignment(try #require(model.voiceDraft))
+        let saved = try #require(writer.loadEdits(resultID: "v1").overrides["t8"])
+        let newID = try #require(saved.assignment?.personID)
+        #expect(newID != denis.id && saved.displayName == "Денис")
+        #expect(try catalogue.load().catalogue.people.contains { $0.id == newID && $0.displayName == "Денис" })
+    }
+
+    @Test(arguments: ["legacy", "mixed", "mixedWithManual", "namesake", "namesakeWithProfile"])
+    func calendarSuggestionsRequireExplicitIdentityBeforeSaving(scenario: String) async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let resultURL = fixture.result.appendingPathComponent("result.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: resultURL)) as? [String: Any])
+        let hasManualNamesake = scenario == "namesake" || scenario == "namesakeWithProfile"
+        let contact = hasManualNamesake
+            ? ["displayName": "Роман", "address": "guest@example.com"]
+            : ["displayName": "Мария", "address": "maria@example.com"]
+        json["context"] = [
+            "title": "Встреча", "attendees": ["Роман", "Мария"],
+            "calendarParticipants": scenario == "legacy" ? [] : [contact]
+        ]
+        try JSONSerialization.data(withJSONObject: json).write(to: resultURL)
+
+        let catalogue = VoiceProfileCatalogueRepository(applicationDataDirectory: fixture.root.appendingPathComponent("explicit-voices"))
+        let profile = VoiceProfilePerson(displayName: "Роман",
+                                         calendarBindings: hasManualNamesake ? [] : ["other@example.com"])
+        let knownPeople = scenario == "namesake" ? [] : [profile]
+        _ = try catalogue.update(catalogue.load()) { $0.people = knownPeople }
+        let coordinator = VoiceLearningCoordinator(catalogue: catalogue)
+        coordinator.setEnabled(true)
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root, learningCommitObserver: coordinator.observe)
+        if hasManualNamesake || scenario == "mixedWithManual" {
+            _ = try writer.saveTurnOverride(resultID: "v1", turnID: "t5", text: nil, displayName: "Роман")
+        }
+        let model = try await fixture.open(repository: writer)
+        model.voiceIdentityActions = .init(
+            people: { (try? catalogue.load().catalogue.people) ?? [] },
+            selectPerson: { id, name in
+                try coordinator.personSelection(id.map(VoiceLearningCoordinator.PersonChoice.existing) ?? .new(UUID()), displayName: name)
+            }, confirmCalendarBinding: { _, _, _ in }, isEnabled: { coordinator.isEnabled },
+            learningFailure: coordinator.failure, resolveTypedPerson: coordinator.personForManuallyEnteredName
+        )
+        model.openVoiceReview(anchorTurnID: "t8")
+        let suggestions = model.voiceNameSuggestionSections(query: "роман").flatMap(\.items)
+        let invite = try #require(suggestions.first { $0.isCalendarAttendee })
+        if scenario == "legacy" {
+            #expect(invite.selection == .existingPerson(profile))
+            model.selectVoiceSuggestion(invite)
+            model.confirmVoiceAssignment(try #require(model.voiceDraft))
+            #expect(try writer.loadEdits(resultID: "v1").overrides["t8"]?.assignment?.personID == profile.id)
+            return
+        }
+        #expect(invite.selection == .plainName("Роман"))
+        if scenario == "mixed" || scenario == "mixedWithManual" {
+            #expect(suggestions.first { $0.selection == .existingPerson(profile) }?.kind == .savedVoice)
+        }
+        let candidates = hasManualNamesake
+            ? [invite, try #require(suggestions.first { !$0.isCalendarAttendee && $0.selection == .plainName("Роман") })]
+            : [invite]
+        let before = try writer.loadEdits(resultID: "v1")
+        for candidate in candidates {
+            model.selectVoiceSuggestion(candidate)
+            model.confirmVoiceAssignment(try #require(model.voiceDraft))
+            #expect(model.error?.contains("Создать человека") == true)
+            #expect(try writer.loadEdits(resultID: "v1") == before)
+            #expect(try catalogue.load().catalogue.people == knownPeople)
+        }
+        model.selectVoicePerson(knownPeople.first)
+        model.confirmVoiceAssignment(try #require(model.voiceDraft))
+        let saved = try writer.loadEdits(resultID: "v1")
+        let savedID = try #require(saved.overrides["t8"]?.assignment?.personID)
+        if let existing = knownPeople.first {
+            #expect(savedID == existing.id)
+        } else {
+            #expect(try catalogue.load().catalogue.people.map(\.id) == [savedID])
+        }
+    }
+
+    @Test func suggestionKeyboardNavigationIncludesCreateOptionAndRepeatedSelectVoiceBumpsRevision() async throws {
+        // Navigation cycles forward/backward across suggestions AND createPersonOptionID.
+        let ids = ["item-1", "item-2", SpeakerReviewView.createPersonOptionID]
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: nil, in: ids, step: 1) == "item-1")
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: "item-1", in: ids, step: 1) == "item-2")
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: "item-2", in: ids, step: 1) == SpeakerReviewView.createPersonOptionID)
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: SpeakerReviewView.createPersonOptionID, in: ids, step: 1) == "item-1")
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: nil, in: ids, step: -1) == SpeakerReviewView.createPersonOptionID)
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: "item-1", in: ids, step: -1) == SpeakerReviewView.createPersonOptionID)
+        #expect(SpeakerReviewView.nextHighlightedSuggestionID(current: "item-1", in: [], step: 1) == nil)
+
+        // Repeated selectVoice on same voice and anchor increments voiceSelectionRevision while keeping dirty draft.
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let model = try await fixture.open()
+        model.openVoiceReview(anchorTurnID: "t8")
+        model.updateVoiceName("Черновик")
+        let selectedVoice = try #require(model.selectedVoiceID)
+        let revisionBefore = model.voiceSelectionRevision
+        model.selectVoice(selectedVoice, anchorTurnID: "t8")
+        #expect(model.voiceSelectionRevision == revisionBefore + 1)
+        #expect(model.voiceDraft?.inputName == "Черновик")
+
+        model.selectVoice(TranscriptVoiceKey(sourceID: .remote, localID: 999))
+        #expect(model.voiceSelectionRevision == revisionBefore + 1)
     }
 }
 

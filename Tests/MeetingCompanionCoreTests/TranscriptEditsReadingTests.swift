@@ -124,7 +124,7 @@ import Testing
         let editsFile = versionDir.appendingPathComponent("edits.json")
         let jsonString = """
         {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "resultID": "\(resultID)",
             "revision": 1,
             "overrides": {}
@@ -136,7 +136,7 @@ import Testing
         #expect {
             try repo.loadEdits(resultID: resultID)
         } throws: { error in
-            guard case .unsupportedVersion(2) = error as? TranscriptEditsError else {
+            guard case .unsupportedVersion(3) = error as? TranscriptEditsError else {
                 return false
             }
             return true

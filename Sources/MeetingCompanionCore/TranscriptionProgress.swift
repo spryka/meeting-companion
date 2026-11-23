@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public enum Stage: String, Decodable, Sendable {
-        case gigaam, diarization, speakers, parakeet, correction, merge, warning, echo, audio, mix, publication
+        case gigaam, diarization, speakers, parakeet, correction, merge, warning, echo, audio, mix, publication, voices
     }
 
     public enum State: String, Decodable, Sendable { case started, completed, skipped, failed }
@@ -15,6 +15,7 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
     public let step: Int?
     public let steps: Int?
     public let warning: String?
+    public let skipReason: String?
 
     public init?(line: Data) {
         let prefix = Data("MEETING_PROGRESS ".utf8)
@@ -28,7 +29,7 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         self = value
     }
 
-    public init(stage: Stage, channel: String? = nil, completed: Int, total: Int, step: Int? = nil, steps: Int? = nil, warning: String? = nil, state: State? = nil) {
+    public init(stage: Stage, channel: String? = nil, completed: Int, total: Int, step: Int? = nil, steps: Int? = nil, warning: String? = nil, state: State? = nil, skipReason: String? = nil) {
         self.state = state
         self.stage = stage
         self.channel = channel
@@ -37,6 +38,7 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         self.step = step
         self.steps = steps
         self.warning = warning
+        self.skipReason = skipReason
     }
 
     public var completedSteps: Int? {
@@ -62,6 +64,7 @@ public struct TranscriptionProgress: Decodable, Equatable, Sendable {
         case .diarization: label = "Разделение голосов"
         case .speakers: label = "Назначение голосов словам"
         case .merge: label = "Объединение дорожек"
+        case .voices: label = "Определение голосов"
         }
         let source = channel.map { $0 == "host" ? " · микрофон" : " · системный звук" } ?? ""
         if stage == .echo {

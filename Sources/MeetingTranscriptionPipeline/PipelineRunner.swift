@@ -17,6 +17,7 @@ public struct PipelineResult: Sendable {
     public let audioMixURL: URL?
     public let aecAudioURL: URL?
     public let correctionJournalData: Data?
+    public let voiceQuality: VoiceAudioQuality?
 
     public init(
         document: TranscriptDocument,
@@ -25,7 +26,8 @@ public struct PipelineResult: Sendable {
         remoteAudioURL: URL?,
         audioMixURL: URL? = nil,
         aecAudioURL: URL? = nil,
-        correctionJournalData: Data? = nil
+        correctionJournalData: Data? = nil,
+        voiceQuality: VoiceAudioQuality? = nil
     ) {
         self.document = document
         self.suggestions = suggestions
@@ -34,6 +36,7 @@ public struct PipelineResult: Sendable {
         self.audioMixURL = audioMixURL
         self.aecAudioURL = aecAudioURL
         self.correctionJournalData = correctionJournalData
+        self.voiceQuality = voiceQuality
     }
 }
 
@@ -458,6 +461,29 @@ public final class PipelineRunner: @unchecked Sendable {
         try checkCancellation(checkCancel)
         onProgress?(PipelineProgressEvent(stage: .merge, completed: 0, total: 1))
 
+        let voiceQuality: VoiceAudioQuality?
+        do {
+            let qualitySources = try channels.map { channel in
+                let intervals = Self.voiceIntervals(channel.intervals, duration: channel.duration)
+                let fingerprint = channel.recognitionURL == channel.originalURL
+                    ? channel.sha256 : try streamingSHA(channel.recognitionURL)
+                return VoiceAudioQuality.Source(
+                    id: channel.id, recognitionAudioPath: channel.recognitionRelPath,
+                    fingerprint: fingerprint, duration: channel.duration,
+                    speech: channel.diarizationStatus == .completed ? intervals.speech : nil,
+                    overlap: intervals.overlap
+                )
+            }
+            let original = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0.sha256) })
+            voiceQuality = VoiceAudioQuality(resultID: resultID, producer: "nemotron-intervals-v1", sources: qualitySources,
+                                            recordingFingerprint: VoiceAudioQuality.recordingFingerprint(originalFingerprints: original))
+        } catch {
+            voiceQuality = nil
+            let warning = "Не удалось сформировать данные о речи: " + error.localizedDescription
+            additionalWarnings.append(.init(code: "voice_quality_warning", sourceID: nil, message: warning))
+            onProgress?(PipelineProgressEvent(stage: .warning, completed: 0, total: 1, warning: warning))
+        }
+
         let document = try Self.assembleDocument(
             channels: channels,
             resultID: resultID,
@@ -480,8 +506,38 @@ public final class PipelineRunner: @unchecked Sendable {
             remoteAudioURL: remoteURL,
             audioMixURL: finalMixURL,
             aecAudioURL: aecAudioURL,
-            correctionJournalData: journalData
+            correctionJournalData: journalData,
+            voiceQuality: voiceQuality
         )
+    }
+
+    static func voiceIntervals(
+        _ intervals: [DiarizationInterval], duration: Double
+    ) -> (speech: [VoiceAudioInterval], overlap: [VoiceAudioInterval]) {
+        let points = intervals.flatMap { interval -> [(time: Double, speaker: Int, delta: Int)] in
+            let start = max(0, interval.start)
+            let end = min(duration, interval.end)
+            guard interval.start.isFinite, interval.end.isFinite, end > start else { return [] }
+            return [(start, interval.speaker, 1), (end, interval.speaker, -1)]
+        }.sorted { $0.time < $1.time }
+        var speech: [VoiceAudioInterval] = []
+        var overlap: [VoiceAudioInterval] = []
+        var active: [Int: Int] = [:]
+        var previous = 0.0
+        func append(_ list: inout [VoiceAudioInterval], end: Double) {
+            let start = list.last?.end == previous ? list.removeLast().start : previous
+            list.append(.init(start: start, end: end))
+        }
+        for point in points {
+            if point.time > previous {
+                if !active.isEmpty { append(&speech, end: point.time) }
+                if active.count > 1 { append(&overlap, end: point.time) }
+            }
+            active[point.speaker, default: 0] += point.delta
+            if active[point.speaker] == 0 { active.removeValue(forKey: point.speaker) }
+            previous = point.time
+        }
+        return (speech, overlap)
     }
 
     static func assembleDocument(

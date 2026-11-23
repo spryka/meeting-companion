@@ -44,6 +44,21 @@ struct TranscriptPublisherTests {
         #expect(reopened.warnings.filter { $0.code == "context_warning" }.count == 1)
     }
 
+    @Test func publicationPreservesDistinctCalendarContactsWithIdenticalNames() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let saved = Data(#"{"summary":"Standup","attendees":["Анна","Анна"],"calendarParticipants":[{"displayName":"Анна","address":"one@example.invalid"},{"displayName":"Анна","address":"two@example.invalid"}]}"#.utf8)
+        try saved.write(to: root.appendingPathComponent("meeting.context.json"))
+        let result = try TranscriptPublisher(recordingDirectory: root).publish(
+            document: makeValidDocument(), audioMixData: Data([1]), recordingStem: "meeting")
+
+        let json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: result)) as? [String: Any])
+        let context = try #require(json["context"] as? [String: Any])
+        #expect(context["attendees"] as? [String] == ["Анна", "Анна"])
+        #expect((context["calendarParticipants"] as? [[String: String]])?.map { $0["address"] }
+            == ["one@example.invalid", "two@example.invalid"])
+    }
+
     private func temporaryDirectory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("publisher-test-\(UUID().uuidString)").appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

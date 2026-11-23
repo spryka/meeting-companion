@@ -7,6 +7,25 @@ func main() {
         exit(1)
     }
 
+    if CommandLine.arguments[1] == "--voice-catalogue", CommandLine.arguments.count == 3 {
+        let directory = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+        let repo = VoiceProfileCatalogueRepository(applicationDataDirectory: directory)
+        do {
+            _ = try repo.update(repo.load()) { _ in
+                print("ACQUIRED")
+                fflush(stdout)
+                while let line = readLine(), line != "RELEASE" {}
+            }
+            print("RELEASED")
+            fflush(stdout)
+            exit(0)
+        } catch {
+            print("ERROR: \(error)")
+            fflush(stdout)
+            exit(2)
+        }
+    }
+
     let recordingURL = URL(fileURLWithPath: CommandLine.arguments[1])
     let repo = TranscriptEditsRepository(recordingDirectory: recordingURL)
 

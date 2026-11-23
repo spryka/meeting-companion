@@ -13,11 +13,13 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
     let agenda: String
     let links: [String]
     let attendees: [String]
+    let calendarParticipants: [TranscriptDocument.CalendarParticipant]?
     let host = NSFullUserName()
     let timezone = TimeZone.current.identifier
 
     init(id: String, calendar: String, summary: String, start: Date, end: Date,
-         agenda: String = "", links: [String] = [], attendees: [String] = []) {
+         agenda: String = "", links: [String] = [], attendees: [String] = [],
+         calendarParticipants: [TranscriptDocument.CalendarParticipant]? = nil) {
         self.id = id
         self.calendar = calendar
         self.summary = summary
@@ -26,6 +28,7 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
         self.agenda = agenda
         self.links = links
         self.attendees = attendees
+        self.calendarParticipants = calendarParticipants
     }
 
     init(event: EKEvent) {
@@ -35,7 +38,12 @@ struct MeetingContext: Encodable, Identifiable, Hashable {
         start = event.startDate
         end = event.endDate
         agenda = event.notes ?? ""
-        attendees = (event.attendees ?? []).map { $0.name ?? $0.url.absoluteString }
+        let participants = event.attendees ?? []
+        attendees = participants.map { $0.name ?? $0.url.absoluteString }
+        let contacts = participants.compactMap {
+            TranscriptDocument.CalendarParticipant(displayName: $0.name, contactURL: $0.url)
+        }
+        calendarParticipants = contacts.isEmpty ? nil : contacts
         links = Self.links(in: [event.url?.absoluteString, event.location, event.notes].compactMap { $0 }.joined(separator: "\n"))
     }
 

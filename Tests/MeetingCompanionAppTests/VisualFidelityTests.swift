@@ -19,11 +19,15 @@ private final class SyntheticAudioCapture: AudioCaptureControllerProtocol, @unch
     func currentMicrophoneState() -> MicrophoneRecordingState { .receiving }
 }
 
-private struct SyntheticRunner: TranscriptionRunnerProtocol {
+private struct SyntheticRunner: TranscriptionRunnerProtocol, VoiceEmbeddingRunnerProtocol {
     func checkDependenciesWithOutput(prepare: Bool, availability: Bool, parakeet: Bool,
         onOutput: (@Sendable (String) -> Void)?) async throws -> (output: String, succeeded: Bool) { ("synthetic", true) }
     func run(recording: URL, parakeet: Bool, echoCancellation: Bool,
         onProgress: (@Sendable (TranscriptionProgress) -> Void)?) async throws -> URL { recording.appendingPathExtension("txt") }
+    func checkOrPrepareVoiceModel(prepare: Bool) async throws {}
+    func extractVoiceEmbeddings(_ request: VoiceEmbeddingProtocol.Request, recordingDirectory: URL) async throws -> VoiceEmbeddingProtocol.Response {
+        throw ProcessingService.VoiceJobError.unavailable
+    }
 }
 
 private struct SyntheticExporter: AudioExporterProtocol {
@@ -48,6 +52,252 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
 }
 
 @Suite @MainActor final class VisualFidelityTests {
+    @Test func voiceIdentityNativeReferenceStates() async throws {
+        guard let destination = ProcessInfo.processInfo.environment["VOICE_VISUAL_ROOT"] else { return }
+        let output = URL(fileURLWithPath: destination)
+        let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf:
+            output.appendingPathComponent("voice-reference-fixture.json"))) as! [String: Any]
+        let records = fixture["records"] as! [[String: Any]]
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("voice-visual-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "voice-visual-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        defaults.set(true, forKey: "localVoiceIdentityEnabled")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repo = RecordingHistoryRepository()
+        var playbackDuration: Double = 1865
+        let appData = root.appendingPathComponent("appData")
+        let learning = VoiceLearningCoordinator(catalogue: VoiceProfileCatalogueRepository(applicationDataDirectory: appData))
+        let manager = TranscriptReviewWindowManager(learningCommitObserver: learning.observe,
+            transportFactory: { NativeFixtureTransport(duration: playbackDuration) })
+        let runner = SyntheticRunner()
+        let processing = ProcessingService(transcriptionRunner: runner, audioExporter: SyntheticExporter(), historyRepository: repo, voiceRunner: runner)
+        let app = RecorderViewModel(processingService: processing, historyRepository: repo, workspace: manager, voiceLearning: learning,
+            voiceMatchPolicy: VoiceMatchPolicy(threshold: 0.9, margin: 0.1, calendarBonus: 0, maximumAcousticGap: 0),
+            defaults: defaults, appDataDirectory: appData, startBackgroundServices: false,
+            microphoneProvider: { [] }, accessProvider: { [] }, calendarCatalogProvider: { [] })
+        let people = fixture["people"] as! [[String: Any]]
+        let identities = Dictionary(uniqueKeysWithValues: people.map { item -> (String, VoiceProfilePerson) in
+            let details = item["details"] as! [String]
+            return (item["id"] as! String, .init(displayName: item["name"] as! String,
+                calendarBindings: details.filter { $0.contains("@") }))
+        })
+        var urls: [String: URL] = [:]
+        let documentFixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/valid_parakeet_off.json")
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let signal = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 192_000))
+        signal.frameLength = signal.frameCapacity
+        let audio = try #require(signal.floatChannelData?[0])
+        for frame in 0..<Int(signal.frameLength) {
+            let t = Double(frame) / format.sampleRate
+            audio[frame] = Float(0.15 * sin(2 * .pi * 160 * t) * (0.5 + 0.4 * sin(2 * .pi * 3.7 * t)))
+        }
+        for record in records {
+            let id = record["id"] as! String
+            let title = record["title"] as! String
+            let stem = "meeting_" + id
+            let directory = root.appendingPathComponent(stem)
+            let result = directory.appendingPathComponent("raw/transcripts/v1")
+            try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
+            let recording = directory.appendingPathComponent(stem + ".m4a")
+            try Data("synthetic".utf8).write(to: recording)
+            urls[id] = recording
+            let rows = record["rows"] as! [[String: Any]]
+            if !rows.isEmpty {
+                var document = try JSONSerialization.jsonObject(with: Data(contentsOf: documentFixture)) as! [String: Any]
+                document["resultID"] = "v1"
+                document["context"] = ["title": title, "attendees": ["Илья Соколов", "Мария Орлова", "Денис Ветров"]]
+                let voices = Set(rows.map { $0["s"] as! Int }).sorted()
+                let microphoneVoices = Set(voices.filter { voice in
+                    rows.first { ($0["s"] as! Int) == voice }?["source"] as? String == "mic" || (id == "weekly" && voice == 0)
+                })
+                let microphoneOrder = voices.filter(microphoneVoices.contains)
+                let remoteOrder = voices.filter { !microphoneVoices.contains($0) }
+                document["speakers"] = voices.map { voice -> [String: Any] in
+                    if let host = microphoneOrder.firstIndex(of: voice) {
+                        return ["id": "s\(voice)", "sourceID": "host", "localID": host + 1, "displayNumber": host + 1]
+                    }
+                    let remote = remoteOrder.firstIndex(of: voice)! + 1
+                    return ["id": "s\(voice)", "sourceID": "remote", "localID": remote, "displayNumber": microphoneOrder.count + remote]
+                }
+                let words = rows.enumerated().map { index, row -> [String: Any] in
+                    let start = row["t"] as! Double
+                    return ["id": "w\(index)", "speakerID": "s" + String(row["s"] as! Int),
+                            "start": start, "end": start + 5, "text": row["text"] as! String]
+                }
+                document["words"] = words
+                document["baselineWords"] = words
+                document["turns"] = words.enumerated().map { index, word -> [String: Any] in
+                    ["id": "t\(index)", "speakerID": word["speakerID"]!, "start": word["start"]!,
+                     "end": word["end"]!, "wordIDs": [word["id"]!]]
+                }
+                document["playback"] = ["status": "ready", "mixPath": "raw/transcripts/v1/mix.wav"]
+                let mix = try AVAudioFile(forWriting: result.appendingPathComponent("mix.wav"), settings: format.settings)
+                try mix.write(from: signal)
+                let resultFile = result.appendingPathComponent("result.json")
+                try JSONSerialization.data(withJSONObject: document).write(to: resultFile)
+                _ = try TranscriptDocument.load(from: resultFile, recordingDirectory: directory)
+                let writer = TranscriptEditsRepository(recordingDirectory: directory)
+                var overrides: [String: TranscriptTurnOverride] = [:]
+                for (index, row) in rows.enumerated() {
+                    if id == "voice-demo", row["speakerName"] == nil {
+                        let refusal: TranscriptVoiceRefusal = row["voiceCase"] as? String == "overlap" ? .overlap : .ambiguous
+                        overrides["t\(index)"] = .init(voiceRefusal: refusal)
+                        continue
+                    }
+                    guard let name = row["speakerName"] as? String, let key = row["identity"] as? String,
+                          let person = identities[key] else { continue }
+                    overrides["t\(index)"] = .init(text: nil, displayName: name, assignment: .init(
+                        personID: person.id, origin: row["nameOrigin"] as? String == "manual" ? "manual" : "automaticVoiceMatch"))
+                }
+                if !overrides.isEmpty { _ = try writer.saveEdits(resultID: "v1", overrides: overrides) }
+            }
+        }
+        await app.history.refresh(root: root)
+        for (index, record) in records.enumerated() {
+            let id = record["id"] as! String
+            let recording = try #require(urls[id])
+            let calendar = Calendar.current
+            let time = (record["time"] as? String ?? "12:00").split(separator: ":").compactMap { Int($0) }
+            let offset = [0, 0, 0, -1, -2, -2, -2, -3][index]
+            let day = try #require(calendar.date(byAdding: .day, value: offset, to: Date()))
+            let date = try #require(calendar.date(bySettingHour: time[0], minute: time[1], second: 0, of: day))
+            var entry = RecordingEntry(recording: recording, date: date,
+                                       title: record["title"] as! String, phase: record["status"] as? String == "failed" ? .failed : .completed)
+            entry.duration = record["duration"] as? Double
+            repo.put(entry, persist: false)
+        }
+        let catalogue = app.voiceLearning.catalogue
+        _ = try catalogue.update(catalogue.load()) { value in
+            value.people = people.compactMap { identities[$0["id"] as! String] }
+            for item in people where (item["details"] as? [String])?.last == "Готов" {
+                let person = try #require(identities[item["id"] as! String])
+                let vector = [Float(1)] + Array(repeating: 0, count: 255)
+                let sample = VoiceProfileSample(personID: person.id, embeddingSpaceID: VoiceEmbeddingProtocol.embeddingSpaceID,
+                    embedding: vector, recordingLocator: root.path, resultID: "fixture", turnID: "t0", sourceID: .host,
+                    start: 0, end: 5, pcmFingerprint: "fixture", assignment: .init(personID: person.id, origin: "manual"), policyID: "fixture")
+                value.samples.append(sample)
+                value.aggregates.append(.init(personID: person.id, embeddingSpaceID: sample.embeddingSpaceID,
+                    centroid: vector, activeSampleIDs: [sample.id], policyID: "fixture"))
+            }
+        }
+        await app.history.synchronize()
+        app.mainPage = .history
+        app.workspaceShowsList = false
+
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
+        NSApp.finishLaunching()
+        let window = WorkspaceWindow(model: app)
+        window.isReleasedWhenClosed = false
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        let host = NSHostingView(rootView: RecorderWorkspaceView(model: app, showSettings: { _ = app.presentSettings() })
+            .defaultAppStorage(defaults))
+        window.contentView = host
+        defer { window.orderOut(nil); window.close() }
+        func snapshot(_ name: String, width: Int = 1440, height: Int = 1040, dark: Bool = false) async throws {
+            let appearance = try #require(NSAppearance(named: dark ? .darkAqua : .aqua))
+            window.appearance = appearance
+            host.appearance = appearance
+            window.setContentSize(NSSize(width: width, height: height))
+            window.orderFront(nil)
+            try await Task.sleep(for: .milliseconds(300))
+            host.layoutSubtreeIfNeeded()
+            try #require(app.history.entries.count == records.count)
+            try #require(manager.current?.state.id == app.selectedHistoryURL)
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width * 2, pixelsHigh: height * 2,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0))
+            bitmap.size = NSSize(width: width, height: height)
+            let frame = window.contentView?.superview ?? host
+            frame.displayIfNeeded()
+            let capture = frame.bounds.size == bitmap.size ? frame : host
+            capture.cacheDisplay(in: capture.bounds, to: bitmap)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(name + ".png"))
+        }
+        for id in ["weekly", "voice-demo"] {
+            let url = try #require(urls[id])
+            playbackDuration = id == "weekly" ? 1865 : 1500
+            let editor = try await manager.open(recordingURL: url, title: id == "weekly" ? "Weekly tech sync" : "Обсуждение продукта")
+            app.selectedHistoryURL = url
+            editor.openVoiceReview(anchorTurnID: id == "weekly" ? "t0" : "t6")
+            editor.setVoiceScope(.group)
+            editor.setUnrecognizedVoiceFilter(true)
+            #expect(editor.visibleVoiceGroups.count == 2)
+            #expect(editor.selectedVoice?.originalName == (id == "weekly" ? "Speaker 1" : "Speaker 4"))
+            if id == "voice-demo" {
+                #expect(editor.rows.first(where: { $0.id == "t6" })?.voiceRefusal == .ambiguous)
+                #expect(editor.rows.contains { $0.nameOriginLabel == "Автоимя" })
+                #expect(editor.savedMeetingNames == ["Илья Соколов"])
+            }
+            if id == "weekly" {
+                try await snapshot("native-editor-light")
+            } else {
+                try await snapshot("native-filter-light")
+                try await snapshot("native-filter-dark", dark: true)
+                try await snapshot("native-filter-narrow", width: 390, height: 550, dark: true)
+                editor.setUnrecognizedVoiceFilter(false)
+                try await snapshot("native-filter-all-light")
+                editor.returnToTranscript()
+                #expect(app.presentSettings())
+                app.settingsPage = .voices
+                try await snapshot("native-settings-light")
+                app.dismissSettings()
+
+                editor.openVoiceReview(anchorTurnID: "t6")
+                editor.updateVoiceName("Проверка черновика")
+                editor.returnToTranscript()
+                try #require(editor.hasParkedVoiceInput)
+                try await snapshot("native-parked-voice-draft")
+                editor.openVoiceReview()
+                try #require(editor.voiceDraft?.inputName == "Проверка черновика")
+                editor.cancelVoiceInput()
+
+                editor.voiceIdentityActions = .init(
+                    people: { [] }, selectPerson: { _, _ in .asEntered }, confirmCalendarBinding: { _, _, _ in },
+                    isEnabled: { true }, learningFailure: { _ in "Каталог недоступен." }
+                )
+                editor.openVoiceReview()
+                editor.setUnrecognizedVoiceFilter(true)
+                for name in ["Мария Орлова", "Олег"] {
+                    editor.updateVoiceName(name)
+                    try #require(editor.canConfirmVoice)
+                    editor.confirmVoiceAssignment(try #require(editor.voiceDraft))
+                }
+                try #require(editor.voiceReviewComplete && editor.voiceLearningNotice == "Каталог недоступен.")
+                try await snapshot("native-complete-learning-error")
+
+                manager.closeCurrent()
+                let reopened = try await manager.open(recordingURL: url, title: "Обсуждение продукта")
+                let automatic = try #require(reopened.rows.first { $0.nameOriginLabel == "Автоимя" })
+                reopened.openVoiceReview(anchorTurnID: automatic.id)
+                #expect(!reopened.canConfirmSavedVoiceName)
+                let saved = try #require(reopened.rows.first { $0.name == "Олег" && $0.personID == nil })
+                reopened.openVoiceReview(anchorTurnID: saved.id)
+                try #require(reopened.canConfirmSavedVoiceName)
+                try await snapshot("native-confirm-saved-name")
+                reopened.confirmVoiceAssignment(try #require(reopened.voiceDraft), confirmSavedName: true)
+                try #require(reopened.voiceLearningConfirmedTurnID == saved.id)
+                try #require(reopened.selectedVoice?.title == "Олег" && !reopened.canConfirmVoice)
+                try await snapshot("native-confirmed-saved-name", dark: true)
+                // Click the blank space well to the right of the title and chevron.
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    let click = try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: 800, y: 606),
+                        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                    window.sendEvent(click)
+                }
+                try await snapshot("native-confirmed-saved-name-expanded", dark: true)
+            }
+        }
+    }
+
     @Test func speakerSegmentStopsRealMutedAVPlayer() async throws {
         let fixture = try SpeakerReviewFixture()
         defer { fixture.close() }
@@ -183,9 +433,8 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         editor.cancelVoiceInput()
         editor.returnToTranscript()
         editor.openVoiceReview()
-        for _ in 0..<7 { editor.skipVoice() }
-        #expect(editor.voiceReviewComplete)
-        try await capture("completion", width: 1440)
+        editor.setUnrecognizedVoiceFilter(true)
+        try await capture("unrecognized-filter", width: 1440)
         editor.selectVoice(try #require(editor.selectedVoiceID))
         #expect(editor.requestVoiceList())
         editor.updateVoiceName("Имя после списка")

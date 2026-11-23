@@ -138,16 +138,17 @@ import Testing
             text: "Правка версии А",
             displayName: "Алиса Обновлённая"
         )
-        #expect(savedA.schemaVersion == 1)
+        #expect(savedA.schemaVersion == 2)
         #expect(savedA.resultID == resultIDA)
         #expect(savedA.revision == 2)
-        #expect(savedA.overrides == expectedPendingOverridesA)
+        #expect(savedA.overrides.mapValues { TranscriptTurnOverride(text: $0.text, displayName: $0.displayName) } == expectedPendingOverridesA)
+        #expect(savedA.overrides["turn_1"]?.assignment?.origin == "manual")
 
         // Verify disk contains FULL pending overrides and revision 2 BEFORE undo
         let diskSavedAData = try Data(contentsOf: editsAFile)
         let diskSavedA = try JSONDecoder().decode(TranscriptEdits.self, from: diskSavedAData)
         #expect(diskSavedA.revision == 2)
-        #expect(diskSavedA.overrides == expectedPendingOverridesA)
+        #expect(diskSavedA.overrides == savedA.overrides)
 
         // Post-save undo availability in original repository session
         #expect(repo.canUndo(resultID: resultIDA))
@@ -158,7 +159,7 @@ import Testing
         let repo2 = TranscriptEditsRepository(recordingDirectory: root)
         let loadedAInRepo2 = try repo2.loadEdits(resultID: resultIDA)
         #expect(loadedAInRepo2.revision == 2)
-        #expect(loadedAInRepo2.overrides == expectedPendingOverridesA)
+        #expect(loadedAInRepo2.overrides == savedA.overrides)
         #expect(!repo2.canUndo(resultID: resultIDA))
 
         let editsABytesBeforeDeniedUndo = try Data(contentsOf: editsAFile)
@@ -180,7 +181,7 @@ import Testing
         // Undo the save operation for version A in original session:
         // Must restore previous state as a NEW revision 3 matching initialEditsA.overrides
         let undoneA = try repo.undo(resultID: resultIDA)
-        #expect(undoneA.schemaVersion == 1)
+        #expect(undoneA.schemaVersion == 2)
         #expect(undoneA.resultID == resultIDA)
         #expect(undoneA.revision == 3)
         #expect(undoneA.overrides == initialEditsA.overrides)
@@ -250,14 +251,14 @@ import Testing
         // Batch override save modifying multiple turns as one operation
         // In RED skeleton, saveEdits throws .notImplemented as prerequisite failure
         let expectedPendingBatchA: [String: TranscriptTurnOverride] = [
-            "turn_1": TranscriptTurnOverride(text: "Групповой текст 1", displayName: "Группа А"),
-            "turn_2": TranscriptTurnOverride(text: "Групповой текст 2", displayName: "Группа А")
+            "turn_1": TranscriptTurnOverride(text: "Групповой текст 1", displayName: "Группа А", assignment: .init(personID: nil, origin: "manual")),
+            "turn_2": TranscriptTurnOverride(text: "Групповой текст 2", displayName: "Группа А", assignment: .init(personID: nil, origin: "manual"))
         ]
         let savedA = try repo.saveEdits(
             resultID: resultIDA,
             overrides: expectedPendingBatchA
         )
-        #expect(savedA.schemaVersion == 1)
+        #expect(savedA.schemaVersion == 2)
         #expect(savedA.resultID == resultIDA)
         #expect(savedA.revision == 2)
         #expect(savedA.overrides == expectedPendingBatchA)
@@ -272,7 +273,7 @@ import Testing
 
         // Undo the batch operation: atomically reverts all turn targets in a single undo step
         let undoneA = try repo.undo(resultID: resultIDA)
-        #expect(undoneA.schemaVersion == 1)
+        #expect(undoneA.schemaVersion == 2)
         #expect(undoneA.resultID == resultIDA)
         #expect(undoneA.revision == 3)
         #expect(undoneA.overrides == initialEditsA.overrides)
