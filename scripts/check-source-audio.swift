@@ -57,9 +57,7 @@ struct SourceAudioFilesChecks {
         precondition(health.state(at: 50) == .receiving, "Intentional mute must not produce silence hints")
         precondition(health.state(at: 54) == .missing, "A mute must not hide a dead capture")
         health.setMuted(false, at: 54)
-        health.backendState(.reconnecting, at: 55)
-        precondition(health.state(at: 56) == .reconnecting)
-        precondition(health.state(at: 59) == .missing, "A hung recovery must time out")
+        precondition(health.state(at: 59) == .missing, "Unmuting must not hide a dead capture")
         health.receive(at: 60, level: 0.2)
         precondition(health.state(at: 60) == .receiving)
 

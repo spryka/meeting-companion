@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import SwiftUI
 import AppKit
 import Testing
@@ -10,13 +11,17 @@ import AVFoundation
 
 private final class SyntheticAudioCapture: AudioCaptureControllerProtocol, @unchecked Sendable {
     let outputURL: URL
-    init(outputURL: URL) { self.outputURL = outputURL }
+    private let microphoneState: @Sendable () -> MicrophoneRecordingState
+    init(outputURL: URL, microphoneState: @escaping @Sendable () -> MicrophoneRecordingState = { .receiving }) {
+        self.outputURL = outputURL
+        self.microphoneState = microphoneState
+    }
     func startCapture() async throws {}
     func stopCapture() async throws -> AudioCaptureStopResult {
         .init(duration: 0, outputURL: outputURL)
     }
     func setMicrophoneMuted(_ muted: Bool) {}
-    func currentMicrophoneState() -> MicrophoneRecordingState { .receiving }
+    func currentMicrophoneState() -> MicrophoneRecordingState { microphoneState() }
 }
 
 private struct SyntheticRunner: TranscriptionRunnerProtocol, VoiceEmbeddingRunnerProtocol {
@@ -524,9 +529,10 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name + "-accessibility.json"))
             try JSONSerialization.data(withJSONObject: ["bounds": NSStringFromRect(host.bounds), "pixels": [bitmap.pixelsWide, bitmap.pixelsHigh], "scale": host.window?.backingScaleFactor ?? 1], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name + "-geometry.json"))
         }
-        for (aec, parakeet) in [(false, false), (true, false), (false, true), (true, true)] {
-            let optional = aec && parakeet
-            let count = 4 + (aec ? 1 : 0) + (parakeet ? 1 : 0)
+        for (aec, parakeet, voices) in [(false, false, false), (true, false, false),
+                                        (false, true, false), (true, true, false), (true, true, true)] {
+            let optional = aec && parakeet && !voices
+            let count = 4 + (aec ? 1 : 0) + (parakeet ? 1 : 0) + (voices ? 1 : 0)
             let variant = "\(count)-aec\(aec)-parakeet\(parakeet)"
             let folder = root.appendingPathComponent(variant)
             try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
@@ -544,7 +550,10 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             let service = ProcessingService(transcriptionRunner: runner, audioExporter: SyntheticExporter(), historyRepository: repo)
             let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
             try await settle { model.isAttached }
-            _ = await service.enqueue(recordingURL: url, settings: .init(parakeet: parakeet, echoCancellation: aec))
+            _ = await service.enqueue(recordingURL: url, settings: .init(
+                parakeet: parakeet, echoCancellation: aec,
+                voiceMatchPolicy: voices ? RecorderViewModel.defaultVoiceMatchPolicy : nil
+            ))
             for _ in 0..<500 { if await runner.waiting { break }; try await Task.sleep(for: .milliseconds(5)) }
             if aec { await runner.emit(.init(stage: .echo, channel: "host", completed: 0, total: 0, state: .completed)) }
             for source in ["host", "remote"] {
@@ -555,6 +564,11 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             try await settle { model.capsuleProgress?.local?.completed == 96 }
             #expect(model.capsuleProgress?.route.count == count)
             #expect(model.capsuleProgress?.route.map(\.rawValue).contains("vad") == false)
+            if voices {
+                await runner.emit(.init(stage: .voices, completed: 0, total: 0, state: .started))
+                try await settle { model.capsuleProgress?.current == .voices }
+                #expect(model.capsuleProgress?.countText == "Этап 7 из 7")
+            }
             model.showProcessingDetails()
             let controller = RecordingCapsuleController(model: model, defaults: defaults)
             let panel = try #require(controller.panel)
@@ -614,6 +628,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                         window.contentView = host
                         window.setContentSize(NSSize(width: width, height: 850)); window.orderFront(nil)
                         try await Task.sleep(for: .milliseconds(100))
+                        host.setFrameSize(NSSize(width: width, height: 850))
                         try capture(host, "details-\(Int(width))-" + name)
                         window.orderOut(nil); window.contentView = nil; window.close()
                     }
@@ -625,6 +640,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                         window.setContentSize(NSSize(width: 1392, height: 900)); window.orderFront(nil)
                         try await Task.sleep(for: .milliseconds(150))
                         #expect(model.selectedHistoryURL == url)
+                        host.setFrameSize(NSSize(width: 1392, height: 900))
                         try capture(host, "workspace-" + name)
                         window.orderOut(nil); window.contentView = nil; window.close()
                     }
@@ -703,6 +719,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         let output = URL(fileURLWithPath: destination)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let fixtureRoot = output.appendingPathComponent("fixture")
+        let microphoneState = Mutex(MicrophoneRecordingState.receiving)
         let recording = fixtureRoot.appendingPathComponent("meeting")
         let result = recording.appendingPathComponent("raw/transcripts/res_valid_parakeet_off")
         try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
@@ -747,7 +764,9 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         let session = RecordingSessionService(historyRepo: repo)
         let model = isolatedRecorderModel(sessionService: session, processingService: processing, historyRepository: repo, workspace: manager,
             defaults: defaults, appDataDirectory: fixtureRoot.appendingPathComponent("appData"), startBackgroundServices: false,
-            captureControllerFactory: { url, _, _ in SyntheticAudioCapture(outputURL: url) },
+            captureControllerFactory: { url, _, _ in
+                SyntheticAudioCapture(outputURL: url, microphoneState: { microphoneState.withLock { $0 } })
+            },
             shortRecordingTrash: { _ in }, audioLevelMonitorFactory: { _, _, _ in SyntheticLevels() })
         await model.history.refresh(root: fixtureRoot)
         var entry = RecordingEntry.load(recording: url)
@@ -798,6 +817,12 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(100))
             host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
             window.setContentSize(host.frame.size)
+            try await capture(host, in: window, name: name, width: width, height: height, dark: dark, press: press)
+            window.orderOut(nil); window.contentView = nil; window.close()
+        }
+
+        func capture(_ host: NSView, in window: NSWindow, name: String, width: CGFloat, height: CGFloat,
+                     dark: Bool, press: String?) async throws {
             guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw NSError(domain: "NativeHostBitmapUnavailable", code: 1) }
             host.cacheDisplay(in: host.bounds, to: bitmap)
             let data = try #require(bitmap.representation(using: .png, properties: [:]))
@@ -818,7 +843,6 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                                "displayScale": window.backingScaleFactor, "theme": dark ? "dark" : "light", "fixture": "product-8-turns-short-pcm-synthetic-transport",
                                "bundle": Bundle.main.bundleURL.path, "executable": ProcessInfo.processInfo.arguments[0],
                                "time": ISO8601DateFormatter().string(from: Date())])
-            window.orderOut(nil); window.contentView = nil; window.close()
         }
         for width in [1392.0,1024,1023,768,767,480] {
             try await render(RecorderWorkspaceView(model: model, showSettings: {}), "workspace-\(Int(width))", width, width == 1392 ? 992 : 800)
@@ -857,32 +881,62 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         let historyView = RecordingHistoryView(model: model, history: model.history, workspace: manager, showSettings: {})
         try await render(historyView.renameSheet(entry), "rename", 480, 360)
         for _ in 0..<100 where !model.isAttached { try await Task.sleep(for: .milliseconds(2)) }
-        #expect(await model.startRecordingIntent(customTitle: "Продукт–тех синк"))
+        #expect(await model.startRecordingIntent(customTitle: "Очень длинное название синтетической встречи для проверки компактной капсулы"))
         let captureURL = try #require(model.lastFileURL)
         for _ in 0..<100 where !model.isRecording { try await Task.sleep(for: .milliseconds(2)) }
+        let capsule = RecordingCapsuleController(model: model, defaults: defaults)
+        defer { capsule.hideCapsule() }
+        func renderCapsule(_ name: String, dark: Bool = false, press: String? = nil) async throws {
+            let panel = try #require(capsule.panel)
+            panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            capsule.showCapsule()
+            try await Task.sleep(for: .milliseconds(150))
+            let host = try #require(panel.contentView)
+            let size = AppWindowState.recordingCapsuleSize
+            let height = model.showsOvertimeReminder ? AppWindowState.overtimeCapsuleHeight : size.height
+            #expect(host.bounds.size == NSSize(width: size.width, height: height))
+            host.layoutSubtreeIfNeeded()
+            host.displayIfNeeded()
+            try await capture(host, in: panel, name: name, width: size.width, height: height, dark: dark, press: press)
+        }
         model.elapsed = 8*3600
         #expect(model.showsOvertimeReminder)
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-8h", 580, 64)
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-overtime", 580, 64)
+        try await renderCapsule("capsule-8h")
+        try await renderCapsule("capsule-overtime")
         model.elapsed = 125
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-recording", 580, 64)
-        model.toggleMicrophoneMute(sessionID: model.activeSessionID)
-        for _ in 0..<100 where !model.microphoneMuted { try await Task.sleep(for: .milliseconds(2)) }
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-muted", 580, 64)
+        try await renderCapsule("capsule-recording")
+        try await renderCapsule("capsule-recording-dark", dark: true)
+        func setMicMuted(_ muted: Bool) async throws {
+            model.toggleMicrophoneMute(sessionID: model.activeSessionID)
+            for _ in 0..<100 where model.microphoneMuted != muted { try await Task.sleep(for: .milliseconds(2)) }
+            try #require(model.microphoneMuted == muted)
+        }
+        try await setMicMuted(true)
+        try await renderCapsule("capsule-muted")
+        model.elapsed = 72 * 60
+        microphoneState.withLock { $0 = .silent }
+        try await setMicMuted(false)
+        #expect(model.microphoneState == .silent)
+        try await renderCapsule("capsule-mic-silent")
+        try await setMicMuted(true)
+        microphoneState.withLock { $0 = .missing }
+        try await setMicMuted(false)
+        #expect(model.microphoneState == .missing)
+        try await renderCapsule("capsule-mic-missing-dark", dark: true)
         _ = try await session.stop(elapsed: 15, expectedSessionID: model.activeSessionID)
         for _ in 0..<100 where model.isRecording || model.sessionStopping { try await Task.sleep(for: .milliseconds(2)) }
         var captured = RecordingEntry(recording: captureURL, date: Date(), title: "Продукт–тех синк", phase: .processing)
         repo.put(captured, persist: false); await model.history.synchronize()
         model.history.progress[captureURL] = TranscriptionProgress(stage: .gigaam, completed: 1, total: 3, step: 2, steps: 3)
         model.syncProcessingPresentation(captureURL)
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-processing", 560, 64)
+        try await renderCapsule("capsule-processing")
         captured.phase = .completed
         repo.put(captured, persist: false); await model.history.synchronize()
         model.syncProcessingPresentation(captureURL)
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-done", 560, 64)
+        try await renderCapsule("capsule-done")
         model.recordingSaveError = "Синтетическая ошибка сохранения. Исходные файлы доступны для восстановления; это тест полного длинного сообщения."
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-terminal", 580, 64)
-        try await render(RecordingCapsuleHostView(viewModel: model), "capsule-terminal-close", 580, 64, press: "Закрыть")
+        try await renderCapsule("capsule-terminal")
+        try await renderCapsule("capsule-terminal-close", press: "Закрыть")
         actions.append(["action": "terminal-close-result", "hidden": !model.showsRecordingCapsule, "errorRetained": model.recordingSaveError != nil])
         model.dismissCapsule()
 
@@ -1074,7 +1128,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
         let offscreen = NSRect(x: 1000, y: -80, width: size.width, height: size.height)
         let restored = AppWindowState.visibleCapsuleFrame(offscreen, screens: [screen])
         #expect(screen.contains(restored) && restored.size == size)
-        #expect(size.height == 64)
+        #expect(size == NSSize(width: 344, height: 64))
         let secondary = NSRect(x: -1920, y: 0, width: 1920, height: 1080)
         let external = NSRect(x: -1600, y: 600, width: size.width, height: size.height)
         #expect(AppWindowState.visibleCapsuleFrame(external, screens: [screen, secondary]) == external)
@@ -1089,7 +1143,8 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
     // MARK: - Row 15: Capsule Processing & Completion
     @Test func capsuleProcessingGeometry() {
         let overtimeHeight = AppWindowState.overtimeCapsuleHeight
-        #expect(overtimeHeight == 64)
+        #expect(overtimeHeight > AppWindowState.recordingCapsuleSize.height)
+        #expect(AppWindowState.processingCapsuleSize == AppWindowState.recordingCapsuleSize)
     }
 
     // MARK: - Row 16: Narrow Window

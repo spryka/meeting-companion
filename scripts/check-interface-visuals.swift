@@ -12,15 +12,7 @@ struct InvariantCheck {
 
 var checks: [InvariantCheck] = []
 
-// 1. Check Capsule Dimensions
-let capsuleWidth = 580.0
-let capsuleHeight = 64.0
-let capsulePassed = (capsuleWidth == 580.0 && capsuleHeight == 64.0)
-checks.append(InvariantCheck(
-    name: "Capsule Dimensions",
-    passed: capsulePassed,
-    detail: "\(capsuleWidth)x\(capsuleHeight) horizontal capsule"
-))
+// VisualFidelityTests checks capsule geometry against the production panel.
 
 // 2. Check Sidebar Width & Document Max Width
 let sidebarWidth = 304.0

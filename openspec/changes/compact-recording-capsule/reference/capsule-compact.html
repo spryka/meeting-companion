@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
+<title>Компактная капсула записи</title>
+<style>
+:root{color-scheme:light dark;--canvas:#e5e9ee;--surface:#fff;--ink:#202630;--muted:#626b79;--line:#e3e7ed;--hover:#e6ebf2;--accent:#1762cf;--selected:#e0ebfc;--red:#b82d3d;--red-bg:#fbecef;--warning:#855309;--warning-bg:#fff6e5;--shadow:0 16px 48px #24344a16,0 2px 8px #24344a0a;--font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif}
+@media(prefers-color-scheme:dark){:root{--canvas:#101319;--surface:#20242b;--ink:#f0f2f6;--muted:#a4adbc;--line:#353c47;--hover:#303844;--accent:#8ab9ff;--selected:#233c5c;--red:#ff9aa8;--red-bg:#42262e;--warning:#f0c478;--warning-bg:#3b3120;--shadow:0 16px 48px #0005,0 2px 8px #0003}}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;min-width:280px;min-height:100dvh;padding:24px 16px;background:var(--canvas);color:var(--ink);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased;display:grid;grid-template-rows:1fr auto}button,select{font:inherit;color:inherit}button{cursor:pointer;border:0}button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}p,h1,h2{margin:0}.preview{display:grid;place-content:center;justify-items:center;gap:18px;min-width:0;padding:24px 0 56px}.preview-label{font-size:11px;color:var(--muted);letter-spacing:.02em}.capsule{width:min(340px,calc(100vw - 32px));min-height:60px;padding:9px 10px;display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:var(--shadow)}.record-signal{width:6px;height:6px;flex:none;background:var(--red);border-radius:50%}.elapsed{font-size:17px;line-height:22px;font-weight:600;letter-spacing:-.35px;white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}.record-copy{display:flex;align-items:baseline;gap:8px;flex:1;min-width:0}.meeting-copy{flex:1;min-width:0}.meeting-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;font-weight:550}.mute-copy{font-size:10px;line-height:14px;color:var(--warning);white-space:nowrap}.controls{display:flex;align-items:center;gap:4px;flex:none}.icon-button{width:40px;height:40px;padding:10px;border-radius:12px;display:grid;place-items:center;flex:none;background:transparent}.icon-button:hover{background:var(--hover)}.icon-button[aria-pressed="true"]{background:var(--warning-bg);color:var(--warning)}.icon-button.stop{color:var(--red);background:var(--red-bg)}.icon-button.stop:hover{background:var(--red);color:var(--surface)}svg{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}.stop svg{fill:currentColor;stroke:none}.processing-symbol{width:26px;flex:none;display:grid;place-items:center;color:var(--accent)}.process-copy{flex:1;min-width:0}.process-copy .meeting-name{font-size:13px}.stage{font-size:11px;line-height:17px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.details-button{flex:none;min-height:40px;padding:8px;border-radius:10px;background:transparent;color:var(--accent);font-size:12px;font-weight:550}.details-button:hover{background:var(--hover)}.demo-controls{width:min(420px,100%);margin:0 auto 12px;display:grid;gap:14px;justify-items:center}.tabs{display:flex;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.tabs button{font-size:12px;min-height:34px;padding:7px 16px;border-radius:7px;background:transparent;color:var(--muted)}.tabs button[aria-pressed="true"]{background:var(--selected);color:var(--accent)}.demo-row{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:11px;color:var(--muted)}select{background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12px;max-width:100%}.demo-toggle{background:transparent;border:1px solid var(--line);border-radius:7px;padding:7px 10px;font-size:11px;min-height:32px}.demo-toggle[aria-pressed="true"]{background:var(--selected);color:var(--accent)}.demo-note{font-size:11px;text-align:center;color:var(--muted);max-width:350px}.demo-link{color:var(--muted);text-underline-offset:3px}.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}dialog{color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;width:min(360px,calc(100vw - 32px));box-shadow:var(--shadow)}dialog::backdrop{background:#10172266}dialog h2{font-size:20px;line-height:1.3}dialog p{font-size:13px;color:var(--muted);margin-top:12px}dialog .details-button{display:block;margin:20px 0 0 auto}dialog .stage-detail{color:var(--ink);font-weight:550}
+@media(max-width:480px){.icon-button{width:44px;height:44px}.capsule{min-height:64px;padding:9px 8px;gap:6px}.elapsed{font-size:16px}.details-button{min-height:44px}.demo-controls{margin-bottom:0}.preview{padding-bottom:32px}.demo-row select,.tabs button,.demo-toggle{min-height:40px}}
+</style>
+</head>
+<body>
+<main class="preview" aria-label="Макет компактной капсулы">
+ <p class="preview-label" id="previewLabel">Запись · компактный вариант</p>
+ <section class="capsule" id="recordingCapsule" aria-label="Управление записью">
+  <span class="record-signal" aria-hidden="true"></span><span class="sr-only">Идёт запись</span>
+  <div class="record-copy">
+  <span class="elapsed" id="elapsed" aria-label="Длительность записи: 1 час 12 минут">1 ч 12 мин</span>
+  <div class="meeting-copy"><span class="meeting-name" id="meetingName" title="Планирование">Планирование</span><p class="mute-copy" id="muteCopy" hidden>Микрофон выкл.</p></div>
+  </div>
+  <div class="controls"><button class="icon-button" id="mute" aria-label="Отключить микрофон" aria-pressed="false" title="Отключить микрофон"></button><button class="icon-button stop" id="stop" aria-label="Остановить запись" title="Остановить запись"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2"/></svg></button></div>
+ </section>
+ <section class="capsule" id="processingCapsule" aria-label="Обработка записи" hidden>
+  <span class="processing-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 10v4M9 6v12M13 3v18M17 7v10M21 10v4"/></svg></span>
+  <div class="process-copy"><span class="meeting-name" id="processName" title="Планирование">Планирование</span><p class="stage" id="stageCopy">Этап 4 из 6 · Распознавание</p></div>
+  <button class="details-button" id="details" aria-haspopup="dialog">Подробнее</button>
+ </section>
+</main>
+<aside class="demo-controls" aria-label="Состояния макета">
+ <div class="tabs" role="group" aria-label="Сценарий"><button id="recordingTab" aria-pressed="true">Запись</button><button id="processingTab" aria-pressed="false">Обработка</button></div>
+ <div class="demo-row" id="recordingOptions"><label for="duration">Длительность</label><select id="duration"><option value="0">Меньше минуты</option><option value="42">42 минуты</option><option value="72" selected>1 час 12 минут</option><option value="185">3 часа 5 минут</option></select></div>
+ <div class="demo-row" id="processingOptions" hidden><label for="processStage">Этап</label><select id="processStage"><option value="recognition" data-detail="Распознавание · 42%">Этап 4 из 6 · Распознавание</option><option value="correction" data-detail="Уточнение терминов">Этап 5 из 6 · Уточнение терминов</option></select></div>
+ <button class="demo-toggle" id="longTitle" aria-pressed="false">Длинное название встречи</button>
+ <p class="demo-note">Синтетические данные · звук не записывается.<br>Микрофон и остановка переключают только состояние макета.</p>
+ <a class="demo-link demo-note" href="index.html">Исходный макет ↗</a>
+</aside>
+<dialog id="detailDialog" aria-labelledby="detailTitle"><h2 id="detailTitle">Обработка записи</h2><p id="detailMeeting">Планирование</p><p class="stage-detail" id="detailStage">Распознавание · 42%</p><p>В приложении здесь открываются подробности обработки. Можно читать другие встречи — обработка продолжится в фоне.</p><p>Это демонстрация: аудио не обрабатывается.</p><button class="details-button" id="closeDetails">Закрыть</button></dialog>
+<div class="sr-only" id="announcement" role="status" aria-live="polite"></div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const mic='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>';
+const mutedMic='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M9 9v3a3 3 0 0 0 5 2M9 5a3 3 0 0 1 6 1v5M5 10v2a7 7 0 0 0 12 5M19 10v2M12 19v3M8 22h8"/></svg>';
+let muted=false;
+function compactTime(minutes){if(minutes<1)return '< 1 мин';const h=Math.floor(minutes/60),m=minutes%60;return h?h+' ч'+(m?' '+m+' мин':''):minutes+' мин';}
+function setView(view){const recording=view==='recording';$('recordingCapsule').hidden=!recording;$('processingCapsule').hidden=recording;$('recordingOptions').hidden=!recording;$('processingOptions').hidden=recording;$('recordingTab').setAttribute('aria-pressed',String(recording));$('processingTab').setAttribute('aria-pressed',String(!recording));$('previewLabel').textContent=(recording?'Запись':'Обработка')+' · компактный вариант';}
+function updateTime(){const min=Number($('duration').value);$('elapsed').textContent=compactTime(min);$('elapsed').setAttribute('aria-label',min<1?'Длительность записи: меньше минуты':'Длительность записи: '+Math.floor(min/60)+' ч '+min%60+' мин');}
+function updateMute(){const label=muted?'Включить микрофон':'Отключить микрофон';$('mute').innerHTML=muted?mutedMic:mic;$('mute').setAttribute('aria-pressed',String(muted));$('mute').setAttribute('aria-label',label);$('mute').title=label;$('muteCopy').hidden=!muted;}
+$('mute').addEventListener('click',()=>{muted=!muted;updateMute();$('announcement').textContent=muted?'Микрофон выключен в макете':'Микрофон включён в макете';});
+$('stop').addEventListener('click',()=>{setView('processing');$('announcement').textContent='Демонстрация: запись остановлена, показана обработка';$('details').focus();});
+$('duration').addEventListener('change',updateTime);
+$('recordingTab').addEventListener('click',()=>setView('recording'));
+$('processingTab').addEventListener('click',()=>setView('processing'));
+$('longTitle').addEventListener('click',()=>{const on=$('longTitle').getAttribute('aria-pressed')!=='true';$('longTitle').setAttribute('aria-pressed',String(on));const title=on?'Обсуждение приоритетов команды на следующий квартал':'Планирование';for(const id of ['meetingName','processName']){$(id).textContent=title;$(id).title=title;}$('detailMeeting').textContent=title;});
+function updateStage() {
+  const option = $('processStage').selectedOptions[0];
+  $('stageCopy').textContent = option.textContent;
+  $('detailStage').textContent = option.dataset.detail;
+}
+$('processStage').addEventListener('change', updateStage);
+$('details').addEventListener('click',()=>$('detailDialog').showModal());
+$('closeDetails').addEventListener('click',()=>$('detailDialog').close());
+console.assert(compactTime(42)==='42 мин'&&compactTime(72)==='1 ч 12 мин'&&compactTime(60)==='1 ч'&&compactTime(185)==='3 ч 5 мин','Compact duration preserves hours and omits seconds');
+updateTime();updateMute();updateStage();
+</script>
+</body>
+</html>
