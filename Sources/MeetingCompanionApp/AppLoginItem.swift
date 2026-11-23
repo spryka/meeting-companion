@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import Carbon
 import ServiceManagement
 
 @MainActor
@@ -27,6 +28,13 @@ struct AppLoginItem {
         bundleURL.pathExtension == "app" && bundleIdentifier == "local.meeting-companion"
     }
     var isEnabled: Bool { isSupported && serviceIsEnabled() }
+
+    func shouldOpenWorkspace(for event: NSAppleEventDescriptor?) -> Bool {
+        // SMAppService can launch the app without delivering an Apple event.
+        guard let event else { return !isEnabled }
+        return !(event.eventClass == kCoreEventClass && event.eventID == kAEOpenApplication
+            && event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem)
+    }
 
     func configureIfNeeded(defaults: UserDefaults) throws {
         guard isSupported, !defaults.bool(forKey: "loginItemConfigured") else { return }

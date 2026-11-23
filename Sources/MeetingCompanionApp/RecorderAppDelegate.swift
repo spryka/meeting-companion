@@ -56,15 +56,17 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
         self.updateChecker = checkForUpdates
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let loginItem = AppLoginItem()
+        let openWorkspace = loginItem.shouldOpenWorkspace(for: NSAppleEventManager.shared().currentAppleEvent)
         setUpPresentation()
         installWorkspaceCommands()
         busyObserver = model.$isBusy.dropFirst().filter { !$0 }.sink { [weak self] _ in
             Task { @MainActor in self?.model.calendar.recheckReminders() }
         }
         model.calendar.onMeeting = { [weak self] meeting in self?.showReminder(meeting) }
-        do { try AppLoginItem().configureIfNeeded(defaults: model.defaults) }
+        do { try loginItem.configureIfNeeded(defaults: model.defaults) }
         catch { model.errorMessage = "Автозапуск: " + error.localizedDescription }
-        showWindow()
+        if openWorkspace { showWindow() }
         Task { await model.calendar.start() }
         configureUpdatePolicy(appUpdater)
         updateObserver = model.objectWillChange.sink { [weak self] in
