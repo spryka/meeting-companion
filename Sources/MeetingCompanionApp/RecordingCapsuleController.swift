@@ -97,8 +97,7 @@ final class RecordingCapsuleController: NSObject, NSWindowDelegate {
 
     private func syncVisibilityAndSize() {
         guard let panel else { return }
-        let shouldShow = model.showsRecordingCapsule && !model.capsuleDismissed
-        if shouldShow {
+        if model.showsRecordingCapsule {
             if !model.isCapsuleVisible {
                 model.isCapsuleVisible = true
             }

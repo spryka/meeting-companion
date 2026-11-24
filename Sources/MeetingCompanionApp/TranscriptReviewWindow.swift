@@ -382,7 +382,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
         var scopeSelected = false
         var preview: TranscriptBulkAssignmentPreview?
 
-        var isDirty: Bool { inputName != initialName || person != .asEntered || requiresExplicitPerson || replaceManual }
+        var isDirty: Bool {
+            !inputName.utf8.elementsEqual(initialName.utf8) || person != .asEntered || requiresExplicitPerson || replaceManual
+        }
     }
     @Published private(set) var voiceReviewVisible = false
     @Published private(set) var voiceReviewComplete = false
@@ -841,6 +843,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func confirmVoiceAssignment(_ confirmation: VoiceAssignmentDraft, confirmSavedName: Bool = false) {
         guard !inputBlocked(), voiceReviewVisible, !isClosed, !state.isClosed else { return }
         guard !voiceRequiresReopen, let draft = voiceDraft, draft == confirmation,
+              draft.inputName.utf8.elementsEqual(confirmation.inputName.utf8),
               draft.resultID == currentResultID, draft.voice == selectedVoiceID,
               var preview = draft.preview, !draft.inputName.allSatisfy(\.isWhitespace) else {
             error = "Подтверждение группы устарело или не совпадает с текущим состоянием."

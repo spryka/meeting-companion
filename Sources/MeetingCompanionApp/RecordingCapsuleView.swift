@@ -244,7 +244,7 @@ struct ProcessingCapsuleView: View {
     private func status(_ snapshot: ProcessingProgressSnapshot?) -> String {
         switch viewModel.transcriptionState {
         case .completed: viewModel.transcriptionWarnings.isEmpty && snapshot?.warnings.isEmpty != false ? "Готово" : "Готово · есть замечание"
-        case .failed: "Не удалось обработать"
+        case .failed(let reason): reason
         default:
             if let snapshot, let station = snapshot.current {
                 "\(snapshot.countText) · \(station.title)"
@@ -265,30 +265,32 @@ struct RecordingCapsuleHostView: View {
     }
 
     var body: some View {
-        Group {
-            if let text = captureTransitionText {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(text)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(ODColors.ink)
+        if viewModel.showsRecordingCapsule {
+            Group {
+                if let text = captureTransitionText {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(text)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(ODColors.ink)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
+                } else if viewModel.showsProcessingCapsule {
+                    ProcessingCapsuleView(viewModel: viewModel)
+                } else {
+                    CompactRecordingView(viewModel: viewModel)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
-            } else if viewModel.showsProcessingCapsule {
-                ProcessingCapsuleView(viewModel: viewModel)
-            } else {
-                CompactRecordingView(viewModel: viewModel)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Capsule().fill(ODColors.surface).gesture(WindowDragGesture()))
+            .overlay {
+                Capsule()
+                    .strokeBorder(viewModel.showsOvertimeReminder ? ODColors.warning : ODColors.line,
+                                  lineWidth: viewModel.showsOvertimeReminder ? 1.5 : 1)
+                    .allowsHitTesting(false)
+            }
+            .padding(AppWindowState.capsuleInset)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Capsule().fill(ODColors.surface).gesture(WindowDragGesture()))
-        .overlay {
-            Capsule()
-                .strokeBorder(viewModel.showsOvertimeReminder ? ODColors.warning : ODColors.line,
-                              lineWidth: viewModel.showsOvertimeReminder ? 1.5 : 1)
-                .allowsHitTesting(false)
-        }
-        .padding(AppWindowState.capsuleInset)
     }
 }

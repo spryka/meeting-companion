@@ -288,10 +288,16 @@ struct RecordingHistoryView: View {
         }
     }
 
-    var feedbackError: String? { history.error(for: model.selectedHistoryURL) }
+    var feedbackError: String? {
+        let historyError = history.error(for: model.selectedHistoryURL)
+        guard let url = model.selectedHistoryURL, history.entry(url)?.phase == .completed,
+              let failure = model.processingRoutes[url]?.failure, failure != historyError else { return historyError }
+        return [failure, historyError].compactMap { $0 }.joined(separator: "\n")
+    }
 
     func processingDetails(for entry: RecordingEntry) -> ProcessingProgressSnapshot? {
-        guard let snapshot = model.processingRoutes[entry.id], entry.phase.isWorking || snapshot.failure != nil else { return nil }
+        guard let snapshot = model.processingRoutes[entry.id],
+              entry.phase.isWorking || (entry.phase != .completed && snapshot.failure != nil) else { return nil }
         return snapshot
     }
 

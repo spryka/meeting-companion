@@ -26,14 +26,16 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
     }
 
     public var hasReconciliationFailures: Bool { lock.withLock { !failures.isEmpty } }
-    public var canMatchVoices: Bool { lock.withLock { libraryRecovered && failures.isEmpty } }
+    public var canMatchVoices: Bool { matchingLibraryGeneration != nil }
     public var isEnabled: Bool { lock.withLock { enabledGeneration != nil } }
     public var featureGeneration: UUID? { lock.withLock { enabledGeneration } }
-    public var completedLibraryGeneration: UUID? {
-        lock.withLock { libraryRecovered ? libraryRecoveryID : nil }
-    }
     public var matchingLibraryGeneration: UUID? {
-        lock.withLock { libraryRecovered && failures.isEmpty ? libraryRecoveryID : nil }
+        lock.withLock { readyLibraryID }
+    }
+
+    // Access only while holding lock.
+    private var readyLibraryID: UUID? {
+        libraryRecovered && failures.isEmpty ? libraryRecoveryID : nil
     }
 
     public func setLearningObserver(_ observer: @escaping @Sendable () -> Void) {
@@ -82,11 +84,11 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
                   expectedFeatureGeneration == nil || expectedFeatureGeneration == enabledGeneration else {
                 return .disabled
             }
-            guard libraryRecovered, failures.isEmpty, let libraryRecoveryID,
-                  expectedLibraryGeneration == nil || expectedLibraryGeneration == libraryRecoveryID else {
+            guard let readyLibraryID,
+                  expectedLibraryGeneration == nil || expectedLibraryGeneration == readyLibraryID else {
                 return .libraryUnavailable
             }
-            return .ok(enabledGeneration, libraryRecoveryID)
+            return .ok(enabledGeneration, readyLibraryID)
         }
         let (enabled, recovery): (UUID, UUID)
         switch check {
@@ -134,7 +136,7 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
                 try Task.checkCancellation()
                 let currentCheck = lock.withLock { () -> Precondition in
                     guard enabledGeneration == enabled else { return .disabled }
-                    guard libraryRecoveryID == recovery, libraryRecovered, failures.isEmpty else { return .libraryUnavailable }
+                    guard readyLibraryID == recovery else { return .libraryUnavailable }
                     return .ok(enabled, recovery)
                 }
                 switch currentCheck {
@@ -172,37 +174,54 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
         guard try storage.currentResultDirectory()?.lastPathComponent == resultID else {
             return .skippedNoStructuredResult
         }
-        _ = try writer.loadEdits(resultID: resultID)
-        guard writer.loadedSnapshot(for: resultID)?.data == originalEdits else { return terminalOutcome }
-        return try lock.withLock {
-            try Task.checkCancellation()
-            guard enabledGeneration == enabled else { return .skippedFeatureDisabled }
-            guard libraryRecoveryID == recovery, libraryRecovered, failures.isEmpty else { return .skippedLibraryUnavailable }
-            func saveOverrides() throws {
-                _ = try writer.saveEdits(resultID: resultID, overrides: overrides)
-            }
-            if hasProfiles {
-                try catalogue.withVerifiedSnapshot(baseline, saveOverrides)
-            } else {
-                // Refusal metadata makes no identity claim and needs no catalogue write or lock.
-                try saveOverrides()
+        enum DiscardSave: Error { case featureDisabled, libraryUnavailable, resultChanged }
+        do {
+            try writer.saveAutomaticEdits(resultID: resultID, overrides: overrides, expectedBytes: originalEdits) { replace in
+                guard try storage.currentResultDirectory()?.lastPathComponent == resultID else {
+                    throw DiscardSave.resultChanged
+                }
+                try self.lock.withLock {
+                    try Task.checkCancellation()
+                    guard self.enabledGeneration == enabled else { throw DiscardSave.featureDisabled }
+                    guard self.readyLibraryID == recovery else { throw DiscardSave.libraryUnavailable }
+                    if hasProfiles {
+                        try self.catalogue.withVerifiedSnapshot(baseline, replace)
+                    } else {
+                        // Refusal metadata makes no identity claim and needs no catalogue lock.
+                        try replace()
+                    }
+                }
             }
             return terminalOutcome
+        } catch DiscardSave.featureDisabled {
+            return .skippedFeatureDisabled
+        } catch DiscardSave.libraryUnavailable {
+            return .skippedLibraryUnavailable
+        } catch DiscardSave.resultChanged {
+            return .skippedNoStructuredResult
         }
     }
 
     public func noteLearningFailure(eventID: UUID, reason: String) {
-        guard let current = try? catalogue.load(),
-              let index = current.catalogue.learningRecords?.firstIndex(where: { $0.id == eventID }),
-              let record = current.catalogue.learningRecords?[index], Self.isPending(record, in: current.catalogue) else { return }
-        _ = try? catalogue.update(current) { $0.learningRecords?[index].outcome = reason }
+        noteLearningFailure(eventIDs: [eventID], reason: reason)
+    }
+
+    private func noteLearningFailure(eventIDs: Set<UUID>, reason: String) {
+        guard let current = try? catalogue.load(), let records = current.catalogue.learningRecords else { return }
+        let pending = records.indices.filter {
+            eventIDs.contains(records[$0].id) && records[$0].outcome == nil && Self.isPending(records[$0], in: current.catalogue)
+        }
+        guard !pending.isEmpty else { return }
+        _ = try? catalogue.update(current) { catalogue in
+            for index in pending { catalogue.learningRecords?[index].outcome = reason }
+        }
     }
 
     public func resumeCommitted(
         recordings: [URL], processing: ProcessingService, policy: VoiceProfileUpdatePolicy,
         openWriter: TranscriptEditsRepository? = nil, expectedLibraryGeneration: UUID? = nil
     ) async {
-        guard let generation = featureGeneration, let library = completedLibraryGeneration,
+        guard let generation = featureGeneration, let library = matchingLibraryGeneration,
               expectedLibraryGeneration == nil || expectedLibraryGeneration == library,
               let value = try? catalogue.load().catalogue else { return }
         let permitted = Set(recordings.filter(RecordingPaths.isStandardLayout).map {
@@ -216,10 +235,9 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
             Batch(locator: $0.recordingLocator, resultID: $0.resultID, revision: $0.event.editsRevision)
         }
         for key in batches.keys.sorted(by: { ($0.locator, $0.resultID, $0.revision) < ($1.locator, $1.resultID, $1.revision) }) {
-            guard !Task.isCancelled, completedLibraryGeneration == library, featureGeneration == generation else { return }
+            guard !Task.isCancelled, matchingLibraryGeneration == library, featureGeneration == generation else { return }
             guard let batch = batches[key], batch.contains(where: { $0.outcome == nil && Self.isPending($0, in: value) }) else { continue }
             let directory = URL(fileURLWithPath: key.locator)
-            guard failure(for: directory) == nil else { continue }
             let writer = Self.writer(in: directory, sharing: openWriter)
             await learnCommitted(events: batch.map(\.event), writer: writer, processing: processing,
                                  policy: policy, expectedGeneration: generation)
@@ -231,24 +249,45 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
         return TranscriptEditsRepository(recordingDirectory: directory)
     }
 
+    private static func recordingURL(in directory: URL) -> URL {
+        directory.appendingPathComponent(directory.lastPathComponent).appendingPathExtension("m4a")
+    }
+
     public func learnCommitted(
         events: [TranscriptLearningEvent], writer: TranscriptEditsRepository, processing: ProcessingService,
         policy: VoiceProfileUpdatePolicy, expectedGeneration: UUID
     ) async {
         let selected = events.filter(\.allowsLearning)
         let ids = Set(selected.map(\.eventID))
-        guard !ids.isEmpty, lock.withLock({
-            guard ids.isDisjoint(with: learningInFlight) else { return false }
-            learningInFlight.formUnion(ids)
-            return true
-        }) else { return }
-        defer {
+        guard !ids.isEmpty else { return }
+        let recording = Self.recordingURL(in: writer.recordingDirectory)
+        var previousLibrary: UUID?
+        while !Task.isCancelled {
+            guard let library = matchingLibraryGeneration, library != previousLibrary,
+                  await processing.containsRecordingInCurrentLibrary(recording), !Task.isCancelled else { return }
+            let admitted = lock.withLock {
+                guard enabledGeneration == expectedGeneration, readyLibraryID == library,
+                      ids.isDisjoint(with: learningInFlight) else { return false }
+                learningInFlight.formUnion(ids)
+                return true
+            }
+            guard admitted else { return }
+            await learnBatch(selected, ids: ids, writer: writer, processing: processing, policy: policy,
+                             expectedGeneration: expectedGeneration, library: library)
             let notify = lock.withLock {
                 learningInFlight.subtract(ids)
                 return learningObserver
             }
             notify?()
+            // A completed reconciliation may have skipped this batch while it was in flight.
+            previousLibrary = library
         }
+    }
+
+    private func learnBatch(
+        _ selected: [TranscriptLearningEvent], ids: Set<UUID>, writer: TranscriptEditsRepository,
+        processing: ProcessingService, policy: VoiceProfileUpdatePolicy, expectedGeneration: UUID, library: UUID
+    ) async {
         let baseline = try? catalogue.load().catalogue
         var windowsByPerson: [UUID: Int] = [:]
         var pendingIDs: Set<UUID> = []
@@ -262,12 +301,14 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
         }
         let plan = Self.learningPlan(selected, reservingDenseFor: pendingIDs, writer: writer)
         var remainingDense: [UUID: Int] = [:]
+        var deferredPeople: Set<UUID> = []
         for (event, count) in plan {
             if let person = event.assignment?.personID { remainingDense[person, default: 0] += count }
         }
         for (event, denseCount) in plan {
-            guard !Task.isCancelled, featureGeneration == expectedGeneration else { return }
-            guard let person = event.assignment?.personID else { continue }
+            guard !Task.isCancelled, featureGeneration == expectedGeneration,
+                  matchingLibraryGeneration == library else { return }
+            guard let person = event.assignment?.personID, !deferredPeople.contains(person) else { continue }
             let remaining = max(0, 4 - windowsByPerson[person, default: 0])
             remainingDense[person, default: 0] -= denseCount
             // Only use spare capacity for this turn's sparse windows after reserving later dense windows.
@@ -278,10 +319,13 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
                 windowsByPerson[person, default: 0] += processed
             } catch is CancellationError {
                 return
+            } catch VoiceProfileCatalogueError.conflict {
+                deferredPeople.insert(person)
             } catch {
-                windowsByPerson[person] = 4
-                if featureGeneration == expectedGeneration {
-                    noteLearningFailure(eventID: event.eventID, reason: error.localizedDescription)
+                deferredPeople.insert(person)
+                if featureGeneration == expectedGeneration, matchingLibraryGeneration == library {
+                    let affected = selected.filter { $0.assignment?.personID == person }.map(\.eventID)
+                    noteLearningFailure(eventIDs: Set(affected), reason: error.localizedDescription)
                 }
             }
         }
@@ -292,17 +336,21 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
         eventID: UUID, writer: TranscriptEditsRepository, processing: ProcessingService,
         policy: VoiceProfileUpdatePolicy, expectedGeneration: UUID? = nil, maximumWindows: Int = 4
     ) async throws -> Int {
-        guard let enabled = featureGeneration, expectedGeneration == nil || expectedGeneration == enabled else { return 0 }
+        guard let enabled = featureGeneration, expectedGeneration == nil || expectedGeneration == enabled,
+              let library = matchingLibraryGeneration else { return 0 }
+        let root = writer.recordingDirectory
+        let recording = Self.recordingURL(in: root)
+        guard await processing.containsRecordingInCurrentLibrary(recording),
+              featureGeneration == enabled, matchingLibraryGeneration == library else { return 0 }
         let baseline = try catalogue.load().catalogue
         guard let record = baseline.learningRecords?.first(where: { $0.id == eventID }),
               Self.isPending(record, in: baseline),
               record.outcome == nil,
               record.event.personIntent?.featureGeneration.map({ $0 == enabled }) != false,
               let assignment = record.event.assignment, let personID = assignment.personID,
-              record.recordingLocator == Self.locator(writer.recordingDirectory) else { return 0 }
+              record.recordingLocator == Self.locator(writer.recordingDirectory),
+              !baseline.hasSuspendedSamples(for: personID) else { return 0 }
 
-        let root = writer.recordingDirectory
-        let recording = root.appendingPathComponent(root.lastPathComponent).appendingPathExtension("m4a")
         let storage = TranscriptResultStorage(recordingURL: recording)
         guard let result = try storage.currentResultDirectory(), result.lastPathComponent == record.resultID,
               let document = try storage.currentDocument(), document.resultID == record.resultID,
@@ -324,7 +372,10 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
                 let rate = Double(VoiceEmbeddingProtocol.sampleRate)
                 let meetingFingerprint = try Self.meetingFingerprint(in: root, quality: quality, document: document)
                 let request = VoiceEmbeddingProtocol.Request(resultID: record.resultID, windows: windows)
-                let response = try await processing.extractVoiceEmbeddings(request, recordingURL: recording, kind: .learning)
+                guard matchingLibraryGeneration == library else { return 0 }
+                let response = try await processing.extractVoiceEmbeddings(request, recordingURL: recording, kind: .learning) {
+                    self.lock.withLock { self.readyLibraryID == library && self.enabledGeneration == enabled }
+                }
                 extractedWindows = windows.count
                 samples = zip(windows, response.features).compactMap { window, feature in
                     guard let embedding = feature.embedding else { return nil }
@@ -342,11 +393,12 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
                   try storage.currentResultDirectory()?.lastPathComponent == record.resultID else { return }
             try lock.withLock {
                 try Task.checkCancellation()
-                guard enabledGeneration == enabled else { return }
+                guard enabledGeneration == enabled, readyLibraryID == library else { return }
                 let current = try catalogue.load()
                 guard let index = current.catalogue.learningRecords?.firstIndex(where: { $0.id == record.id }),
                       let latest = current.catalogue.learningRecords?[index], Self.isPending(latest, in: current.catalogue),
-                      latest.recordingLocator == record.recordingLocator else { return }
+                      latest.recordingLocator == record.recordingLocator,
+                      !current.catalogue.hasSuspendedSamples(for: personID) else { return }
                 _ = try catalogue.update(current) { value in
                     let retained = policy.apply(samples, to: &value)
                     value.learningRecords?[index].extractedWindows = extractedWindows
@@ -375,7 +427,7 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
     ) -> [(event: TranscriptLearningEvent, denseCount: Int)] {
         guard pendingIDs.count > 1 else { return events.map { ($0, 0) } }
         let root = writer.recordingDirectory
-        let recording = root.appendingPathComponent(root.lastPathComponent).appendingPathExtension("m4a")
+        let recording = Self.recordingURL(in: root)
         let storage = TranscriptResultStorage(recordingURL: recording)
         guard let result = try? storage.currentResultDirectory(),
               let document = try? storage.currentDocument(),
@@ -647,7 +699,7 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
         let referencedRecordings = references.compactMap { path -> URL? in
             let directory = URL(fileURLWithPath: path, isDirectory: true)
             guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
-            return directory.appendingPathComponent(directory.lastPathComponent).appendingPathExtension("m4a")
+            return Self.recordingURL(in: directory)
         }
         for recording in Set(recordings + referencedRecordings) {
             guard lock.withLock({ libraryRecoveryID == id }) else { return }
@@ -709,7 +761,7 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
             $0.recordingLocator == locator && $0.resultID == edits.resultID && $0.stage == .prepared
         }) else { return baseline.catalogue }
 
-        return try catalogue.update(baseline) { value in
+        func applyTransfer(to value: inout VoiceProfileCatalogue) throws {
             var records = value.learningRecords ?? []
             var revocations: Set<UUID> = []
             for index in records.indices where records[index].resultID == edits.resultID {
@@ -769,7 +821,12 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
             }
             value.revokeSamples(assignments: revocations)
             value.learningRecords = records
-        }.catalogue
+        }
+
+        var value = baseline.catalogue
+        try applyTransfer(to: &value)
+        guard value != baseline.catalogue else { return baseline.catalogue }
+        return try catalogue.update(baseline) { $0 = value }.catalogue
     }
 
     private static func confirm(_ intent: TranscriptVoicePersonIntent, in catalogue: inout VoiceProfileCatalogue,
