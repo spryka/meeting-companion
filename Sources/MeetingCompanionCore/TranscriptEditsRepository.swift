@@ -824,11 +824,20 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
                                   mutating: mutating)
     }
 
+    private static func sameStoredString(_ lhs: String?, _ rhs: String?) -> Bool {
+        switch (lhs, rhs) {
+        case (.none, .none): true
+        case let (.some(lhs), .some(rhs)): lhs.utf8.elementsEqual(rhs.utf8)
+        default: false
+        }
+    }
+
     private func saveOverridesInternalGated(
         resultID: String,
         learnVoice: Bool = false,
         personIntent: TranscriptVoicePersonIntent? = nil,
         isUndo: Bool = false,
+        withReplacement: ((_ replace: () throws -> Void) throws -> Void)? = nil,
         mutating: (inout [String: TranscriptTurnOverride]) throws -> Void
     ) throws -> TranscriptEdits {
         _ = try acquireWriteLockGated()
@@ -923,8 +932,9 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
             let prior = snapshot.edits.overrides[turn.id]
             var currentAssignment: TranscriptNameAssignment?
             defer {
-                let changedName = prior?.displayName != newOverrides[turn.id]?.displayName
-                if prior?.assignment != currentAssignment || changedName {
+                let changedUnlinkedName = prior?.assignment == nil &&
+                    !Self.sameStoredString(prior?.displayName, newOverrides[turn.id]?.displayName)
+                if prior?.assignment != currentAssignment || changedUnlinkedName {
                     let previousAssignment = prior?.assignment ?? (protectLegacy
                         ? prior?.legacyImportAssignment(resultID: resultID, turnID: turn.id, personID: nil) : nil)
                     schemaVersion = 2
@@ -949,17 +959,25 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
             if prior?.text == nil, value.text?.utf8.elementsEqual(turn.wordIDs.compactMap({ words[$0] }).joined(separator: " ").utf8) == true { value.text = nil }
             if prior?.displayName == nil, value.assignment == nil, value.displayName == "Speaker \(speakers[turn.speakerID] ?? 1)" { value.displayName = nil }
             let assignmentChanged = value.assignment != prior?.assignment && (isUndo || value.assignment != nil)
-            if value.displayName != prior?.displayName || assignmentChanged {
+            if !Self.sameStoredString(value.displayName, prior?.displayName) || assignmentChanged {
                 schemaVersion = 2
                 value.voiceRefusal = nil
                 if value.displayName == nil {
                     value.assignment = nil
-                } else if isUndo {
-                    value.assignment = value.assignment.map {
-                        TranscriptNameAssignment(personID: $0.personID, origin: $0.origin)
+                } else {
+                    let keepsLinkedAssignment = value.assignment?.canContributeVoiceSamples == true &&
+                        value.assignment == prior?.assignment &&
+                        value.displayName.map(TranscriptSpeakerAssignmentService.nameComparisonKey) ==
+                            prior?.displayName.map(TranscriptSpeakerAssignmentService.nameComparisonKey)
+                    if !keepsLinkedAssignment {
+                        if isUndo {
+                            value.assignment = value.assignment.map {
+                                TranscriptNameAssignment(personID: $0.personID, origin: $0.origin)
+                            }
+                        } else if value.assignment == nil || value.assignment == prior?.assignment {
+                            value.assignment = TranscriptNameAssignment(personID: nil, origin: "manual")
+                        }
                     }
-                } else if value.assignment == nil || value.assignment == prior?.assignment {
-                    value.assignment = TranscriptNameAssignment(personID: nil, origin: "manual")
                 }
             } else {
                 value.assignment = prior?.assignment
@@ -971,13 +989,9 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         }
         let unchanged = newOverrides.count == snapshot.edits.overrides.count && newOverrides.allSatisfy { id, value in
             guard let prior = snapshot.edits.overrides[id] else { return false }
-            let sameText: Bool
-            switch (value.text, prior.text) {
-            case (.none, .none): sameText = true
-            case let (.some(lhs), .some(rhs)): sameText = lhs.utf8.elementsEqual(rhs.utf8)
-            default: sameText = false
-            }
-            return sameText && value.displayName == prior.displayName && value.assignment == prior.assignment && value.voiceRefusal == prior.voiceRefusal
+            return Self.sameStoredString(value.text, prior.text) &&
+                Self.sameStoredString(value.displayName, prior.displayName) &&
+                value.assignment == prior.assignment && value.voiceRefusal == prior.voiceRefusal
         }
         if unchanged { return snapshot.edits }
 
@@ -994,6 +1008,9 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
         let encodedData = try encoder.encode(newEdits)
         let saved = LoadedSnapshot(edits: newEdits, data: encodedData, exists: true)
         let newEvents = Array(pending.dropFirst(snapshot.edits.pendingLearningEvents?.count ?? 0))
+        guard newEvents.isEmpty || withReplacement == nil else {
+            throw TranscriptEditsError.conflict("Автоназначение не может менять голосовые эталоны.")
+        }
         guard newEvents.isEmpty || learningCommitObserver != nil else {
             throw TranscriptEditsError.conflict("Нет координатора сохранения голосовых профилей.")
         }
@@ -1023,31 +1040,37 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
             try hook(tempURL, editsFile)
         }
 
-        #if canImport(Darwin)
-        var stFinal = stat()
-        let finalLstat = lstat(editsFile.path, &stFinal)
-        if snapshot.exists {
-            guard finalLstat == 0 else {
-                throw TranscriptEditsError.conflict("edits.json was deleted externally")
+        func replace() throws {
+            #if canImport(Darwin)
+            var stFinal = stat()
+            let finalLstat = lstat(editsFile.path, &stFinal)
+            if snapshot.exists {
+                guard finalLstat == 0 else {
+                    throw TranscriptEditsError.conflict("edits.json was deleted externally")
+                }
+                let currentBytes = try Data(contentsOf: editsFile)
+                guard currentBytes == snapshot.data else {
+                    throw TranscriptEditsError.conflict("edits.json was modified externally")
+                }
+            } else {
+                guard finalLstat != 0 else {
+                    throw TranscriptEditsError.conflict("edits.json was created externally")
+                }
             }
-            let currentBytes = try Data(contentsOf: editsFile)
-            guard currentBytes == snapshot.data else {
-                throw TranscriptEditsError.conflict("edits.json was modified externally")
+            guard rename(tempURL.path, editsFile.path) == 0 else {
+                throw TranscriptEditsError.malformed("rename failed with errno \(errno)")
             }
-        } else {
-            guard finalLstat != 0 else {
-                throw TranscriptEditsError.conflict("edits.json was created externally")
-            }
+            #else
+            _ = try FileManager.default.replaceItemAt(editsFile, withItemAt: tempURL)
+            #endif
+            renamed = true
         }
 
-        guard rename(tempURL.path, editsFile.path) == 0 else {
-            throw TranscriptEditsError.malformed("rename failed with errno \(errno)")
+        if let withReplacement { try withReplacement(replace) }
+        else { try replace() }
+        guard renamed else {
+            throw TranscriptEditsError.conflict("Сохранение правок не подтверждено.")
         }
-        renamed = true
-        #else
-        _ = try FileManager.default.replaceItemAt(editsFile, withItemAt: tempURL)
-        renamed = true
-        #endif
 
         lock.withLock {
             snapshots[resultID] = saved
@@ -1107,6 +1130,20 @@ public final class TranscriptEditsRepository: @unchecked Sendable {
                 }
                 currentOverrides[turnKey] = overrideVal
             }
+        }
+    }
+
+    /// Prepare the edits while holding the writer gate. The caller fences the final replacement.
+    package func saveAutomaticEdits(
+        resultID: String, overrides: [String: TranscriptTurnOverride], expectedBytes: Data?,
+        withReplacement: @escaping (_ replace: () throws -> Void) throws -> Void
+    ) throws {
+        acquireOperationGate(.save)
+        defer { operationGate.unlock() }
+        _ = try loadEditsGated(resultID: resultID)
+        guard loadedSnapshot(for: resultID)?.data == expectedBytes else { return }
+        _ = try saveOverridesInternalGated(resultID: resultID, withReplacement: withReplacement) {
+            $0.merge(overrides) { _, updated in updated }
         }
     }
 

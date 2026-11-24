@@ -294,7 +294,8 @@ struct SpeakerReviewView: View {
                     TextField("Найти или добавить человека", text: Binding(
                         get: { model.voiceDraft?.inputName ?? "" },
                         set: { newValue in
-                            guard newValue != model.voiceDraft?.inputName else { return }
+                            guard let current = model.voiceDraft?.inputName,
+                                  !newValue.utf8.elementsEqual(current.utf8) else { return }
                             model.updateVoiceName(newValue)
                             filterSuggestions = true
                             suggestionsOpen = true

@@ -189,6 +189,11 @@ public actor ProcessingService {
         for observer in observers.values { observer.yield(.snapshot(snapshot)) }
     }
 
+    package func failure(for job: ProcessingJob) -> String? {
+        guard let route = routes[job.recordingURL], route.jobID == job.id else { return nil }
+        return route.failure
+    }
+
     private var admitting: [URL: ProcessingJob] = [:]
     private let retryAdmission: (@Sendable (URL) async -> Bool)?
     private let voiceLearning: VoiceLearningCoordinator?
@@ -206,6 +211,7 @@ public actor ProcessingService {
         let recordingURL: URL
         let kind: VoiceJobKind
         let request: VoiceEmbeddingProtocol.Request
+        let shouldStart: @Sendable () -> Bool
         let continuation: CheckedContinuation<VoiceEmbeddingProtocol.Response, any Error>
     }
 
@@ -277,8 +283,13 @@ public actor ProcessingService {
 
     public var hasPendingWork: Bool { !queue.isEmpty || isBusy }
 
+    func containsRecordingInCurrentLibrary(_ recording: URL) async -> Bool {
+        await isRecordingInCurrentLibrary?(recording) ?? true
+    }
+
     public func extractVoiceEmbeddings(
-        _ request: VoiceEmbeddingProtocol.Request, recordingURL: URL, kind: VoiceJobKind
+        _ request: VoiceEmbeddingProtocol.Request, recordingURL: URL, kind: VoiceJobKind,
+        shouldStart: @escaping @Sendable () -> Bool = { true }
     ) async throws -> VoiceEmbeddingProtocol.Response {
         guard voiceRunner != nil else { throw VoiceJobError.unavailable }
         try VoiceEmbeddingProtocol.validateRequest(request)
@@ -295,7 +306,7 @@ public actor ProcessingService {
                     return
                 }
                 queue.append(.voice(VoiceJob(id: id, recordingURL: recording, kind: kind,
-                                             request: request, continuation: continuation)))
+                                             request: request, shouldStart: shouldStart, continuation: continuation)))
                 publishSnapshot()
                 drainNextIfNeeded()
             }
@@ -340,25 +351,33 @@ public actor ProcessingService {
         publishSnapshot()
     }
 
+    private func reject(_ job: ProcessingJob, reason: String) {
+        var route = ProcessingProgressSnapshot(job: job)
+        route.finish(success: false, reason: reason)
+        routes[job.recordingURL] = route
+        emit(.failed(job, errorDescription: reason))
+    }
+
     /// Enqueue a recording with captured snapshot settings. Returns the enqueued ProcessingJob.
     @discardableResult
     public func enqueue(
         recordingURL: URL,
         settings: ProcessingJobSettings,
-        stoppedCapture: (any StoppedCaptureProtocol)? = nil
+        stoppedCapture: (any StoppedCaptureProtocol)? = nil,
+        jobID: UUID = UUID()
     ) async -> ProcessingJob {
         let canonical = RecordingEntry.canonicalURL(recordingURL)
         guard RecordingPaths.isStandardLayout(canonical) else {
-            let job = ProcessingJob(recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
-            emit(.failed(job, errorDescription: RecordingPaths.unsupportedLayoutMessage))
+            let job = ProcessingJob(id: jobID, recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
+            reject(job, reason: RecordingPaths.unsupportedLayoutMessage)
             return job
         }
         if let existing = admitting[canonical] ?? queuedTranscriptions.first(where: { $0.recordingURL == canonical }) ?? (activeJob?.recordingURL == canonical ? activeJob : nil) {
             return existing
         }
-        let job = ProcessingJob(recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
+        let job = ProcessingJob(id: jobID, recordingURL: canonical, settings: settings, stoppedCapture: stoppedCapture)
         if let historyRepository, !historyRepository.reserveWork(canonical, id: job.id) {
-            emit(.failed(job, errorDescription: "Дождитесь завершения работы с записью"))
+            reject(job, reason: "Дождитесь завершения работы с записью")
             return job
         }
         var enqueued = false
@@ -379,13 +398,7 @@ public actor ProcessingService {
             let cached = historyRepository.entry(recordingURL)
             let existingEntry = cached ?? RecordingEntry.load(recording: recordingURL)
             if stoppedCapture == nil && !existingEntry.capabilities.canRetry {
-                let job = ProcessingJob(
-                    recordingURL: recordingURL,
-                    settings: settings,
-                    stoppedCapture: stoppedCapture
-                )
-                emit(.enqueued(job))
-                emit(.failed(job, errorDescription: existingEntry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна."))
+                reject(job, reason: existingEntry.capabilities.reason ?? "Исходные WAV отсутствуют или недоступны; повторная обработка невозможна.")
                 drainNextIfNeeded()
                 return job
             }
@@ -397,7 +410,7 @@ public actor ProcessingService {
                 try voiceLearning.preserveOutboxes(recording: canonical, writer: writer, includeHistory: false)
                 retryWriters[job.id] = writer
             } catch {
-                emit(.failed(job, errorDescription: error.localizedDescription))
+                reject(job, reason: error.localizedDescription)
                 drainNextIfNeeded()
                 return job
             }
@@ -544,6 +557,10 @@ public actor ProcessingService {
                 guard try storage.currentResultDirectory()?.lastPathComponent == job.request.resultID else {
                     throw VoiceJobError.staleResult
                 }
+                guard await containsRecordingInCurrentLibrary(job.recordingURL), job.shouldStart() else {
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
                 let response = try await voiceRunner.extractVoiceEmbeddings(
                     job.request, recordingDirectory: job.recordingURL.deletingLastPathComponent()
                 )
@@ -805,7 +822,7 @@ public actor ProcessingService {
             publishVoiceEvent(.skipped, skipReason: "Модель определения голосов недоступна.")
             return
         }
-        if let inLibrary = await isRecordingInCurrentLibrary?(job.recordingURL), !inLibrary {
+        if !(await containsRecordingInCurrentLibrary(job.recordingURL)) {
             publishVoiceEvent(.skipped, skipReason: "Запись вне текущей библиотеки.")
             return
         }

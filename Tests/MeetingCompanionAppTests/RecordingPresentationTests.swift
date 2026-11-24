@@ -412,6 +412,8 @@ private final class PresentationLevels: AudioLevelMonitoring, @unchecked Sendabl
         try await f.wait { panel.isVisible }
         await gate.open(); let snapshot = try await start.value
         try await f.wait { f.model.isRecording }
+        #expect(panel.isVisible && f.model.showsRecordingCapsule && !f.model.showsProcessingCapsule)
+        #expect(RecordingCapsuleHostView(viewModel: f.model).captureTransitionText == nil)
         capture.suspendStop = { await gate.wait() }
         let stop = Task { try await f.session.stop(elapsed: 15, expectedSessionID: snapshot.sessionID) }
         try await f.wait { f.model.sessionStopping }

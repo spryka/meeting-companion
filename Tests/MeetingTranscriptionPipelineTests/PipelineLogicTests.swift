@@ -8,6 +8,33 @@ import MeetingCompanionCore
 @Suite("PipelineLogic Tests")
 struct PipelineLogicTests {
 
+    @Test(arguments: [false, true])
+    func voiceWorkerKeepsBoundedDiagnosticsSeparateFromResponse(fails: Bool) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", """
+            head -c 131072 /dev/zero >&2
+            cat >/dev/null
+            if [ "$1" = failure ]; then
+                printf '\\nМодель голосов повреждена. Нажмите «Подготовить модель».\\n' >&2
+                exit 1
+            fi
+            printf '{"response":true}'
+            """, "voice-fixture", fails ? "failure" : "success"]
+        let input = Data(repeating: 32, count: VoiceEmbeddingProtocol.requestByteLimit)
+        if fails {
+            do {
+                _ = try await Transcription.runVoiceWorker(process: process, input: input)
+                Issue.record("Expected the voice worker to fail")
+            } catch {
+                #expect(error.localizedDescription == "Модель голосов повреждена. Нажмите «Подготовить модель».")
+            }
+        } else {
+            let response = try await Transcription.runVoiceWorker(process: process, input: input)
+            #expect(String(decoding: response, as: UTF8.self) == #"{"response":true}"#)
+        }
+    }
+
     @Test func processingLifecycleWireSurvivesPlatformAdapter() throws {
         let events = [
             PipelineProgressEvent(stage: .gigaam, channel: "host", completed: 0, total: 10),

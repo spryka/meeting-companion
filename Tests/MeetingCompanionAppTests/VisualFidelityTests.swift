@@ -569,7 +569,7 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                 try await settle { model.capsuleProgress?.current == .voices }
                 #expect(model.capsuleProgress?.countText == "Этап 7 из 7")
             }
-            model.showProcessingDetails()
+            _ = try #require(model.showTranscript(url))
             let controller = RecordingCapsuleController(model: model, defaults: defaults)
             let panel = try #require(controller.panel)
             defer { controller.hideCapsule() }
@@ -614,7 +614,6 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                     if requireAccessibility {
                         #expect(hasAction)
                         #expect(!labels.contains("Закрыть") && !labels.contains("Скрыть"))
-                        if state == "active" { _ = ax(content, pressDetails: true) }
                     } else if !hasAction { print("UNVERIFIED native AX: " + name + " — SwiftUI tree unavailable") }
                     try capture(content, "capsule-" + name)
                     let snapshot = try #require(model.capsuleProgress)
@@ -645,8 +644,21 @@ private final class SyntheticLevels: AudioLevelMonitoring, @unchecked Sendable {
                         window.orderOut(nil); window.contentView = nil; window.close()
                     }
                 }
+                if state == "failed" {
+                    model.showProcessingDetails()
+                    try await settle { !panel.isVisible }
+                    #expect(model.selectedHistoryURL == url && model.capsuleProgress?.failure != nil)
+                }
             }
-            if !optional { await runner.finish(failed: false) }
+            if !optional {
+                if requireAccessibility { _ = ax(try #require(panel.contentView), pressDetails: true) }
+                else { model.showProcessingDetails() }
+                try await settle { !panel.isVisible }
+                #expect(model.selectedHistoryURL == url && model.transcriptionJobs == 1)
+                await runner.finish(failed: false)
+                try await settle { model.transcriptionJobs == 0 && model.capsuleProgress?.terminal == true }
+                #expect(!panel.isVisible)
+            }
         }
     }
 

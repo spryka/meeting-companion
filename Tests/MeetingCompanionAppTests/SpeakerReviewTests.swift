@@ -78,6 +78,36 @@ struct SpeakerReviewTests {
         #expect(!model.hasUnsavedChanges && fixture.manager.admitNavigation())
     }
 
+    @Test(arguments: [false, true])
+    func unicodeOnlyNameCorrectionIsAVisibleAndSavableDraft(useStaleConfirmation: Bool) async throws {
+        let fixture = try SpeakerReviewFixture()
+        defer { fixture.close() }
+        let writer = TranscriptEditsRepository(recordingDirectory: fixture.root)
+        let personID = UUID()
+        _ = try writer.saveEdits(resultID: "v1", overrides: [
+            "t0": .init(displayName: "Алёна", assignment: .init(personID: personID, origin: "automaticVoiceMatch"))
+        ])
+        let model = try await fixture.open(repository: writer)
+        model.openVoiceReview(anchorTurnID: "t0")
+        model.updateVoiceName("АЛЁНА")
+        let stale = try #require(model.voiceDraft)
+        if useStaleConfirmation {
+            model.updateVoiceName("АЛЕ\u{308}НА")
+            model.confirmVoiceAssignment(stale)
+            #expect(model.error?.contains("устарело") == true)
+            let before = try #require(writer.readEditsSnapshot(resultID: "v1").edits.overrides["t0"])
+            #expect(before.displayName == "Алёна")
+            return
+        }
+        let name = "Але\u{308}на"
+        model.updateVoiceName(name)
+        #expect(model.isVoiceDraftDirty && model.canConfirmVoice)
+        model.confirmVoiceAssignment(try #require(model.voiceDraft))
+        let saved = try #require(writer.readEditsSnapshot(resultID: "v1").edits.overrides["t0"])
+        #expect(saved.displayName?.utf8.elementsEqual(name.utf8) == true)
+        #expect(saved.assignment?.personID == personID && saved.assignment?.isMachineAssigned == true)
+    }
+
     @Test(arguments: [0, 1, 2]) func applyingTypedNameResolvesPersonOnlyOnSave(matches: Int) async throws {
         let fixture = try SpeakerReviewFixture()
         defer { fixture.close() }
