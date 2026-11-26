@@ -293,10 +293,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         var preview: TranscriptBulkAssignmentPreview?
         let targetResultID: String
         let calendarAttendees: [String]
-
-        var isConfirmingGroup: Bool {
-            pendingConfirmation != nil
-        }
     }
 
     struct PresentationWarningItem: Identifiable, Equatable, Sendable {
@@ -340,7 +336,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         let fullyNamed: Bool
         let mixedNames: Bool
         var originalName: String { rows[0].originalName }
-        var speakerID: String { rows[0].speakerID }
     }
     var voiceGroups: [VoiceGroup] {
         var order: [TranscriptVoiceKey] = []
@@ -1044,9 +1039,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
     @Published private(set) var calendarAttendees: [String] = []
     @Published private(set) var contextAttendees: [String]? = nil
     @Published private(set) var presentationWarnings: [PresentationWarningItem] = []
-    var diarizationWarnings: [String] {
-        presentationWarnings.map(\.message)
-    }
 
     func userScrollPhaseChanged(_ phase: ScrollPhase) {
         guard !inputBlocked() else { return }
@@ -1410,20 +1402,12 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
-    private static func loadCalendarAttendees(resultID: String, session: TranscriptReviewSession) -> [String] {
-        loadCalendarAttendees(resultID: resultID, storage: ReviewStorage(session: session))
-    }
-
     nonisolated private static func loadCalendarAttendees(resultID: String, storage: ReviewStorage) -> [String] {
         guard let doc = try? TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID),
                                                      recordingDirectory: storage.recordingDirectory) else {
             return []
         }
         return doc.context?.attendees ?? []
-    }
-
-    private static func loadContextAttendees(resultID: String, session: TranscriptReviewSession) -> [String]? {
-        loadContextAttendees(resultID: resultID, storage: ReviewStorage(session: session))
     }
 
     nonisolated private static func loadContextAttendees(resultID: String, storage: ReviewStorage) -> [String]? {
@@ -1433,10 +1417,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
         guard let attendees = doc.context?.attendees, !attendees.isEmpty else { return nil }
         return attendees
-    }
-
-    private static func loadPresentationWarnings(resultID: String, session: TranscriptReviewSession) -> [PresentationWarningItem] {
-        loadPresentationWarnings(resultID: resultID, storage: ReviewStorage(session: session))
     }
 
     nonisolated private static func loadPresentationWarnings(resultID: String, storage: ReviewStorage) -> [PresentationWarningItem] {
@@ -1464,10 +1444,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 message: warning.message
             )
         }
-    }
-
-    private static func loadIndex(resultID: String, session: TranscriptReviewSession) throws -> TranscriptIntervalIndex {
-        try loadIndex(resultID: resultID, storage: ReviewStorage(session: session))
     }
 
     nonisolated private static func loadIndex(resultID: String, storage: ReviewStorage) throws -> TranscriptIntervalIndex {

@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import Foundation
-import MeetingCompanionCore
 import SwiftUI
 
 // MARK: - Reminder Floating Panel
@@ -168,10 +167,6 @@ final class MeetingReminderPresenter: ObservableObject {
         model.objectWillChange.merge(with: calendar.objectWillChange)
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &observations)
-    }
-
-    var isRecording: Bool {
-        model?.isRecording ?? false
     }
 
     var currentRecordingTitle: String {

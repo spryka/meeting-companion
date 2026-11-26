@@ -1,4 +1,3 @@
-import MeetingCompanionCore
 import AVFoundation
 import CoreMedia
 import Foundation
