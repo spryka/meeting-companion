@@ -311,6 +311,8 @@ public enum ODIcon: String, CaseIterable {
     case clock
     case calendar
     case people
+    case speakerAutomatic
+    case speakerManual
     case back
     case edit
     case copy
@@ -524,6 +526,35 @@ public struct ODIconView: View {
             context.stroke(body1, with: .color(color), style: strokeStyle)
             context.stroke(head2, with: .color(color), style: strokeStyle)
             context.stroke(body2, with: .color(color), style: strokeStyle)
+
+        case .speakerAutomatic:
+            var robot = Path(roundedRect: CGRect(x: 5, y: 6, width: 14, height: 13), cornerRadius: 3)
+            robot.move(to: CGPoint(x: 12, y: 3))
+            robot.addLine(to: CGPoint(x: 12, y: 6))
+            robot.move(to: CGPoint(x: 2, y: 10))
+            robot.addLine(to: CGPoint(x: 2, y: 15))
+            robot.move(to: CGPoint(x: 22, y: 10))
+            robot.addLine(to: CGPoint(x: 22, y: 15))
+            robot.move(to: CGPoint(x: 9, y: 15))
+            robot.addLine(to: CGPoint(x: 15, y: 15))
+            context.stroke(robot, with: .color(color), style: strokeStyle)
+            for x in [8.0, 14.0] {
+                context.fill(Path(ellipseIn: CGRect(x: x, y: 10, width: 2, height: 2)), with: .color(color))
+            }
+
+        case .speakerManual:
+            var feather = Path()
+            feather.move(to: CGPoint(x: 3, y: 21))
+            feather.addLine(to: CGPoint(x: 15, y: 9))
+            feather.move(to: CGPoint(x: 6, y: 18))
+            feather.addLine(to: CGPoint(x: 6, y: 12))
+            feather.addLine(to: CGPoint(x: 14, y: 4))
+            feather.addQuadCurve(to: CGPoint(x: 20, y: 10), control: CGPoint(x: 23, y: 1))
+            feather.addLine(to: CGPoint(x: 12, y: 18))
+            feather.closeSubpath()
+            feather.move(to: CGPoint(x: 7, y: 14))
+            feather.addLine(to: CGPoint(x: 16, y: 14))
+            context.stroke(feather, with: .color(color), style: strokeStyle)
 
         case .back:
             var path = Path()
