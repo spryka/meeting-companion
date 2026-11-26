@@ -174,7 +174,7 @@ struct RecordingHistoryView: View {
             HStack(spacing: 0) {
                 if narrow ? model.workspaceShowsList : true {
                     VStack(spacing: 0) {
-                        sidebarHeader(narrow: narrow, compact: !isWide)
+                        sidebarHeader(narrow: narrow)
                         sidebarContent
                         sidebarFooter
                     }
@@ -352,7 +352,7 @@ struct RecordingHistoryView: View {
         }
     }
 
-    private func sidebarHeader(narrow: Bool, compact: Bool) -> some View {
+    private func sidebarHeader(narrow: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(spacing: 16) {
             HStack(alignment: .center) {

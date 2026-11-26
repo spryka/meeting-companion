@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "openspec/changes/transcript-row-design-parity/reference/index.html",
+  "entry": "openspec/changes/transcript-row-design-parity/reference/index.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-11-26T09:40:49.328Z",
+  "updatedAt": "2026-11-26T09:40:49.328Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

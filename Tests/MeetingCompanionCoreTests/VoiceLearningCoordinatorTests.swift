@@ -672,11 +672,13 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let edits = try f.correct(using: writer)
         let event = try #require(edits.pendingLearningEvents?.last)
         let worker = LearningWorker {
+            #expect(coordinator.activeLearningEventIDs == [event.eventID])
             switch interruption {
             case .none: break
             case .disableAndEnable:
                 coordinator.setEnabled(false)
                 coordinator.setEnabled(true)
+                #expect(coordinator.activeLearningEventIDs.isEmpty)
             case .resetPerson: try coordinator.resetPerson(f.newPerson.id, delete: false)
             }
         }
@@ -688,7 +690,9 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         #expect(try f.catalogue.load().catalogue.samples.isEmpty)
 
         coordinator.setEnabled(true)
-        try await coordinator.learn(eventID: event.eventID, writer: writer, processing: processing, policy: policy)
+        await coordinator.learnCommitted(events: [event], writer: writer, processing: processing, policy: policy,
+            expectedGeneration: try #require(coordinator.featureGeneration))
+        #expect(coordinator.activeLearningEventIDs.isEmpty)
         let learned = try f.catalogue.load().catalogue
         if interruption == .none {
             #expect(learned.samples.map(\.personID) == [f.newPerson.id])

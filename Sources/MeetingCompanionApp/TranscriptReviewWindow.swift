@@ -228,6 +228,17 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
+    static func continuationTurnIDs(in rows: [Row]) -> Set<String> {
+        Set(zip(rows, rows.dropFirst()).compactMap { previous, row in
+            guard previous.hasSavedName, row.hasSavedName, previous.name == row.name,
+                  previous.personID == row.personID, previous.nameOrigin == row.nameOrigin,
+                  previous.speakerID == row.speakerID, previous.sourceID == row.sourceID else {
+                return nil
+            }
+            return row.id
+        })
+    }
+
     enum SpeakerAssignmentScope: String, CaseIterable, Identifiable, Sendable {
         case thisTurn = "Только эта реплика"
         case allVoiceGroup = "Реплики этого голоса отсюда до конца"
@@ -282,10 +293,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         var preview: TranscriptBulkAssignmentPreview?
         let targetResultID: String
         let calendarAttendees: [String]
-
-        var isConfirmingGroup: Bool {
-            pendingConfirmation != nil
-        }
     }
 
     struct PresentationWarningItem: Identifiable, Equatable, Sendable {
@@ -329,7 +336,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         let fullyNamed: Bool
         let mixedNames: Bool
         var originalName: String { rows[0].originalName }
-        var speakerID: String { rows[0].speakerID }
     }
     var voiceGroups: [VoiceGroup] {
         var order: [TranscriptVoiceKey] = []
@@ -453,25 +459,10 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     func voiceNameSuggestionSections(query: String) -> [VoiceNameSuggestionSection] {
         let key = TranscriptSpeakerAssignmentService.nameComparisonKey
-        let sortedPeople = voicePeople.sorted {
-            let comparison = $0.displayName.localizedStandardCompare($1.displayName)
-            if comparison != .orderedSame { return comparison == .orderedAscending }
-            if $0.calendarBindings.isEmpty != $1.calendarBindings.isEmpty { return !$0.calendarBindings.isEmpty }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        let names = VoicePersonNames(voicePeople)
+        let sortedPeople = names.sortedPeople
         let peopleByID = Dictionary(uniqueKeysWithValues: sortedPeople.map { ($0.id, $0) })
-        let peopleByKey = Dictionary(grouping: sortedPeople) { key($0.displayName) }
-
-        func subtitle(for person: VoiceProfilePerson) -> String? {
-            if let contact = person.calendarBindings.first, !contact.isEmpty {
-                return contact
-            }
-            let group = peopleByKey[key(person.displayName)] ?? []
-            if group.count > 1, let idx = group.firstIndex(where: { $0.id == person.id }) {
-                return "Профиль \(idx + 1)"
-            }
-            return nil
-        }
+        let peopleByKey = names.peopleByKey
 
         let contactsByName = Dictionary(grouping: voiceCalendarContacts.indices) {
             key(voiceCalendarContacts[$0].displayName)
@@ -558,7 +549,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
             meetingIndices[id] = meetingItems.count
             meetingItems.append(.init(
                 id: id, displayName: person?.displayName ?? shownName,
-                subtitle: person.flatMap(subtitle(for:)) ?? contact?.address,
+                subtitle: person.flatMap(names.subtitle(for:)) ?? contact?.address,
                 kind: .meetingParticipant, selection: person.map(VoiceNameSuggestion.Selection.existingPerson) ?? .plainName(shownName),
                 isCalendarAttendee: isCalendar, isVoiceReady: person.map { voiceReadyPersonIDs.contains($0.id) } ?? false,
                 searchAliases: searchAliases, requiresExplicitPerson: requiresExplicitPerson
@@ -603,7 +594,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 VoiceNameSuggestion(
                     id: "person-\(person.id.uuidString)",
                     displayName: person.displayName,
-                    subtitle: subtitle(for: person),
+                    subtitle: names.subtitle(for: person),
                     kind: .savedVoice,
                     selection: .existingPerson(person),
                     isCalendarAttendee: false,
@@ -1048,9 +1039,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
     @Published private(set) var calendarAttendees: [String] = []
     @Published private(set) var contextAttendees: [String]? = nil
     @Published private(set) var presentationWarnings: [PresentationWarningItem] = []
-    var diarizationWarnings: [String] {
-        presentationWarnings.map(\.message)
-    }
 
     func userScrollPhaseChanged(_ phase: ScrollPhase) {
         guard !inputBlocked() else { return }
@@ -1414,20 +1402,12 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
     }
 
-    private static func loadCalendarAttendees(resultID: String, session: TranscriptReviewSession) -> [String] {
-        loadCalendarAttendees(resultID: resultID, storage: ReviewStorage(session: session))
-    }
-
     nonisolated private static func loadCalendarAttendees(resultID: String, storage: ReviewStorage) -> [String] {
         guard let doc = try? TranscriptDocument.load(from: storage.editsRepository.resultURL(for: resultID),
                                                      recordingDirectory: storage.recordingDirectory) else {
             return []
         }
         return doc.context?.attendees ?? []
-    }
-
-    private static func loadContextAttendees(resultID: String, session: TranscriptReviewSession) -> [String]? {
-        loadContextAttendees(resultID: resultID, storage: ReviewStorage(session: session))
     }
 
     nonisolated private static func loadContextAttendees(resultID: String, storage: ReviewStorage) -> [String]? {
@@ -1437,10 +1417,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
         }
         guard let attendees = doc.context?.attendees, !attendees.isEmpty else { return nil }
         return attendees
-    }
-
-    private static func loadPresentationWarnings(resultID: String, session: TranscriptReviewSession) -> [PresentationWarningItem] {
-        loadPresentationWarnings(resultID: resultID, storage: ReviewStorage(session: session))
     }
 
     nonisolated private static func loadPresentationWarnings(resultID: String, storage: ReviewStorage) -> [PresentationWarningItem] {
@@ -1468,10 +1444,6 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 message: warning.message
             )
         }
-    }
-
-    private static func loadIndex(resultID: String, session: TranscriptReviewSession) throws -> TranscriptIntervalIndex {
-        try loadIndex(resultID: resultID, storage: ReviewStorage(session: session))
     }
 
     nonisolated private static func loadIndex(resultID: String, storage: ReviewStorage) throws -> TranscriptIntervalIndex {
@@ -2001,6 +1973,27 @@ struct TranscriptReviewWindowView: View {
     private var compact: Bool { workspaceWidth <= 1023 }
     @State private var scrollPosition: String?
     @FocusState private var countFocused: Bool
+    @FocusState private var focusedControl: TranscriptControl?
+    @AccessibilityFocusState(for: .voiceOver) private var accessibilityControl: TranscriptControl?
+    @State private var hoveredTurnID: String?
+    @State private var hoveringTranscriptHelp = false
+    @State private var showingTranscriptHelp = false
+    @State private var editorTrigger: TranscriptControl?
+    @State private var pendingRowFocus: TranscriptControl?
+
+    private enum TranscriptControl: Hashable {
+        case help
+        case timecode(String)
+        case speaker(String)
+        case text(String)
+
+        var turnID: String? {
+            switch self {
+            case .help: nil
+            case let .timecode(id), let .speaker(id), let .text(id): id
+            }
+        }
+    }
 #if !TRANSCRIPT_WINDOW_HARNESS
     @StateObject private var transcriptNavigation = WorkspaceNavigationView(.transcript)
 #endif
@@ -2020,22 +2013,28 @@ struct TranscriptReviewWindowView: View {
                 transcriptContent
                     .opacity(model.voiceReviewVisible ? 0 : 1)
                     .allowsHitTesting(!model.voiceReviewVisible)
+                    .disabled(model.voiceReviewVisible)
                     .accessibilityHidden(model.voiceReviewVisible)
                 if model.voiceReviewVisible {
-                    SpeakerReviewView(model: model, title: title)
+                    SpeakerReviewView(model: model, title: title, transcriptReturnTurnID: editorTrigger?.turnID) {
+                        editorTrigger = nil
+                    }
                 }
             }
             playerFooter
         }
+        .onChange(of: ObjectIdentifier(model)) { resetTranscriptInteraction() }
+        .onChange(of: model.currentResultID) { resetTranscriptInteraction() }
         .onChange(of: model.voiceReviewVisible) { _, visible in
-            if !visible {
+            if !visible && !restoreEditorFocus() {
                 countFocused = model.turnNavigation == nil
 #if !TRANSCRIPT_WINDOW_HARNESS
                 if model.turnNavigation != nil { transcriptNavigation.focus() }
 #endif
             }
         }
-        .sheet(isPresented: Binding(get: { model.activeDraft != nil || model.activeTextDraft != nil }, set: { _ in })) {
+        .sheet(isPresented: Binding(get: { model.activeDraft != nil || model.activeTextDraft != nil }, set: { _ in }),
+               onDismiss: { restoreEditorFocus() }) {
             editingSheet.interactiveDismissDisabled()
         }
     }
@@ -2070,7 +2069,7 @@ struct TranscriptReviewWindowView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
                         } else {
-                            transcriptTurns(proxy: proxy)
+                            transcriptTurns()
                         }
                     }
                     .padding(.horizontal, narrow ? 16 : compact ? 24 : 48)
@@ -2235,17 +2234,15 @@ struct TranscriptReviewWindowView: View {
                 .padding(.top, 28)
                 .padding(.bottom, 24)
 
-            VStack(alignment: .leading, spacing: 24) {
+            HStack(spacing: 8) {
                 Text("Транскрипт")
                     .font(.system(size: 14, weight: .semibold))
                     .odLineBox(size: 14, height: 18.9)
                     .foregroundColor(ODColors.ink)
-                Text("Нажми на имя, чтобы сменить спикера, или «Редактировать», чтобы исправить текст.")
-                    .font(.system(size: 13))
-                    .odLineBox(size: 13, height: 20.15)
-                    .foregroundColor(ODColors.muted)
+                    .accessibilityAddTraits(.isHeader)
+                transcriptHelp
             }
-            .padding(.bottom, 16)
+            .padding(.bottom, 24)
         }
     }
 
@@ -2264,102 +2261,252 @@ struct TranscriptReviewWindowView: View {
         .accessibilityLabel("\(model.voiceGroups.count) говорящих. Назначить имена")
     }
 
-    private func transcriptTurns(proxy: ScrollViewProxy) -> some View {
-        LazyVStack(alignment: .leading, spacing: 8) {
+    private var canEditTurns: Bool {
+        !model.state.isReadOnly && !model.state.isClosed && model.currentResultID != nil
+    }
+
+    private var transcriptHelp: some View {
+        Button {
+            showingTranscriptHelp = true
+        } label: {
+            Text("?")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 16, height: 16)
+                .overlay(Circle().strokeBorder(lineWidth: 1))
+                .foregroundStyle(hoveringTranscriptHelp ? ODColors.ink : ODColors.muted)
+                .frame(width: narrow ? 44 : 32, height: narrow ? 44 : 32)
+                .background(hoveringTranscriptHelp ? ODColors.hover : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+                .onHover { hoveringTranscriptHelp = $0 }
+        }
+        .buttonStyle(.plain)
+        .focused($focusedControl, equals: .help)
+        .accessibilityFocused($accessibilityControl, equals: .help)
+        .accessibilityLabel("Справка по транскрипту")
+        .popover(isPresented: $showingTranscriptHelp, arrowEdge: .bottom) {
+            Text("Подведите курсор к реплике. Карандаш открывает правку текста. Чтобы изменить говорящего, нажмите на имя или значок людей.")
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(16)
+                .frame(width: 300, alignment: .leading)
+                .onExitCommand { showingTranscriptHelp = false }
+        }
+        .onChange(of: showingTranscriptHelp) { wasShown, isShown in
+            if wasShown && !isShown {
+                focusedControl = .help
+                accessibilityControl = .help
+            }
+        }
+    }
+
+    private func transcriptTurns() -> some View {
+        let continuationIDs = TranscriptReviewWindowModel.continuationTurnIDs(in: model.rows)
+        return LazyVStack(alignment: .leading, spacing: 8) {
             ForEach(model.rows) { row in
-                HStack(alignment: .top, spacing: narrow ? 8 : 16) {
-                    Button(action: {
-#if TRANSCRIPT_WINDOW_HARNESS
-                        if let target = model.requestTurnNavigation(to: row.id) {
-                            Task { await model.performTurnNavigation(target) }
-                        }
-#else
-                        transcriptNavigation.focus()
-                        (transcriptNavigation.window as? WorkspaceWindow)?.navigateTranscriptTurn(to: row.id)
-#endif
-                    }) {
-                        Text(Self.clock(seconds: row.start))
-                            .font(.system(size: 12)).monospacedDigit()
-                            .odLineBox(size: 12, height: 15.6)
-                            .foregroundColor(model.highlightedTurnID == row.id ? ODColors.accent : ODColors.muted)
-                            .frame(width: narrow ? 44 : 48, alignment: .leading)
-                            .padding(.vertical, 4)
+                transcriptTurn(row, continuesSpeaker: continuationIDs.contains(row.id))
+                    .id(row.id)
+                    .task(id: pendingRowFocus?.turnID == row.id ? pendingRowFocus : nil) {
+                        guard let pendingRowFocus, pendingRowFocus.turnID == row.id else { return }
+                        focusedControl = pendingRowFocus
+                        accessibilityControl = pendingRowFocus
+                        self.pendingRowFocus = nil
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!model.playbackEnabled)
-                    .accessibilityLabel("Перейти к " + Self.clock(seconds: row.start))
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        ODWrappingChips(trailingLast: true) {
-                            HStack(spacing: 8) {
-                            Circle()
-                                .fill(row.sourceID == .host ? ODColors.accent : ODColors.muted)
-                                .frame(width: 6, height: 6)
-
-                            if !model.state.isReadOnly {
-                                Button(action: { model.openVoiceReview(anchorTurnID: row.id) }) {
-                                    HStack(spacing: 4) {
-                                        Text(row.name)
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .odLineBox(size: 13, height: 16.9)
-                                            .foregroundColor(ODColors.ink)
-                                        if let origin = row.nameOriginLabel {
-                                            Text(origin).font(.system(size: 10)).foregroundStyle(ODColors.muted)
-                                        } else {
-                                            Text("Назначить имя").font(.system(size: 10)).foregroundStyle(ODColors.muted)
-                                        }
-                                        Text("▾")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(ODColors.muted)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 8))
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ODColors.line, lineWidth: 1))
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Имя говорящего: " + row.name)
-                                .accessibilityValue(row.nameOriginLabel ?? "Имя не назначено")
-                            } else {
-                                Text(row.name)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(ODColors.ink)
-                            }
-
-                            }
-
-                            if !model.state.isReadOnly {
-                                Button("Редактировать") {
-                                    model.openTextEditing(for: row.id)
-                                }
-                                .buttonStyle(.plain)
-                                .font(.system(size: 13, weight: .semibold))
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .foregroundColor(ODColors.muted)
-                                .accessibilityLabel("Изменить текст в " + Self.clock(seconds: row.start))
-                            }
-                        }
-
-                        Text(row.text)
-                            .font(.system(size: 16))
-                            .odLineBox(size: 16, height: 28)
-                            .foregroundColor(ODColors.ink)
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(.horizontal, narrow ? 8 : 12)
-                .padding(.vertical, narrow ? 12 : 16)
-                .background(
-                    model.highlightedTurnID == row.id
-                        ? ODColors.surface.mix(with: ODColors.selected, by: 0.65)
-                        : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 10)
-                )
-                .id(row.id)
             }
         }
         .scrollTargetLayout()
+    }
+
+    private func transcriptTurn(_ row: TranscriptReviewWindowModel.Row, continuesSpeaker: Bool) -> some View {
+        let timecode = Self.clock(seconds: row.start)
+        let showActions = hoveredTurnID == row.id || focusedControl?.turnID == row.id ||
+            accessibilityControl?.turnID == row.id
+        return HStack(alignment: .top, spacing: narrow ? 8 : 16) {
+            Button {
+#if TRANSCRIPT_WINDOW_HARNESS
+                if let target = model.requestTurnNavigation(to: row.id) {
+                    Task { await model.performTurnNavigation(target) }
+                }
+#else
+                transcriptNavigation.focus()
+                (transcriptNavigation.window as? WorkspaceWindow)?.navigateTranscriptTurn(to: row.id)
+#endif
+            } label: {
+                Text(timecode)
+                    .font(.system(size: 12)).monospacedDigit()
+                    .foregroundColor(model.highlightedTurnID == row.id ? ODColors.accent : ODColors.muted)
+                    .frame(width: narrow ? 44 : 48, height: 28, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.playbackEnabled)
+            .focused($focusedControl, equals: .timecode(row.id))
+            .accessibilityFocused($accessibilityControl, equals: .timecode(row.id))
+            .accessibilityLabel("Перейти к " + timecode)
+
+            if continuesSpeaker {
+                HStack(alignment: .top, spacing: 8) {
+                    turnText(row, announceSpeaker: true)
+                    if canEditTurns {
+                        HStack(spacing: 4) {
+                            let label = "Изменить говорящего в \(timecode)"
+                            turnAction(.people, control: .speaker(row.id), label: label,
+                                       value: speakerDescription(row), visible: showActions) {
+                                openSpeakerEditor(row.id)
+                            }
+                            textAction(row.id, timecode: timecode, visible: showActions)
+                        }
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(row.sourceID == .host ? ODColors.accent : ODColors.muted)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                        speakerCaption(row, timecode: timecode)
+                        Spacer(minLength: 0)
+                        if canEditTurns {
+                            textAction(row.id, timecode: timecode, visible: showActions)
+                        }
+                    }
+                    .frame(minHeight: 28)
+                    turnText(row, announceSpeaker: false)
+                }
+            }
+        }
+        .padding(.horizontal, narrow ? 8 : 12)
+        .padding(.vertical, continuesSpeaker ? 8 : narrow ? 12 : 16)
+        .background(
+            model.highlightedTurnID == row.id
+                ? ODColors.surface.mix(with: ODColors.selected, by: 0.65)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovered in
+            if hovered { hoveredTurnID = row.id }
+            else if hoveredTurnID == row.id { hoveredTurnID = nil }
+        }
+        .onDisappear {
+            if hoveredTurnID == row.id { hoveredTurnID = nil }
+        }
+    }
+
+    private func turnText(_ row: TranscriptReviewWindowModel.Row, announceSpeaker: Bool) -> some View {
+        Text(row.text)
+            .font(.system(size: 16))
+            .odLineBox(size: 16, height: 28)
+            .foregroundStyle(ODColors.ink)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .accessibilityLabel(announceSpeaker ? "\(row.name). \(row.text)" : row.text)
+    }
+
+    private func speakerOrigin(_ row: TranscriptReviewWindowModel.Row) -> (icon: ODIcon, label: String)? {
+        guard row.hasSavedName else { return nil }
+        switch row.nameOrigin {
+        case "automaticVoiceMatch", "derivedVoiceMatch": return (.speakerAutomatic, "Определено автоматически")
+        case "manual": return (.speakerManual, "Назначено вручную")
+        default: return nil
+        }
+    }
+
+    private func speakerDescription(_ row: TranscriptReviewWindowModel.Row) -> String {
+        if let origin = speakerOrigin(row) { return "\(row.name). \(origin.label)" }
+        return row.name
+    }
+
+    @ViewBuilder
+    private func speakerCaption(_ row: TranscriptReviewWindowModel.Row, timecode: String) -> some View {
+        let origin = speakerOrigin(row)
+        let caption = HStack(spacing: 8) {
+            Text(row.name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ODColors.ink)
+            if let origin {
+                ODIconView(origin.icon, size: 14, color: ODColors.muted)
+                    .accessibilityHidden(true)
+            } else if !row.hasSavedName && canEditTurns {
+                Text("· Назначить имя")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ODColors.muted)
+            }
+        }
+        if canEditTurns {
+            let title = row.hasSavedName ? "Изменить говорящего" : "Назначить имя"
+            Button { openSpeakerEditor(row.id) } label: {
+                caption
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(ODColors.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(ODColors.line))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focused($focusedControl, equals: .speaker(row.id))
+            .accessibilityFocused($accessibilityControl, equals: .speaker(row.id))
+            .accessibilityLabel("\(title) в \(timecode)")
+            .accessibilityValue(speakerDescription(row))
+            .help(origin.map { "\(title). \($0.label)" } ?? title)
+        } else {
+            caption
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(speakerDescription(row))
+                .help(origin?.label ?? row.name)
+        }
+    }
+
+    private func textAction(_ turnID: String, timecode: String, visible: Bool) -> some View {
+        turnAction(.edit, control: .text(turnID), label: "Исправить текст в \(timecode)", visible: visible) {
+            model.openTextEditing(for: turnID)
+            if model.activeTextDraft?.turnID == turnID { editorTrigger = .text(turnID) }
+        }
+    }
+
+    private func turnAction(_ icon: ODIcon, control: TranscriptControl, label: String, value: String = "",
+                            visible: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            // The native control stays in the key-view and accessibility loops.
+            ODIconView(icon, size: 16, color: ODColors.muted)
+                .opacity(visible ? 1 : 0)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .allowsHitTesting(visible)
+        .focused($focusedControl, equals: control)
+        .accessibilityFocused($accessibilityControl, equals: control)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+        .help(label)
+    }
+
+    private func openSpeakerEditor(_ turnID: String) {
+        model.openVoiceReview(anchorTurnID: turnID)
+        if model.voiceReviewVisible { editorTrigger = .speaker(turnID) }
+    }
+
+    @discardableResult
+    private func restoreEditorFocus() -> Bool {
+        guard let trigger = editorTrigger else { return false }
+        editorTrigger = nil
+        guard canEditTurns, model.rows.contains(where: { $0.id == trigger.turnID }) else {
+            focusedControl = .help
+            accessibilityControl = .help
+            return true
+        }
+        pendingRowFocus = trigger
+        return true
+    }
+
+    private func resetTranscriptInteraction() {
+        hoveredTurnID = nil
+        editorTrigger = nil
+        pendingRowFocus = nil
+        focusedControl = nil
+        accessibilityControl = nil
+        showingTranscriptHelp = false
     }
 
     private var playerFooter: some View {

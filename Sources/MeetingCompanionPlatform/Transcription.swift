@@ -7,7 +7,6 @@ public final class SubprocessRunner: @unchecked Sendable {
     public let process: Process
     private let lock = NSLock()
     private var isCancelled = false
-    private var started = false
     private var terminationWorkItem: DispatchWorkItem?
 
     public init(process: Process) {
@@ -23,7 +22,6 @@ public final class SubprocessRunner: @unchecked Sendable {
             throw CancellationError()
         }
         try process.run()
-        started = true
     }
 
     /// Returns true if cancelled either before start or while running.

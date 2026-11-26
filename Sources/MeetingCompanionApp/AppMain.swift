@@ -60,18 +60,6 @@ enum StartMeetingOutcome: Equatable, Sendable {
     case started
     case rejected(reason: String)
     case failed(reason: String)
-
-    var isStarted: Bool {
-        if case .started = self { return true }
-        return false
-    }
-
-    var reason: String? {
-        switch self {
-        case .started: return nil
-        case .rejected(let reason), .failed(let reason): return reason
-        }
-    }
 }
 
 @MainActor
@@ -142,6 +130,13 @@ final class RecorderViewModel: ObservableObject {
     private static let voiceGenerationKey = "localVoiceIdentityGeneration"
     @Published private(set) var voiceModelStatus: VoiceModelStatus = .unchecked
     @Published private(set) var voiceCatalogueUpdate = 0
+
+    private func voiceCatalogueDidChange() { voiceCatalogueUpdate &+= 1 }
+
+    func voiceCatalogueMutationDidCommit() {
+        voiceCatalogueDidChange()
+        if !settingsPresented { workspace.current?.refreshVoiceIdentityState() }
+    }
     @Published var voiceIdentityEnabled = false {
         didSet {
             guard voiceIdentityEnabled != oldValue else { return }
@@ -341,7 +336,6 @@ final class RecorderViewModel: ObservableObject {
     enum MainPage: String, CaseIterable, Identifiable {
         case recording, history
         var id: Self { self }
-        var title: String { self == .recording ? "Запись" : "История" }
     }
     @Published private var pageSelection = MainPage.history
     var mainPage: MainPage {
@@ -602,7 +596,6 @@ final class RecorderViewModel: ObservableObject {
     @Published var status = "Готов к записи"
     @Published var lastFileURL: URL?
     @Published private(set) var transcriptionState: TranscriptionState = .idle
-    var lastTranscriptURL: URL? { transcriptionState.transcript }
     @Published var transcriptionJobs = 0
     @Published private(set) var voiceJobs = 0
     @Published var transcriptionReady: Bool {
@@ -904,7 +897,7 @@ final class RecorderViewModel: ObservableObject {
         self.history.processing = proc
         self.workspace.trashInput = { [weak self] in self?.trashOwnsInput ?? false }
         profiles.setLearningObserver { [weak self] in
-            Task { @MainActor in self?.voiceCatalogueUpdate &+= 1 }
+            Task { @MainActor in self?.voiceCatalogueDidChange() }
         }
 
         self.workspaceSubscription = self.workspace.$current.sink { [weak self] current in
@@ -1181,10 +1174,6 @@ final class RecorderViewModel: ObservableObject {
         isCheckingAudio ? "Завершить проверку звука" : "Проверить звук"
     }
 
-    func toggleAudioCheck() {
-        toggleAudioCheck(from: nil)
-    }
-
     func endAudioCheck() async {
         isCheckingAudio = false
         activeAudioCheckSection = nil
@@ -1294,10 +1283,6 @@ final class RecorderViewModel: ObservableObject {
 
     func resetCache() async {
         await performCacheReset()
-    }
-
-    func resetCache() {
-        Task { await resetCache() }
     }
 
     func checkTranscription(prepare: Bool) async {

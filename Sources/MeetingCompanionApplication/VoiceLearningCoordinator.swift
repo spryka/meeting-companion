@@ -18,13 +18,25 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
     private var libraryRecoveryID: UUID?
     private var libraryRecovered = false
     private var enabledGeneration: UUID?
-    private var learningInFlight: Set<UUID> = []
+    private struct LearningAdmission: Equatable {
+        let feature: UUID
+        let library: UUID
+    }
+
+    private var learningInFlight: [UUID: LearningAdmission] = [:]
     private var learningObserver: (@Sendable () -> Void)?
 
     public init(catalogue: VoiceProfileCatalogueRepository) {
         self.catalogue = catalogue
     }
 
+    public var activeLearningEventIDs: Set<UUID> {
+        lock.withLock {
+            guard let feature = enabledGeneration, let library = readyLibraryID else { return [] }
+            let current = LearningAdmission(feature: feature, library: library)
+            return Set(learningInFlight.compactMap { $0.value == current ? $0.key : nil })
+        }
+    }
     public var hasReconciliationFailures: Bool { lock.withLock { !failures.isEmpty } }
     public var canMatchVoices: Bool { matchingLibraryGeneration != nil }
     public var isEnabled: Bool { lock.withLock { enabledGeneration != nil } }
@@ -267,15 +279,17 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
                   await processing.containsRecordingInCurrentLibrary(recording), !Task.isCancelled else { return }
             let admitted = lock.withLock {
                 guard enabledGeneration == expectedGeneration, readyLibraryID == library,
-                      ids.isDisjoint(with: learningInFlight) else { return false }
-                learningInFlight.formUnion(ids)
+                      ids.allSatisfy({ learningInFlight[$0] == nil }) else { return false }
+                let admission = LearningAdmission(feature: expectedGeneration, library: library)
+                for id in ids { learningInFlight[id] = admission }
                 return true
             }
             guard admitted else { return }
+            lock.withLock { learningObserver }?()
             await learnBatch(selected, ids: ids, writer: writer, processing: processing, policy: policy,
                              expectedGeneration: expectedGeneration, library: library)
             let notify = lock.withLock {
-                learningInFlight.subtract(ids)
+                for id in ids { learningInFlight.removeValue(forKey: id) }
                 return learningObserver
             }
             notify?()
@@ -683,10 +697,12 @@ public final class VoiceLearningCoordinator: @unchecked Sendable {
 
     public func beginLibraryReconciliation() -> UUID {
         let id = UUID()
-        lock.withLock {
+        let notify = lock.withLock {
             libraryRecoveryID = id
             libraryRecovered = false
+            return learningInFlight.isEmpty ? nil : learningObserver
         }
+        notify?()
         return id
     }
 

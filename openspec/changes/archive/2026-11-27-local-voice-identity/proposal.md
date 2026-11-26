@@ -53,9 +53,9 @@ learning, общий исполнитель), Platform (worker launch), Pipeline
 CLI сохраняет совместимость своих команд и использует те же provenance guards
 при изменении имён; отдельный CLI управления профилями не добавляется.
 
-Архитектурное основание задаёт [ADR-0008](../../../adr/0008-local-voice-identity-profiles.md).
-[ADR-0009](../../../adr/0009-enrol-voices-through-name-edits.md) закрепляет обучение через назначение имени.
-[ADR-0010](../../../adr/0010-confirm-existing-speaker-name.md) описывает подтверждение сохранённого имени на одной реплике.
-[ADR-0011](../../../adr/0011-group-voice-matching-and-clean-subwindows.md) задаёт отбор чистых подокон и групповое сопоставление по `Speaker N`. Визуальный эталон хранится
+Архитектурное основание задаёт [ADR-0008](../../../../adr/0008-local-voice-identity-profiles.md).
+[ADR-0009](../../../../adr/0009-enrol-voices-through-name-edits.md) закрепляет обучение через назначение имени.
+[ADR-0010](../../../../adr/0010-confirm-existing-speaker-name.md) описывает подтверждение сохранённого имени на одной реплике.
+[ADR-0011](../../../../adr/0011-group-voice-matching-and-clean-subwindows.md) задаёт отбор чистых подокон и групповое сопоставление по `Speaker N`. Визуальный эталон хранится
 в reference/. Нативная приёмка и проверка качества входят в tasks. Модель используется
 из Swift/MLX PoC.

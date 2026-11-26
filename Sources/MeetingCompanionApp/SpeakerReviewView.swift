@@ -15,6 +15,8 @@ struct SpeakerReviewView: View {
 
     @ObservedObject var model: TranscriptReviewWindowModel
     var title: String = "Имена участников"
+    var transcriptReturnTurnID: String? = nil
+    var onTranscriptJump: () -> Void = {}
     @State private var showOtherTurns = false
     @State private var suggestionsOpen = false
     @State private var filterSuggestions = false
@@ -33,7 +35,7 @@ struct SpeakerReviewView: View {
                     if compact && !model.voiceListVisible && !model.voiceReviewComplete {
                         Button("Голоса") { _ = model.requestVoiceList() }.buttonStyle(ODButtonStyle(compact: true))
                     }
-                    Button("К транскрипту") { model.returnToTranscript() }
+                    Button("К транскрипту") { model.returnToTranscript(turnID: transcriptReturnTurnID) }
                         .buttonStyle(ODButtonStyle(compact: true))
                 }
                 .padding(.horizontal, 16).padding(.vertical, 8)
@@ -77,7 +79,7 @@ struct SpeakerReviewView: View {
                 return
             }
             model.cancelVoiceInput()
-            model.returnToTranscript()
+            model.returnToTranscript(turnID: transcriptReturnTurnID)
         }
     }
 
@@ -273,9 +275,11 @@ struct SpeakerReviewView: View {
     }
 
     private func contextLink(_ row: TranscriptReviewWindowModel.Row) -> some View {
-        Button("В транскрипте") { model.returnToTranscript(turnID: row.id) }
-            .font(.system(size: 12)).buttonStyle(.plain).foregroundStyle(ODColors.muted)
-
+        Button("В транскрипте") {
+            model.returnToTranscript(turnID: row.id)
+            if !model.voiceReviewVisible { onTranscriptJump() }
+        }
+        .font(.system(size: 12)).buttonStyle(.plain).foregroundStyle(ODColors.muted)
     }
 
     private var assignment: some View {
