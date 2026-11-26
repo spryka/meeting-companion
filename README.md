@@ -17,13 +17,10 @@
 
 ## Установка
 
-**Стабильная версия — 2.0.1.**
-[Скачать DMG для Apple Silicon](https://github.com/spryka/meeting-companion/releases/download/v2.0.1/Meeting-Companion-2.0.1-arm64.dmg)
+**Стабильная версия — 2.2.0, build 104.**
+[Скачать DMG для Apple Silicon](https://github.com/spryka/meeting-companion/releases/download/v2.2.0/Meeting-Companion-2.2.0-arm64.dmg)
 · [Все версии](https://github.com/spryka/meeting-companion/releases)
 · [История изменений](CHANGELOG.md)
-
-**Бета — 2.2.0-beta.1, build 100.**
-[Скачать DMG с локальным автоопределением голосов](https://github.com/spryka/meeting-companion/releases/download/v2.2.0-beta.1/Meeting-Companion-2.2.0-beta.1-arm64.dmg).
 
 Откройте DMG, перенесите Meeting Companion в «Программы» и извлеките образ.
 Для замены установленной версии сначала завершите запись, обработку и
