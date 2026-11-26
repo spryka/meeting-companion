@@ -5,6 +5,16 @@
         <description>Обновления Meeting Companion для Apple Silicon</description>
         <language>ru</language>
         <item>
+            <title>2.2.0</title>
+            <description><![CDATA[<p>Стабильный релиз для macOS 15+ на Apple Silicon, build 104.</p><ul><li>При чтении транскрипта имя показывается в начале серии реплик, рядом виден знак ручного или автоматического назначения. При наведении появляется карандаш для правки текста. У продолжения рядом с ним доступна смена говорящего. Кнопка &quot;?&quot; открывает справку.</li><li>В настройках &quot;Голоса&quot; появился список профилей с поиском по имени и контакту, состоянием обучения и числом встреч. Можно сбросить обучение или удалить отдельный профиль.</li><li>Имена правятся в едином редакторе. Можно прослушать реплику, выбрать человека и применить имя к одной реплике или группе.</li><li>Капсулы записи и обработки стали компактнее. &quot;Подробнее&quot; открывает маршрут обработки в библиотеке, а значок приложения остаётся в строке меню.</li><li>При автозапуске после входа в macOS главное окно остаётся скрытым. Ручной запуск и команда &quot;Библиотека&quot; открывают его.</li><li>Напоминание о встрече занимает меньше места, а список встреч прокручивается отдельно.</li><li>Локальное обучение и автоматическое определение знакомых голосов доступны как эксперимент. По умолчанию они выключены. Модель скачивается только при явной подготовке.</li></ul>]]></description>
+            <pubDate>Thu, 26 Nov 2026 21:51:40 +0000</pubDate>
+            <sparkle:version>104</sparkle:version>
+            <sparkle:shortVersionString>2.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/spryka/meeting-companion/releases/download/v2.2.0/Meeting-Companion-2.2.0-arm64.zip" length="18346974" type="application/octet-stream" sparkle:edSignature="rxZ2b5AacNG1/qoxU/TCKTNb/4TiWhaKOTjrz/7/Uk2U/9q+SAvHwwxQ8TTL+bQki08mYD3aAZ6hjjEJM9GxAQ=="/>
+        </item>
+        <item>
             <title>2.2.0-beta.1</title>
             <description><![CDATA[<p>Meeting Companion может автоматически подписывать говорящих по локальным голосовым профилям. Включите экспериментальное запоминание в «Настройки → Голоса», подготовьте модель и назначьте несколько имён вручную. Ручные имена имеют приоритет.</p><p>Обновлены редактор имён и капсулы записи и обработки. «Подробнее» переносит ход распознавания в библиотеку, а «Открыть» показывает готовый текст. При входе в macOS приложение запускается в строке меню.</p>]]></description>
             <pubDate>Tue, 24 Nov 2026 17:22:58 +0300</pubDate>
