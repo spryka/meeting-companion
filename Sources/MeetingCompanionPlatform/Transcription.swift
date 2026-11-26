@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 import MeetingCompanionCore
 
 public final class SubprocessRunner: @unchecked Sendable {
@@ -130,7 +131,10 @@ public enum Transcription {
     }
 
     private static func runVoiceWorker(arguments: [String], input: Data?, on workerQueue: DispatchQueue = queue) async throws -> Data {
-        let process = try makeProcess(arguments: arguments)
+        try await runVoiceWorker(process: makeProcess(arguments: arguments), input: input, on: workerQueue)
+    }
+
+    static func runVoiceWorker(process: Process, input: Data?, on workerQueue: DispatchQueue = queue) async throws -> Data {
         let runner = SubprocessRunner(process: process)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -138,8 +142,11 @@ public enum Transcription {
                     let inputPipe = Pipe()
                     let outputPipe = Pipe()
                     let inputWriter = inputPipe.fileHandleForWriting
+                    let diagnostics = OSAllocatedUnfairLock(initialState: Data())
+                    let diagnosticRead = DispatchGroup()
                     defer {
                         try? inputWriter.close()
+                        diagnosticRead.wait()
                         runner.cancelTerminationTimer()
                     }
                     do {
@@ -148,10 +155,24 @@ public enum Transcription {
                         }
                         process.standardInput = inputPipe
                         process.standardOutput = outputPipe
-                        if input == nil { process.standardError = outputPipe }
-                        else { process.standardError = FileHandle.nullDevice }
+                        let errorPipe = input.map { _ in Pipe() }
+                        process.standardError = errorPipe ?? outputPipe
                         try runner.start()
-                        if let input { try inputWriter.write(contentsOf: input) }
+                        if let errorPipe {
+                            DispatchQueue.global(qos: .utility).async(group: diagnosticRead) {
+                                let reader = errorPipe.fileHandleForReading
+                                defer { try? reader.close() }
+                                let limit = 4096
+                                var tail = Data()
+                                while let chunk = try? reader.read(upToCount: limit), !chunk.isEmpty {
+                                    tail.append(chunk)
+                                    if tail.count > limit { tail.removeFirst(tail.count - limit) }
+                                }
+                                let diagnosticTail = tail
+                                diagnostics.withLock { $0 = diagnosticTail }
+                            }
+                        }
+                        let writeResult = Result { if let input { try inputWriter.write(contentsOf: input) } }
                         try inputWriter.close()
                         let limit = VoiceEmbeddingProtocol.responseByteLimit
                         let reader = outputPipe.fileHandleForReading
@@ -164,13 +185,16 @@ public enum Transcription {
                         process.waitUntilExit()
                         if runner.cancelled { throw CancellationError() }
                         guard process.terminationStatus == 0 else {
-                            let detail = input == nil ? String(decoding: output, as: UTF8.self)
-                                .split(whereSeparator: \.isNewline).last.map(String.init) : nil
+                            diagnosticRead.wait()
+                            let diagnosticOutput = input == nil ? output : diagnostics.withLock { $0 }
+                            let detail = String(decoding: diagnosticOutput, as: UTF8.self)
+                                .split(whereSeparator: \.isNewline).last.map(String.init)
                             let fallback = input == nil ? "Не удалось проверить или подготовить модель голосов." :
                                 "Не удалось получить признаки голоса."
                             throw NSError(domain: "VoiceEmbeddings", code: Int(process.terminationStatus),
                                 userInfo: [NSLocalizedDescriptionKey: detail ?? fallback])
                         }
+                        try writeResult.get()
                         continuation.resume(returning: output)
                     } catch {
                         let cancelled = runner.cancelled

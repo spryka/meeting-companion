@@ -142,6 +142,13 @@ final class RecorderViewModel: ObservableObject {
     private static let voiceGenerationKey = "localVoiceIdentityGeneration"
     @Published private(set) var voiceModelStatus: VoiceModelStatus = .unchecked
     @Published private(set) var voiceCatalogueUpdate = 0
+
+    private func voiceCatalogueDidChange() { voiceCatalogueUpdate &+= 1 }
+
+    func voiceCatalogueMutationDidCommit() {
+        voiceCatalogueDidChange()
+        if !settingsPresented { workspace.current?.refreshVoiceIdentityState() }
+    }
     @Published var voiceIdentityEnabled = false {
         didSet {
             guard voiceIdentityEnabled != oldValue else { return }
@@ -504,6 +511,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     @Published var capsuleDismissed = false
+    @Published private var processingDetailsHandoff: (recording: URL, jobID: UUID?)?
     @Published private(set) var transcriptionWarnings: [String] = []
     @Published private(set) var lastRecordingTitle = "Запись встречи"
     @Published var improveTerms: Bool {
@@ -528,7 +536,14 @@ final class RecorderViewModel: ObservableObject {
     var onPresentWorkspace: (() -> Void)?
 
     var showsRecordingCapsule: Bool {
-        isRecording || sessionStarting || sessionStopping || (!capsuleDismissed && (recordingCancelled || recordingSaveError != nil || transcriptionState != .idle))
+        if sessionStarting || sessionStopping { return true }
+        guard !capsuleDismissed else { return false }
+        let showProcessing = transcriptionState != .idle && !processingDetailsOwnsCapsule
+        return isRecording || recordingCancelled || recordingSaveError != nil || showProcessing
+    }
+    private var processingDetailsOwnsCapsule: Bool {
+        guard let handoff = processingDetailsHandoff, handoff.recording == lastFileURL else { return false }
+        return handoff.jobID == capsuleJobID
     }
     var showsProcessingCapsule: Bool { !isRecording && !sessionStarting && !sessionStopping && !recordingCancelled && recordingSaveError == nil && showsRecordingCapsule }
     @Published private(set) var recordingCancelled = false
@@ -553,6 +568,7 @@ final class RecorderViewModel: ObservableObject {
             return
         }
         processingNavigationNotice = nil
+        processingDetailsHandoff = (lastFileURL, capsuleJobID)
         onPresentWorkspace?()
     }
 
@@ -892,10 +908,10 @@ final class RecorderViewModel: ObservableObject {
         )
         self.workspace.settingsInput = { [weak self] in self?.settingsPresented ?? false }
         self.history.openEditsWriter = { [weak self] in self?.workspace.current?.state.session?.editsRepository }
-        self.history.processing = processingService
+        self.history.processing = proc
         self.workspace.trashInput = { [weak self] in self?.trashOwnsInput ?? false }
         profiles.setLearningObserver { [weak self] in
-            Task { @MainActor in self?.voiceCatalogueUpdate &+= 1 }
+            Task { @MainActor in self?.voiceCatalogueDidChange() }
         }
 
         self.workspaceSubscription = self.workspace.$current.sink { [weak self] current in
@@ -955,14 +971,15 @@ final class RecorderViewModel: ObservableObject {
         switch snapshot.phase {
         case .starting:
             cancelCapsuleDeadline()
-            pendingCapsuleEnqueue = nil
-            capsuleJobID = nil
             sessionStarting = true
             isRecording = false
             sessionStopping = false
             activeSessionID = snapshot.sessionID
         case .recording(let url, let date):
             cancelCapsuleDeadline()
+            if activeRecordingURL != url { capsuleDismissed = false }
+            pendingCapsuleEnqueue = nil
+            capsuleJobID = nil
             sessionStarting = false
             isRecording = true
             sessionStopping = false
@@ -1005,6 +1022,7 @@ final class RecorderViewModel: ObservableObject {
         if !recordingCancelled, !isRecording, !sessionStarting, !sessionStopping,
            let job = snapshot.active ?? snapshot.queued.first ?? snapshot.admitting.first {
             cancelCapsuleDeadline()
+            if capsuleJobID != job.id { capsuleDismissed = false }
             capsuleJobID = job.id
             pendingCapsuleEnqueue = nil
             lastFileURL = job.recordingURL
@@ -1021,7 +1039,7 @@ final class RecorderViewModel: ObservableObject {
 
     private func resumeVoiceLearning(in root: URL) {
         guard root == outputDirectory, voiceIdentityEnabled, let policy = Self.manualVoicePolicy,
-              let generation = voiceLearning.completedLibraryGeneration else { return }
+              let generation = voiceLearning.matchingLibraryGeneration else { return }
         let recordings = history.entries.map(\.recording).filter { Self.isInLibrary($0, root: root) }
         let profiles = voiceLearning
         let processing = processingService
@@ -1055,7 +1073,11 @@ final class RecorderViewModel: ObservableObject {
             history.progress.removeValue(forKey: job.recordingURL)
             if let warning { history.reportError(warning, recording: job.recordingURL) }
             if capsuleJobID == job.id, pendingCapsuleEnqueue == nil {
-                syncProcessingPresentation(job.recordingURL)
+                if case let .failed(_, reason, _) = event {
+                    syncProcessingPresentation(job.recordingURL, failure: reason)
+                } else {
+                    syncProcessingPresentation(job.recordingURL)
+                }
             }
         case .persistenceWarning(let job, let warning): history.reportError(warning, recording: job.recordingURL)
         case .dependenciesChecked(let output, let succeeded):
@@ -1364,8 +1386,11 @@ final class RecorderViewModel: ObservableObject {
             return
         }
         if !isRecording {
-            lastFileURL = recording
-            lastRecordingTitle = entry.effectiveTitle
+            // The active job keeps its capsule while another recording is queued.
+            if latestProcessingSnapshot?.active == nil {
+                lastFileURL = recording
+                lastRecordingTitle = entry.effectiveTitle
+            }
             recordingSaveError = nil
         }
         enqueue(recording, stopped: nil)
@@ -1502,6 +1527,7 @@ final class RecorderViewModel: ObservableObject {
             voiceFeatureGeneration: voicePolicy != nil ? voiceLearning.featureGeneration : nil
         )
         let presentationID = UUID()
+        let jobID = UUID()
         guard historyRepository.reserveWork(recording, id: presentationID) else {
             history.reportError("Дождитесь завершения работы с записью", recording: recording)
             return
@@ -1510,8 +1536,9 @@ final class RecorderViewModel: ObservableObject {
         if lastFileURL == recording && !isRecording {
             cancelCapsuleDeadline()
             recordingCancelled = false
+            if processingDetailsHandoff?.recording == recording { processingDetailsHandoff = nil }
             pendingCapsuleEnqueue = presentationID
-            capsuleJobID = nil
+            capsuleJobID = jobID
             capsuleDismissed = false
             transcriptionState = .running(nil)
         }
@@ -1523,13 +1550,15 @@ final class RecorderViewModel: ObservableObject {
             let job = await processingService.enqueue(
                 recordingURL: recording,
                 settings: settings,
-                stoppedCapture: stopped
+                stoppedCapture: stopped,
+                jobID: jobID
             )
+            let failure = await processingService.failure(for: job)
             if pendingCapsuleEnqueue == presentationID {
                 pendingCapsuleEnqueue = nil
                 capsuleJobID = job.id
                 await history.synchronize()
-                syncProcessingPresentation(recording)
+                syncProcessingPresentation(recording, failure: failure)
             }
         }
     }
@@ -1540,19 +1569,24 @@ final class RecorderViewModel: ObservableObject {
         capsuleDeadlineID = nil
     }
 
-    func syncProcessingPresentation(_ recording: URL) {
+    func syncProcessingPresentation(_ recording: URL, failure: String? = nil) {
         guard !recordingCancelled, lastFileURL == recording, !isRecording, !sessionStarting, !sessionStopping,
               pendingCapsuleEnqueue == nil, let entry = history.entry(recording) else { return }
         cancelCapsuleDeadline()
         transcriptionWarnings = entry.problems.map(\.message)
-        switch entry.phase {
-        case .completed: transcriptionState = .completed(entry.currentTranscriptURL ?? entry.currentResultURL ?? entry.transcript)
-        case .failed, .interrupted:
-            transcriptionState = .failed(entry.problems.last(where: \.isError)?.message ?? entry.status)
-        case .queued, .saving, .processing: transcriptionState = .running(history.progress[recording])
-        case .recording: transcriptionState = .idle
+        let attemptFailure = failure ?? capsuleProgress?.failure
+        if let failure = attemptFailure {
+            transcriptionState = .failed(failure)
+        } else {
+            switch entry.phase {
+            case .completed: transcriptionState = .completed(entry.currentTranscriptURL ?? entry.currentResultURL ?? entry.transcript)
+            case .failed, .interrupted:
+                transcriptionState = .failed(entry.problems.last(where: \.isError)?.message ?? entry.status)
+            case .queued, .saving, .processing: transcriptionState = .running(history.progress[recording])
+            case .recording: transcriptionState = .idle
+            }
         }
-        if entry.phase == .completed || entry.phase == .failed {
+        if attemptFailure != nil || entry.phase == .completed || entry.phase == .failed {
             let deadlineID = UUID(), jobID = capsuleJobID
             capsuleDeadlineID = deadlineID
             capsuleTimer = scheduleCapsuleTimer(60) { [weak self] in
@@ -1583,18 +1617,23 @@ final class RecorderViewModel: ObservableObject {
         preparingCapture = true
         sessionStarting = true
         cancelCapsuleDeadline()
-        pendingCapsuleEnqueue = nil
-        capsuleJobID = nil
         recordingCancelled = false
-        capsuleDismissed = false
         defer {
             preparingCapture = false
             sessionStarting = false
             isBusy = false
+            if !isRecording {
+                if let snapshot = latestProcessingSnapshot, snapshot.jobCount > 0 {
+                    applyProcessingSnapshot(snapshot)
+                } else if capsuleJobID != nil, let recording = lastFileURL {
+                    syncProcessingPresentation(recording)
+                }
+            }
             refreshMeetingSelection()
             restartLevelMonitor()
         }
         var attemptedURL: URL?
+        var createdLibraryRoot: URL?
         do {
             errorMessage = nil
             recordingSaveError = nil
@@ -1604,9 +1643,12 @@ final class RecorderViewModel: ObservableObject {
             muteActivity = MutedMicrophoneActivity()
             await endAudioCheck()
             let directory = outputDirectory
-            let outputURL = try await Task.detached {
-                RecordingEntry.canonicalURL(try RecordingPaths.makeOutputURL(outputDirectory: directory))
+            let (outputURL, createdRoot) = try await Task.detached {
+                let rootExisted = FileManager.default.fileExists(atPath: directory.path)
+                let outputURL = RecordingEntry.canonicalURL(try RecordingPaths.makeOutputURL(outputDirectory: directory))
+                return (outputURL, !rootExisted)
             }.value
+            if createdRoot { createdLibraryRoot = directory }
             attemptedURL = outputURL
             var preparedRecorder: Recorder?
             let controller: any AudioCaptureControllerProtocol
@@ -1646,6 +1688,8 @@ final class RecorderViewModel: ObservableObject {
             self.recorder = preparedRecorder
             isRecording = true
             sessionStarting = false
+            pendingCapsuleEnqueue = nil
+            capsuleJobID = nil
             activeSessionID = sessionSnapshot.sessionID
 
             recordingMeetingID = meeting?.id
@@ -1693,6 +1737,9 @@ final class RecorderViewModel: ObservableObject {
             updateCaptureCheck(succeeded: false)
             errorMessage = error.localizedDescription
             status = "Ошибка"
+        }
+        if let createdLibraryRoot, createdLibraryRoot == outputDirectory {
+            await history.refresh(root: createdLibraryRoot)
         }
     }
 

@@ -155,10 +155,20 @@ public struct VoiceProfileCatalogue: Codable, Equatable, Sendable {
     public var seenSamples: [UUID: SeenSamples]?
 
     public var availableAggregates: [VoiceProfileAggregate] {
-        let suspended = Set((learningRecords ?? []).compactMap { record in
+        aggregatesExcluding(assignments: suspendedAssignments)
+    }
+
+    private var suspendedAssignments: Set<UUID> {
+        Set((learningRecords ?? []).compactMap { record in
             record.stage == .prepared ? record.event.previousAssignment?.assignmentID : nil
         })
-        return aggregatesExcluding(assignments: suspended)
+    }
+
+    public func hasSuspendedSamples(for personID: UUID) -> Bool {
+        let suspended = suspendedAssignments
+        return !suspended.isEmpty && samples.contains {
+            $0.personID == personID && suspended.contains($0.assignment.assignmentID)
+        }
     }
 
     public func latestLearningUpdate(for personID: UUID) -> VoiceProfileLearningRecord? {

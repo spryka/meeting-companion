@@ -50,18 +50,24 @@ struct RecorderSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(page.rawValue).font(.system(size: 20, weight: .semibold)).odLineBox(size: 20, height: 31)
-                Text(page.introduction).font(.system(size: 13)).odLineBox(size: 13, height: 20.8).foregroundStyle(ODColors.muted)
-            }
-            switch page {
-            case .general: general
-            case .recording: recording
-            case .transcription: transcription
-            case .calendar: CalendarSettingsView(calendar: model.calendar)
-            case .diagnostics: diagnostics
-            case .voices: VoiceSettingsView(model: model)
+        Group {
+            if page == .voices {
+                VoiceSettingsView(model: model)
+            } else {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(page.rawValue).font(.system(size: 20, weight: .semibold)).odLineBox(size: 20, height: 31)
+                        Text(page.introduction).font(.system(size: 13)).odLineBox(size: 13, height: 20.8).foregroundStyle(ODColors.muted)
+                    }
+                    switch page {
+                    case .general: general
+                    case .recording: recording
+                    case .transcription: transcription
+                    case .calendar: CalendarSettingsView(calendar: model.calendar)
+                    case .diagnostics: diagnostics
+                    case .voices: EmptyView()
+                    }
+                }
             }
         }
         .toggleStyle(.switch)

@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import os
 import AppKit
+import SwiftUI
 import Testing
 import MeetingCompanionCore
 import MeetingCompanionApplication
@@ -68,6 +69,19 @@ private actor Capsule28OpenGate {
 }
 
 @MainActor struct Capsule24Tests {
+    private func capsuleCenterAlpha(_ model: RecorderViewModel) throws -> CGFloat {
+        let size = AppWindowState.processingCapsuleSize
+        let renderer = ImageRenderer(content: RecordingCapsuleHostView(viewModel: model)
+            .frame(width: size.width, height: size.height))
+        let context = try #require(CGContext(data: nil, width: Int(size.width), height: Int(size.height),
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.clear(CGRect(origin: .zero, size: size))
+        renderer.render { _, draw in draw(context) }
+        let bitmap = NSBitmapImageRep(cgImage: try #require(context.makeImage()))
+        return try #require(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)).alphaComponent
+    }
+
     private func settle(_ predicate: @MainActor () async -> Bool) async throws {
         for _ in 0..<1000 {
             if await predicate() { return }
@@ -114,32 +128,171 @@ private actor Capsule28OpenGate {
         let failedEntry = try #require(model.history.entry(url))
         let view = RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: {})
         #expect(view.processingDetails(for: failedEntry)?.failure != nil, "New failed job details take priority over cached old transcript")
+        #expect(!model.showsProcessingCapsule)
         #expect(model.workspace.current?.legacyText == "Synthetic previous committed text")
         #expect(try String(contentsOf: text, encoding: .utf8) == "Synthetic previous committed text")
         #expect(failedEntry.capabilities.canRetry)
     }
 
-    @Test func processingDetailsUsesSharedAdmissionAndCloseDoesNotRestartJob() async throws {
+    @Test(arguments: [false, true])
+    func rejectedRetryShowsAdmissionFailureAndPreservesSavedTranscript(usesAdmission: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("a")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = folder.appendingPathComponent("a.m4a")
+        for path in ["a.m4a", "raw/a.host_record.wav", "raw/a.remote_record.wav"] {
+            try Data().write(to: folder.appendingPathComponent(path))
+        }
+        let savedText = "Previously saved text"
+        let text = folder.appendingPathComponent("a.sources.transcript.txt")
+        try Data(savedText.utf8).write(to: text)
+        let suite = "retry-admission-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+
+        let repo = RecordingHistoryRepository(), runner = Capsule24Runner()
+        var entry = RecordingEntry.load(recording: url)
+        entry.phase = .completed
+        repo.put(entry, persist: false)
+        let coordinator = VoiceLearningCoordinator(catalogue: .init(applicationDataDirectory: root))
+        let admission = Capsule24Admission()
+        let retryAdmission: (@Sendable (URL) async -> Bool)?
+        if usesAdmission { retryAdmission = { _ in await admission.wait() } }
+        else { retryAdmission = nil }
+        let service = ProcessingService(transcriptionRunner: runner, audioExporter: Exporter(), historyRepository: repo,
+                                        retryAdmission: retryAdmission, voiceLearning: coordinator)
+        let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
+        let writer = TranscriptEditsRepository(recordingDirectory: folder)
+        try writer.acquireWriteLock()
+        defer { writer.releaseWriteLock() }
+        let otherWriter = TranscriptEditsRepository(recordingDirectory: folder)
+        var reason: String?
+        do { try otherWriter.acquireWriteLock() }
+        catch { reason = error.localizedDescription }
+        let failure = try #require(reason)
+
+        try await settle { model.isAttached && model.history.entry(url) != nil }
+        model.retryRecording(url)
+        if usesAdmission {
+            try await settle { await admission.waiting && model.isAdmittingProcessing }
+            await admission.open()
+        }
+        try await settle { model.transcriptionState != .running(nil) && model.processingRoutes[url] != nil }
+        #expect(model.transcriptionState == .failed(failure))
+        #expect(model.capsuleProgress?.failure == failure)
+        model.showProcessingDetails()
+        #expect(await model.loadWorkspace(model.workspaceLoadRequest))
+        let preserved = try #require(model.history.entry(url))
+        let view = RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: {})
+        #expect(view.feedbackError == failure)
+        #expect(view.processingDetails(for: preserved) == nil)
+        #expect(model.workspace.current?.legacyText == savedText)
+        #expect(preserved.phase == .completed)
+        #expect(try String(contentsOf: text, encoding: .utf8) == savedText)
+        #expect(await !runner.waiting)
+    }
+
+    @Test(arguments: [false, true])
+    func firstRecordingReconcilesNewLibraryRoot(failFirst: Bool) async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = parent.appendingPathComponent("Meetings")
+        let suite = "first-library-recording-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: parent)
+        }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        defaults.set(true, forKey: "localVoiceIdentityEnabled")
+        defaults.set([String](), forKey: "meetingCalendarIDs")
+        let appData = parent.appendingPathComponent("appData")
+        let coordinator = VoiceLearningCoordinator(catalogue: .init(applicationDataDirectory: appData))
+        var failNextCapture = failFirst
+        let model = RecorderViewModel(voiceLearning: coordinator, defaults: defaults, appDataDirectory: appData,
+                                      startBackgroundServices: false, captureControllerFactory: { url, _, _ in
+            if failNextCapture {
+                failNextCapture = false
+                throw CocoaError(.fileWriteUnknown)
+            }
+            return Capture(output: url)
+        },
+                                      microphoneProvider: { [] }, accessProvider: { [] }, calendarCatalogProvider: { [] })
+        await model.history.refresh(root: root)
+        #expect(!coordinator.canMatchVoices)
+        try await settle { model.isAttached }
+        _ = await model.startMeeting(nil, expectedSessionID: nil).value
+        if failFirst {
+            #expect(!model.isRecording)
+            #expect(coordinator.canMatchVoices)
+            _ = await model.startMeeting(nil, expectedSessionID: nil).value
+        }
+        #expect(model.isRecording)
+        #expect(coordinator.canMatchVoices)
+    }
+
+    enum CapsuleHandoffScenario: CaseIterable, Sendable { case queuedRecording, captureFailure, earlyDetails }
+
+    @Test(arguments: CapsuleHandoffScenario.allCases)
+    func processingDetailsHandsOffCapsuleWithoutRestartingJob(_ scenario: CapsuleHandoffScenario) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("processing-details-" + UUID().uuidString)
         let folder = root.appendingPathComponent("a")
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("raw"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let url = folder.appendingPathComponent("a.m4a")
         for path in ["a.m4a", "raw/a.host_record.wav", "raw/a.remote_record.wav"] { try Data().write(to: folder.appendingPathComponent(path)) }
+        let otherFolder = root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: otherFolder.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        let other = otherFolder.appendingPathComponent("other.m4a")
+        for path in ["other.m4a", "raw/other.host_record.wav", "raw/other.remote_record.wav"] {
+            try Data().write(to: otherFolder.appendingPathComponent(path))
+        }
         let suite = "processing-details-" + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.set(root.path, forKey: "recordingsDirectory")
         defer { defaults.removePersistentDomain(forName: suite) }
         let repo = RecordingHistoryRepository(), runner = Capsule24Runner()
         repo.put(RecordingEntry.load(recording: url), persist: false)
+        repo.put(RecordingEntry.load(recording: other), persist: false)
         let service = ProcessingService(transcriptionRunner: runner, audioExporter: Exporter(), historyRepository: repo)
-        let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults)
+        let capture = Capsule28OpenGate()
+        let model = isolatedRecorderModel(processingService: service, historyRepository: repo, defaults: defaults,
+                                         captureControllerFactory: { _, _, _ in
+            await capture.wait()
+            throw CocoaError(.fileWriteUnknown)
+        })
+        let controller = RecordingCapsuleController(model: model, defaults: defaults)
+        defer { controller.hideCapsule() }
+        let panel = try #require(controller.panel)
         var presentations = 0
         model.onPresentWorkspace = { presentations += 1 }
-        try await settle { model.isAttached }
+        try await settle { model.isAttached && model.history.entry(url) != nil }
+        if scenario == .earlyDetails {
+            model.retryRecording(url)
+            model.showProcessingDetails() // Synchronous action before enqueue reaches the service.
+            #expect(!model.showsProcessingCapsule)
+            try await settle { await runner.waiting && model.capsuleProgress != nil }
+            let firstID = try #require(model.capsuleProgress?.jobID)
+            #expect(!model.showsProcessingCapsule)
+            model.retryRecording(other)
+            try await settle { model.transcriptionJobs == 2 }
+            await runner.finish()
+            try await settle { await runner.waiting && model.lastFileURL == other && model.transcriptionJobs == 1 }
+            let otherProgress = TranscriptionProgress(stage: .gigaam, channel: "host", completed: 1, total: 3)
+            await runner.emit(otherProgress)
+            try await settle { model.capsuleProgress?.local == otherProgress }
+            model.retryRecording(url)
+            try await settle { model.transcriptionJobs == 2 }
+            await runner.finish()
+            try await settle { await runner.waiting && model.lastFileURL == url && model.capsuleProgress.map { $0.jobID != firstID } == true }
+            #expect(model.showsProcessingCapsule, "A new attempt gets its own capsule")
+            await runner.finish()
+            try await settle { model.transcriptionJobs == 0 }
+            return
+        }
         let job = await service.enqueue(recordingURL: url, settings: .init(parakeet: true, echoCancellation: true))
-        try await settle { await runner.waiting && model.capsuleProgress?.jobID == job.id }
-        let other = root.appendingPathComponent("other/other.m4a")
+        try await settle { await runner.waiting && model.capsuleProgress?.jobID == job.id && panel.isVisible }
         model.selectedHistoryURL = other
         model.echoCancellation = false
         await runner.emit(.init(stage: .gigaam, channel: "remote", completed: 52, total: 153))
@@ -148,19 +301,52 @@ private actor Capsule28OpenGate {
         #expect(model.presentSettings())
         model.showProcessingDetails()
         #expect(model.selectedHistoryURL == other && presentations == 0 && model.processingNavigationNotice != nil)
+        #expect(model.showsProcessingCapsule)
         model.dismissSettings()
         model.workspace.externalModal = true
         model.showProcessingDetails()
         #expect(model.selectedHistoryURL == other && presentations == 0)
+        #expect(model.showsProcessingCapsule)
         model.workspace.externalModal = false
-        for _ in 0..<3 {
-            model.showProcessingDetails()
-            #expect(model.selectedHistoryURL == url && model.processingNavigationNotice == nil)
-            #expect(model.admitWindowClose(isWorkspace: true))
-            #expect(model.showsProcessingCapsule && model.capsuleProgress?.local?.completed == 52)
-            #expect(await service.totalJobCount == 1)
+        let visibleAlpha = try capsuleCenterAlpha(model)
+        #expect(visibleAlpha == 1)
+        model.showProcessingDetails()
+        #expect(model.selectedHistoryURL == url && model.processingNavigationNotice == nil)
+        #expect(!model.showsProcessingCapsule)
+        let hiddenAlpha = try capsuleCenterAlpha(model)
+        #expect(hiddenAlpha == 0, "The host must already be transparent while the panel is being hidden")
+        #expect(model.admitWindowClose(isWorkspace: true))
+        #expect(model.capsuleProgress?.local?.completed == 52)
+        #expect(await service.totalJobCount == 1)
+        #expect(presentations == 1 && model.capsuleProgress?.jobID == job.id)
+        try await settle { !panel.isVisible }
+        if scenario == .captureFailure {
+            let start = Task { await model.startRecordingIntent(customTitle: "Synthetic failed capture") }
+            try await settle { await capture.waiting && model.sessionStarting }
+            await runner.finish()
+            try await settle { model.transcriptionJobs == 0 && model.processingRoutes[url]?.terminal == true }
+            await capture.open()
+            #expect(await start.value == false)
+            #expect(model.capsuleProgress?.jobID == job.id)
+            #expect(!model.showsRecordingCapsule)
+            try await settle { !panel.isVisible }
+            return
         }
-        #expect(presentations == 3 && model.capsuleProgress?.jobID == job.id)
+        model.retryRecording(other)
+        #expect(!model.showsRecordingCapsule, "B entering the queue must leave the active A capsule hidden")
+        try await settle { model.transcriptionJobs == 2 && model.capsuleProgress?.jobID == job.id }
+        #expect(!model.showsProcessingCapsule)
+        #expect(!panel.isVisible)
+        await runner.finish()
+        try await settle { await runner.waiting && model.lastFileURL == other && panel.isVisible }
+        #expect(model.processingRoutes[url]?.terminal == true)
+        #expect(model.showsProcessingCapsule)
+        await runner.finish()
+        try await settle { model.transcriptionJobs == 0 && model.capsuleProgress?.terminal == true }
+
+        let retry = await service.enqueue(recordingURL: url, settings: .init(parakeet: false, echoCancellation: false))
+        try await settle { await runner.waiting && model.capsuleProgress?.jobID == retry.id }
+        #expect(retry.id != job.id && model.showsProcessingCapsule)
         await runner.finish()
         try await settle { model.transcriptionJobs == 0 }
     }
@@ -335,7 +521,7 @@ private actor Capsule28OpenGate {
         workspace.closeCurrent()
     }
 
-    @Test(arguments: ["admitted", "modal", "missing", "deleted", "capture", "job", "generation"])
+    @Test(arguments: ["admitted", "modal", "missing", "deleted", "capture", "job", "generation", "failedCaptureAfterOpen"])
     func capsule28OwnedOpenUsesRealTarget(scenario: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("capsule28-" + UUID().uuidString)
         let folder = root.appendingPathComponent("saved")
@@ -356,14 +542,31 @@ private actor Capsule28OpenGate {
         let workspace = TranscriptReviewWindowManager(isProcessing: { _ in await gate.wait(); return false },
             transportFactory: { BufferingPresentationTransport() })
         let service = ProcessingService(transcriptionRunner: runner, audioExporter: Exporter(), historyRepository: repo)
+        let failCapture = scenario == "failedCaptureAfterOpen"
+        let admitted = scenario == "admitted" || failCapture
+        let captureGate = Capsule28OpenGate()
         let model = isolatedRecorderModel(processingService: service, historyRepository: repo, workspace: workspace, defaults: defaults,
-            captureControllerFactory: { output, _, _ in Capture(output: output, duration: 3) },
+            captureControllerFactory: { output, _, _ in
+                if failCapture {
+                    await captureGate.wait()
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                return Capture(output: output, duration: 3)
+            },
             shortRecordingTrash: { _ in }, capsuleTimerScheduler: { clock.schedule($0, $1) })
+        let controller = admitted ? RecordingCapsuleController(model: model, defaults: defaults) : nil
+        defer { controller?.hideCapsule() }
         await model.history.synchronize()
         try await settle { model.isAttached }
         model.lastFileURL = url
         model.syncProcessingPresentation(url)
         #expect(model.showsProcessingCapsule && !model.capsuleDismissed)
+        if let controller {
+            let panel = try #require(controller.panel)
+            try await settle { panel.isVisible }
+            let visibleAlpha = try capsuleCenterAlpha(model)
+            #expect(visibleAlpha == 1)
+        }
         var presented = 0
         model.onPresentWorkspace = { presented += 1 }
         if scenario == "modal" { workspace.externalModal = true }
@@ -398,7 +601,21 @@ private actor Capsule28OpenGate {
         await gate.open()
         try await settle { workspace.current?.state.id == url || workspace.failure != nil }
         for _ in 0..<20 { await Task.yield() }
-        #expect(model.capsuleDismissed == (scenario == "admitted"))
+        #expect(model.capsuleDismissed == admitted)
+        if let controller {
+            let panel = try #require(controller.panel)
+            let hiddenAlpha = try capsuleCenterAlpha(model)
+            #expect(hiddenAlpha == 0)
+            try await settle { !panel.isVisible }
+            if failCapture {
+                let start = Task { await model.startRecordingIntent(customTitle: "Synthetic failed capture") }
+                try await settle { await captureGate.waiting && model.sessionStarting && panel.isVisible }
+                await captureGate.open()
+                #expect(await start.value == false)
+                #expect(model.capsuleDismissed && !model.showsRecordingCapsule)
+                try await settle { !panel.isVisible }
+            }
+        }
         if scenario == "deleted" { #expect(workspace.failure != nil && workspace.current == nil) }
         else { #expect(workspace.current?.legacyText != nil) }
         if scenario == "capture", let session = model.activeSessionID {
@@ -603,7 +820,7 @@ private actor Capsule28OpenGate {
         await model.history.synchronize()
         try await settle { model.isAttached }
         model.retryRecording(first)
-        try await settle { await runner.waiting }
+        try await settle { await runner.waiting && model.capsuleProgress?.terminal == false }
         model.lastFileURL = queued
         model.syncProcessingPresentation(queued)
         let stale = try #require(clock.deadlines.last)

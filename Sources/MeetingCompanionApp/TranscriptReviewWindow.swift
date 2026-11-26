@@ -382,7 +382,9 @@ final class TranscriptReviewWindowModel: ObservableObject {
         var scopeSelected = false
         var preview: TranscriptBulkAssignmentPreview?
 
-        var isDirty: Bool { inputName != initialName || person != .asEntered || requiresExplicitPerson || replaceManual }
+        var isDirty: Bool {
+            !inputName.utf8.elementsEqual(initialName.utf8) || person != .asEntered || requiresExplicitPerson || replaceManual
+        }
     }
     @Published private(set) var voiceReviewVisible = false
     @Published private(set) var voiceReviewComplete = false
@@ -451,25 +453,10 @@ final class TranscriptReviewWindowModel: ObservableObject {
 
     func voiceNameSuggestionSections(query: String) -> [VoiceNameSuggestionSection] {
         let key = TranscriptSpeakerAssignmentService.nameComparisonKey
-        let sortedPeople = voicePeople.sorted {
-            let comparison = $0.displayName.localizedStandardCompare($1.displayName)
-            if comparison != .orderedSame { return comparison == .orderedAscending }
-            if $0.calendarBindings.isEmpty != $1.calendarBindings.isEmpty { return !$0.calendarBindings.isEmpty }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        let names = VoicePersonNames(voicePeople)
+        let sortedPeople = names.sortedPeople
         let peopleByID = Dictionary(uniqueKeysWithValues: sortedPeople.map { ($0.id, $0) })
-        let peopleByKey = Dictionary(grouping: sortedPeople) { key($0.displayName) }
-
-        func subtitle(for person: VoiceProfilePerson) -> String? {
-            if let contact = person.calendarBindings.first, !contact.isEmpty {
-                return contact
-            }
-            let group = peopleByKey[key(person.displayName)] ?? []
-            if group.count > 1, let idx = group.firstIndex(where: { $0.id == person.id }) {
-                return "Профиль \(idx + 1)"
-            }
-            return nil
-        }
+        let peopleByKey = names.peopleByKey
 
         let contactsByName = Dictionary(grouping: voiceCalendarContacts.indices) {
             key(voiceCalendarContacts[$0].displayName)
@@ -556,7 +543,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
             meetingIndices[id] = meetingItems.count
             meetingItems.append(.init(
                 id: id, displayName: person?.displayName ?? shownName,
-                subtitle: person.flatMap(subtitle(for:)) ?? contact?.address,
+                subtitle: person.flatMap(names.subtitle(for:)) ?? contact?.address,
                 kind: .meetingParticipant, selection: person.map(VoiceNameSuggestion.Selection.existingPerson) ?? .plainName(shownName),
                 isCalendarAttendee: isCalendar, isVoiceReady: person.map { voiceReadyPersonIDs.contains($0.id) } ?? false,
                 searchAliases: searchAliases, requiresExplicitPerson: requiresExplicitPerson
@@ -601,7 +588,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
                 VoiceNameSuggestion(
                     id: "person-\(person.id.uuidString)",
                     displayName: person.displayName,
-                    subtitle: subtitle(for: person),
+                    subtitle: names.subtitle(for: person),
                     kind: .savedVoice,
                     selection: .existingPerson(person),
                     isCalendarAttendee: false,
@@ -841,6 +828,7 @@ final class TranscriptReviewWindowModel: ObservableObject {
     func confirmVoiceAssignment(_ confirmation: VoiceAssignmentDraft, confirmSavedName: Bool = false) {
         guard !inputBlocked(), voiceReviewVisible, !isClosed, !state.isClosed else { return }
         guard !voiceRequiresReopen, let draft = voiceDraft, draft == confirmation,
+              draft.inputName.utf8.elementsEqual(confirmation.inputName.utf8),
               draft.resultID == currentResultID, draft.voice == selectedVoiceID,
               var preview = draft.preview, !draft.inputName.allSatisfy(\.isWhitespace) else {
             error = "Подтверждение группы устарело или не совпадает с текущим состоянием."

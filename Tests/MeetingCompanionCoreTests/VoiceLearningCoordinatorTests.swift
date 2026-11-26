@@ -144,6 +144,11 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
                              catalogueGeneration: 0, personGeneration: person.generation))
         }
 
+        func reconcileLibrary(using coordinator: VoiceLearningCoordinator, writer: TranscriptEditsRepository) {
+            coordinator.reconcileLibrary(recordings: [recording.appendingPathComponent("meeting_synthetic.m4a")],
+                scanComplete: true, id: coordinator.beginLibraryReconciliation(), openWriters: [writer])
+        }
+
         func correct(using writer: TranscriptEditsRepository, learn: Bool = true,
                      selection: TranscriptPersonSelection? = nil) throws -> TranscriptEdits {
             let service = TranscriptSpeakerAssignmentService(editsRepository: writer)
@@ -156,6 +161,223 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
     }
 
     private enum Interrupted: Error { case beforeRename }
+
+    @Test func correctingManualSpellingRetainsTheLearnedSample() throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let coordinator = VoiceLearningCoordinator(catalogue: f.catalogue)
+        coordinator.setEnabled(true)
+        let writer = TranscriptEditsRepository(recordingDirectory: f.recording, learningCommitObserver: coordinator.observe)
+        let before = try writer.loadEdits(resultID: Self.resultID)
+        let baseline = try f.catalogue.load().catalogue
+        let service = TranscriptSpeakerAssignmentService(editsRepository: writer)
+        let correctedName = "АННА"
+        let preview = try service.previewAssignment(resultID: Self.resultID, anchorTurnID: Self.turnID,
+                                                    scope: .single, displayName: correctedName)
+        let saved = try service.assignSpeakerName(preview: preview, displayName: correctedName, learnVoice: true)
+        #expect(saved.overrides[Self.turnID]?.displayName == correctedName)
+        #expect(saved.overrides[Self.turnID]?.assignment == before.overrides[Self.turnID]?.assignment)
+        #expect(saved.pendingLearningEvents == before.pendingLearningEvents)
+        #expect(try f.catalogue.load().catalogue == baseline)
+    }
+
+    @Test func reconcilingAnAlreadyTransferredOutboxDoesNotNeedExclusiveCatalogueAccess() throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let coordinator = VoiceLearningCoordinator(catalogue: f.catalogue)
+        let writer = TranscriptEditsRepository(recordingDirectory: f.recording, learningCommitObserver: coordinator.observe)
+        _ = try f.correct(using: writer)
+        let transferred = try f.catalogue.load()
+        #expect(transferred.catalogue.learningRecords?.map(\.stage) == [.committed])
+        try f.catalogue.withVerifiedSnapshot(transferred) {
+            try coordinator.reconcile(writer: writer, resultID: Self.resultID)
+        }
+        #expect(try f.catalogue.load().catalogue == transferred.catalogue)
+    }
+
+    @Test func unresolvedRevocationKeepsLearningPendingUntilReconciliation() async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let coordinator = VoiceLearningCoordinator(catalogue: f.catalogue)
+        coordinator.setEnabled(true)
+        let writer = TranscriptEditsRepository(recordingDirectory: f.recording, learningCommitObserver: coordinator.observe)
+        let saved = try f.correct(using: writer)
+        let event = try #require(saved.pendingLearningEvents?.last)
+        f.reconcileLibrary(using: coordinator, writer: writer)
+        let assignment = try #require(event.assignment)
+        let vector = [Float(1)] + Array(repeating: 0, count: 255)
+        let sample = VoiceProfileSample(personID: f.newPerson.id, embeddingSpaceID: "test", embedding: vector,
+            recordingLocator: f.recording.path, resultID: Self.resultID, turnID: Self.turnID, sourceID: .host,
+            start: 0, end: 4, pcmFingerprint: "staged-revocation", assignment: assignment, policyID: "test")
+        _ = try f.catalogue.update(f.catalogue.load()) {
+            $0.samples.append(sample)
+            $0.aggregates.append(.init(personID: f.newPerson.id, embeddingSpaceID: "test", centroid: vector,
+                                      activeSampleIDs: [sample.id], policyID: "test"))
+        }
+        writer.releaseWriteLock()
+
+        let interrupted = TranscriptEditsRepository(recordingDirectory: f.recording, atomicReplaceHook: { _, _ in
+            throw Interrupted.beforeRename
+        }, learningCommitObserver: { phase, commit in
+            if case .preparing = phase { coordinator.observe(phase, commit) }
+        })
+        #expect(throws: Interrupted.beforeRename) {
+            try f.correct(using: interrupted, selection: f.confirmed(f.oldPerson))
+        }
+        interrupted.releaseWriteLock()
+
+        let worker = LearningWorker { Issue.record("No embedding request for zero windows") }
+        let processing = ProcessingService(transcriptionRunner: worker, audioExporter: worker, voiceRunner: worker)
+        let policy = try #require(VoiceProfileUpdatePolicy(id: "test", minimumAgreement: 0.8))
+        _ = try await coordinator.learn(eventID: event.eventID, writer: writer, processing: processing,
+                                        policy: policy, maximumWindows: 0)
+        let pending = try f.catalogue.load().catalogue
+        #expect(pending.learningRecords?.map(\.stage) == [.committed, .prepared])
+        #expect(pending.availableAggregates.isEmpty)
+
+        try coordinator.reconcile(writer: writer, resultID: Self.resultID)
+        _ = try await coordinator.learn(eventID: event.eventID, writer: writer, processing: processing,
+                                        policy: policy, maximumWindows: 0)
+        #expect(try f.catalogue.load().catalogue.learningRecords?.map(\.stage) == [.skipped, .aborted])
+    }
+
+    enum RevocationTiming: CaseIterable, Sendable {
+        case beforeExtraction, queuedExtraction, reconciledWhileQueued, libraryChangedWhileQueued, duringExtraction, restart, catalogueConflict
+    }
+
+    @Test(arguments: RevocationTiming.allCases)
+    func failedWriteAheadDefersLearningFromAnotherRecordingUntilRevocationTransfers(timing: RevocationTiming) async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let coordinator = VoiceLearningCoordinator(catalogue: f.catalogue)
+        let generation = UUID()
+        coordinator.setEnabled(true, generation: generation)
+        let other = f.root.appendingPathComponent("meeting_other")
+        try FileManager.default.copyItem(at: f.recording, to: other)
+        let learner = TranscriptEditsRepository(recordingDirectory: other, learningCommitObserver: coordinator.observe)
+        try FileManager.default.removeItem(at: learner.editsURL(for: Self.resultID))
+        let result = learner.resultURL(for: Self.resultID)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: result)) as? [String: Any])
+        for key in ["words", "baselineWords", "turns"] {
+            var entries = try #require(json[key] as? [[String: Any]])
+            entries[0]["end"] = 5.0
+            json[key] = entries
+        }
+        try JSONSerialization.data(withJSONObject: json).write(to: result)
+        let document = try TranscriptDocument.load(from: result, recordingDirectory: other)
+        let source = try #require(document.sources.first { $0.id == .host })
+        let quality = VoiceAudioQuality(resultID: Self.resultID, producer: "test", sources: [
+            .init(id: .host, recognitionAudioPath: source.recognitionAudioPath,
+                  fingerprint: String(repeating: "a", count: 64), duration: 5, speech: nil, overlap: [])
+        ], recordingFingerprint: String(repeating: "c", count: 64))
+        try quality.encoded(for: document).write(to: result.deletingLastPathComponent().appendingPathComponent(VoiceAudioQuality.filename))
+        let service = TranscriptSpeakerAssignmentService(editsRepository: learner)
+        let name = f.oldPerson.displayName
+        let person = try coordinator.personSelection(.existing(f.oldPerson.id), displayName: name)
+        let preview = try service.previewAssignment(resultID: Self.resultID, anchorTurnID: Self.turnID,
+            scope: .single, displayName: name, person: person)
+        let saved = try service.assignSpeakerName(preview: preview, displayName: name, learnVoice: true)
+        let event = try #require(saved.pendingLearningEvents?.last)
+        let recordings = [f.recording.appendingPathComponent("meeting_synthetic.m4a"),
+                          other.appendingPathComponent("meeting_other.m4a")]
+        coordinator.reconcileLibrary(recordings: recordings, scanComplete: true,
+            id: coordinator.beginLibraryReconciliation(), openWriters: [learner])
+        let correction = TranscriptEditsRepository(recordingDirectory: f.recording, learningCommitObserver: coordinator.observe)
+        let triggerFailure: @Sendable () throws -> Void = {
+            let snapshot = try f.catalogue.load()
+            try f.catalogue.withVerifiedSnapshot(snapshot) {
+                let edits = try f.correct(using: correction)
+                #expect(edits.overrides[Self.turnID]?.assignment?.personID == f.newPerson.id)
+            }
+        }
+        if timing == .beforeExtraction || timing == .restart { try triggerFailure() }
+        let calls = Mutex(0)
+        let worker = LearningWorker {
+            let first = calls.withLock { count in
+                count += 1
+                return count == 1
+            }
+            if timing == .duringExtraction && first { try triggerFailure() }
+            if timing == .catalogueConflict && first { throw VoiceProfileCatalogueError.conflict }
+        }
+        let (admission, releaseAdmission) = AsyncStream<Void>.makeStream()
+        let currentRoot = Mutex(f.root)
+        let processing = ProcessingService(transcriptionRunner: worker, audioExporter: worker,
+                                           retryAdmission: { _ in
+            for await _ in admission {}
+            return false
+        }, voiceRunner: worker, isRecordingInCurrentLibrary: { recording in
+            currentRoot.withLock { root in
+                recording.resolvingSymlinksInPath().pathComponents.starts(with: root.resolvingSymlinksInPath().pathComponents)
+            }
+        })
+        let policy = try #require(VoiceProfileUpdatePolicy(id: "test", minimumAgreement: 0.8))
+        let active = timing == .restart ? VoiceLearningCoordinator(catalogue: f.catalogue) : coordinator
+        active.setEnabled(true, generation: generation)
+        if timing == .queuedExtraction || timing == .reconciledWhileQueued || timing == .libraryChangedWhileQueued {
+            let updates = await processing.observe()
+            var iterator = updates.makeAsyncIterator()
+            let blocker = Task { await processing.enqueue(recordingURL: recordings[0], settings: .init(parakeet: false, echoCancellation: false)) }
+            while let update = await iterator.next() {
+                if case .snapshot(let snapshot) = update, !snapshot.admitting.isEmpty { break }
+            }
+            let learning = Task {
+                await active.learnCommitted(events: [event], writer: learner, processing: processing, policy: policy, expectedGeneration: generation)
+            }
+            while let update = await iterator.next() {
+                if case .snapshot(let snapshot) = update, snapshot.voiceJobCount == 1 { break }
+            }
+            try triggerFailure()
+            if timing != .queuedExtraction {
+                let staysInLibrary = timing == .reconciledWhileQueued
+                if !staysInLibrary {
+                    let newRoot = f.root.appendingPathComponent("second-library", isDirectory: true)
+                    try FileManager.default.createDirectory(at: newRoot, withIntermediateDirectories: false)
+                    currentRoot.withLock { $0 = newRoot }
+                }
+                let currentRecordings = staysInLibrary ? recordings : []
+                active.reconcileLibrary(recordings: currentRecordings, scanComplete: true,
+                    id: active.beginLibraryReconciliation(), openWriters: [correction, learner])
+                #expect(active.canMatchVoices)
+                await active.resumeCommitted(recordings: currentRecordings, processing: processing, policy: policy, openWriter: learner)
+            }
+            releaseAdmission.finish()
+            _ = await blocker.value
+            await learning.value
+            if timing == .reconciledWhileQueued {
+                #expect(calls.withLock { $0 } == 1)
+                #expect(try f.catalogue.load().catalogue.learningRecords?.first { $0.id == event.eventID }?.stage == .applied)
+                return
+            }
+            if timing == .libraryChangedWhileQueued {
+                #expect(calls.withLock { $0 } == 0)
+                let pending = try #require(f.catalogue.load().catalogue.learningRecords?.first { $0.id == event.eventID })
+                #expect(pending.stage == .committed && pending.outcome == nil)
+                return
+            }
+        } else if timing == .restart || timing == .catalogueConflict {
+            active.reconcileLibrary(recordings: recordings, scanComplete: true,
+                id: active.beginLibraryReconciliation(), openWriters: [learner])
+            await active.resumeCommitted(recordings: recordings, processing: processing, policy: policy, openWriter: learner)
+        } else {
+            _ = try await active.learn(eventID: event.eventID, writer: learner, processing: processing, policy: policy)
+        }
+        let attempted = timing == .duringExtraction || timing == .catalogueConflict
+        #expect(calls.withLock { $0 } == (attempted ? 1 : 0))
+        let pending = try #require(f.catalogue.load().catalogue.learningRecords?.first { $0.id == event.eventID })
+        #expect(pending.stage == .committed && pending.outcome == nil)
+        if timing == .catalogueConflict {
+            await active.resumeCommitted(recordings: recordings, processing: processing, policy: policy, openWriter: learner)
+        } else {
+            #expect(active.failure(for: f.recording) != nil)
+            try active.reconcile(writer: correction, resultID: Self.resultID)
+            #expect(try f.catalogue.load().catalogue.samples.isEmpty)
+            #expect(active.failure(for: f.recording) == nil)
+            _ = try await active.learn(eventID: event.eventID, writer: learner, processing: processing, policy: policy)
+        }
+        #expect(calls.withLock { $0 } == (attempted ? 2 : 1))
+        #expect(try f.catalogue.load().catalogue.learningRecords?.first { $0.id == event.eventID }?.stage == .applied)
+    }
 
     enum LearningInterruption: CaseIterable, Sendable { case none, disableAndEnable, resetPerson }
 
@@ -206,13 +428,15 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let policy = try #require(VoiceProfileUpdatePolicy(id: "test", minimumAgreement: 0.8))
         await restarted.resumeCommitted(recordings: recordings, processing: processing, policy: policy)
         await restarted.resumeCommitted(recordings: recordings, processing: processing, policy: policy)
-        #expect(calls.withLock { $0 } == (reenabled ? 0 : 1))
-        #expect(try f.catalogue.load().catalogue.samples.isEmpty == reenabled)
-        #expect(try f.catalogue.load().catalogue.learningRecords?.last?.stage == (reenabled ? .committed : .applied))
+        let canLearn = !reenabled && !damagedNeighbor
+        #expect(calls.withLock { $0 } == (canLearn ? 1 : 0))
+        #expect(try f.catalogue.load().catalogue.samples.isEmpty == !canLearn)
+        #expect(try f.catalogue.load().catalogue.learningRecords?.last?.stage == (canLearn ? .applied : .committed))
     }
 
     enum AutomaticInterruption: CaseIterable, Sendable {
         case none, noCompatibleProfiles, manualEdit, newResult, changeLibrary, changedLibraryBeforeExtraction, disableAndEnable, resetPerson
+        case disableDuringSavePreparation
     }
 
     @Test(arguments: [false, true]) func correctingNameRevokesSamplesFromEarlierImport(unboundV2: Bool) throws {
@@ -273,6 +497,7 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let preview = try service.previewAssignment(resultID: Self.resultID, anchorTurnID: Self.turnID,
             scope: .group, displayName: f.newPerson.displayName, person: try f.confirmed(f.newPerson), replaceManuallyAssigned: true)
         let edits = try service.assignSpeakerName(preview: preview, displayName: f.newPerson.displayName, learnVoice: true)
+        f.reconcileLibrary(using: coordinator, writer: writer)
         let calls = Mutex(0)
         let worker = LearningWorker {
             calls.withLock { $0 += 1 }
@@ -286,10 +511,11 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let catalogue = try f.catalogue.load().catalogue
         #expect(catalogue.learningRecords?.count == 3)
         #expect(catalogue.learningRecords?.filter { $0.stage == .applied }.count == (workerFails ? 0 : 1))
-        #expect(catalogue.learningRecords?.contains { $0.outcome == "Лимит фрагментов этой правки достигнут." } == true)
+        #expect(catalogue.learningRecords?.contains { $0.outcome == "Лимит фрагментов этой правки достигнут." } == !workerFails)
         if workerFails {
             let displayed = catalogue.latestLearningUpdate(for: f.newPerson.id)
-            #expect(displayed?.stage == .committed && displayed?.outcome != nil)
+            #expect(displayed?.stage == .committed && displayed?.outcome == Interrupted.beforeRename.localizedDescription)
+            #expect(catalogue.learningRecords?.allSatisfy { $0.outcome == displayed?.outcome } == true)
         }
     }
 
@@ -348,7 +574,7 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         }
         let worker = LearningWorker {
             switch interruption {
-            case .none, .noCompatibleProfiles: break
+            case .none, .noCompatibleProfiles, .disableDuringSavePreparation: break
             case .changedLibraryBeforeExtraction: Issue.record("Stale scheduled job must not reach the worker")
             case .manualEdit:
                 let edit = TranscriptEditsRepository(recordingDirectory: f.recording)
@@ -372,7 +598,23 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let policy = try #require(VoiceMatchPolicy(threshold: 0.9, margin: 0.1, calendarBonus: 0, maximumAcousticGap: 0))
         let recording = f.recording.appendingPathComponent("meeting_synthetic.m4a")
         if interruption == .noCompatibleProfiles { try coordinator.resetPerson(f.newPerson.id, delete: false) }
-        if interruption == .resetPerson {
+        if interruption == .disableDuringSavePreparation {
+            let writer = TranscriptEditsRepository(recordingDirectory: f.recording, atomicReplaceHook: { _, _ in
+                let finished = DispatchSemaphore(value: 0)
+                Thread.detachNewThread {
+                    coordinator.setEnabled(false)
+                    finished.signal()
+                }
+                #expect(finished.wait(timeout: .now() + 2) == .success)
+            })
+            try writer.acquireWriteLock()
+            let outcome = try await coordinator.automaticallyAssign(
+                recordingURL: recording, resultID: Self.resultID, policy: policy, openWriter: writer
+            ) { request in
+                try await worker.extractVoiceEmbeddings(request, recordingDirectory: f.recording)
+            }
+            #expect(outcome == .skippedFeatureDisabled)
+        } else if interruption == .resetPerson {
             await #expect(throws: VoiceProfileCatalogueError.conflict) {
                 try await coordinator.automaticallyAssign(recordingURL: recording, resultID: Self.resultID, processing: processing, policy: policy)
             }
@@ -400,7 +642,7 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         case .manualEdit:
             #expect(edits.overrides[nextTurn]?.displayName == "Вручную")
             #expect(edits.overrides[nextTurn]?.text == "Правка")
-        case .disableAndEnable, .resetPerson, .newResult, .changeLibrary, .changedLibraryBeforeExtraction:
+        case .disableAndEnable, .resetPerson, .newResult, .changeLibrary, .changedLibraryBeforeExtraction, .disableDuringSavePreparation:
             #expect(edits.overrides[nextTurn] == nil)
         }
     }
@@ -430,22 +672,27 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let edits = try f.correct(using: writer)
         let event = try #require(edits.pendingLearningEvents?.last)
         let worker = LearningWorker {
+            #expect(coordinator.activeLearningEventIDs == [event.eventID])
             switch interruption {
             case .none: break
             case .disableAndEnable:
                 coordinator.setEnabled(false)
                 coordinator.setEnabled(true)
+                #expect(coordinator.activeLearningEventIDs.isEmpty)
             case .resetPerson: try coordinator.resetPerson(f.newPerson.id, delete: false)
             }
         }
         let processing = ProcessingService(transcriptionRunner: worker, audioExporter: worker, voiceRunner: worker)
         let policy = try #require(VoiceProfileUpdatePolicy(id: "test", minimumAgreement: 0.8))
+        f.reconcileLibrary(using: coordinator, writer: writer)
         #expect(!coordinator.isEnabled)
         try await coordinator.learn(eventID: event.eventID, writer: writer, processing: processing, policy: policy)
         #expect(try f.catalogue.load().catalogue.samples.isEmpty)
 
         coordinator.setEnabled(true)
-        try await coordinator.learn(eventID: event.eventID, writer: writer, processing: processing, policy: policy)
+        await coordinator.learnCommitted(events: [event], writer: writer, processing: processing, policy: policy,
+            expectedGeneration: try #require(coordinator.featureGeneration))
+        #expect(coordinator.activeLearningEventIDs.isEmpty)
         let learned = try f.catalogue.load().catalogue
         if interruption == .none {
             #expect(learned.samples.map(\.personID) == [f.newPerson.id])
@@ -827,6 +1074,7 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
         let event = try #require(saved.pendingLearningEvents?.last)
         let worker = LearningWorker {}
         let service = ProcessingService(transcriptionRunner: worker, audioExporter: worker, voiceRunner: worker)
+        f.reconcileLibrary(using: coordinator, writer: writer)
         let extracted = try await coordinator.learn(eventID: event.eventID, writer: writer, processing: service,
                                                     policy: try #require(VoiceProfileUpdatePolicy(id: "test", minimumAgreement: 0.8)))
         #expect(extracted == 3)
@@ -917,6 +1165,7 @@ private struct LearningWorker: TranscriptionRunnerProtocol, VoiceEmbeddingRunner
             capturedStarts.withLock { $0.append(startFrame) }
         }
         let processing = ProcessingService(transcriptionRunner: worker, audioExporter: worker, voiceRunner: worker)
+        f.reconcileLibrary(using: coordinator, writer: writer)
         await coordinator.learnCommitted(events: try #require(edits.pendingLearningEvents), writer: writer, processing: processing,
             policy: try #require(VoiceProfileUpdatePolicy(id: "test", minimumAgreement: 0.8)),
             expectedGeneration: try #require(coordinator.featureGeneration))

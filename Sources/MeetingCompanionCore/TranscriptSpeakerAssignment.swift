@@ -221,7 +221,9 @@ public struct TranscriptSpeakerAssignmentService: Sendable {
 
         if let anchor = preview.anchorTurnID, let scope = preview.scope,
            let origin = preview.nameOrigin {
-            guard preview.confirmedName == displayName else { throw TranscriptEditsError.conflict("Preview name changed") }
+            guard preview.confirmedName?.utf8.elementsEqual(displayName.utf8) == true else {
+                throw TranscriptEditsError.conflict("Preview name changed")
+            }
             let intent: TranscriptVoicePersonIntent?
             if case .confirmed(let person) = preview.personSelection { intent = person }
             else if preview.canResolveTypedPerson, learnVoice { intent = typedPerson }
@@ -240,10 +242,19 @@ public struct TranscriptSpeakerAssignmentService: Sendable {
                         throw TranscriptEditsError.invalidReference("Выберите человека, чтобы проверить изменения назначения.")
                     }
                 }
+                let personID = intent?.personID ?? preview.personID
+                let nameKey = Self.nameComparisonKey(displayName)
                 for id in preview.affectedTurnIDs {
+                    let prior = overrides[id]
+                    let cosmeticAssignment = prior?.assignment.flatMap { assignment in
+                        assignment.personID == personID && prior?.displayName.map(Self.nameComparisonKey) == nameKey
+                            ? assignment : nil
+                    }
+                    let linked = cosmeticAssignment?.canContributeVoiceSamples == true ? cosmeticAssignment : nil
+                    let targetOrigin = cosmeticAssignment?.isMachineAssigned == true ? "derivedVoiceMatch" : origin
                     overrides[id] = TranscriptTurnOverride(
-                        text: overrides[id]?.text, displayName: displayName,
-                        assignment: TranscriptNameAssignment(personID: intent?.personID ?? preview.personID, origin: origin)
+                        text: prior?.text, displayName: displayName,
+                        assignment: linked ?? TranscriptNameAssignment(personID: personID, origin: targetOrigin)
                     )
                 }
             }
@@ -414,7 +425,8 @@ public struct TranscriptSpeakerAssignmentService: Sendable {
         let candidates = turns.filter { turn in
             let prior = edits.overrides[turn.id]
             let name = prior?.displayName ?? "Speaker \(speaker.displayNumber)"
-            return name != displayName || (comparesIdentity && prior?.assignment?.personID != resolvedPersonID)
+            return !name.utf8.elementsEqual(displayName.utf8) ||
+                (comparesIdentity && prior?.assignment?.personID != resolvedPersonID)
         }
         let protected = Set(candidates.filter { edits.overrides[$0.id]?.protectsNameFromBulkReplacement == true }.map(\.id))
         let mayReplace = scope == .single || replaceManuallyAssigned

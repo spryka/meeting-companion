@@ -9,7 +9,8 @@ import Testing
 
 @MainActor
 struct SettingsPresentationTests {
-    @Test func closingVoiceSettingsRefreshesPeopleInOpenEditor() async throws {
+    @Test(arguments: [false, true])
+    func closingVoiceSettingsRefreshesPeopleInOpenEditor(closesBeforeCommit: Bool) async throws {
         let fixture = try SpeakerReviewFixture()
         let (defaults, suite) = createTestDefaults()
         defer { fixture.close(); defaults.removePersistentDomain(forName: suite) }
@@ -24,8 +25,13 @@ struct SettingsPresentationTests {
         try #require(model.presentSettings())
         model.settingsPage = .voices
         model.voiceIdentityEnabled = true
+        if closesBeforeCommit {
+            model.dismissSettings()
+            #expect(editor.voicePeople == [person])
+        }
         try model.voiceLearning.resetPerson(person.id, delete: true)
-        model.dismissSettings()
+        model.voiceCatalogueMutationDidCommit()
+        if !closesBeforeCommit { model.dismissSettings() }
         #expect(editor.voicePeople.isEmpty)
         #expect(editor.canConfirmSavedVoiceName)
 
