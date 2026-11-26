@@ -12,9 +12,9 @@ if [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
 fi
 
 cd "$ROOT_DIR"
-swift build -c release --arch arm64 --product MeetingCompanionApp
-swift build -c release --arch arm64 --product MeetingTranscriptionWorker
-BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+swift build -c release --arch arm64 --force-resolved-versions --product MeetingCompanionApp
+swift build -c release --arch arm64 --force-resolved-versions --product MeetingTranscriptionWorker
+BIN_DIR="$(swift build -c release --arch arm64 --force-resolved-versions --show-bin-path)"
 
 mkdir -p dist
 STAGE="$(mktemp -d "$ROOT_DIR/dist/.build-app.XXXXXX")"
