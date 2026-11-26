@@ -142,6 +142,13 @@ final class RecorderViewModel: ObservableObject {
     private static let voiceGenerationKey = "localVoiceIdentityGeneration"
     @Published private(set) var voiceModelStatus: VoiceModelStatus = .unchecked
     @Published private(set) var voiceCatalogueUpdate = 0
+
+    private func voiceCatalogueDidChange() { voiceCatalogueUpdate &+= 1 }
+
+    func voiceCatalogueMutationDidCommit() {
+        voiceCatalogueDidChange()
+        if !settingsPresented { workspace.current?.refreshVoiceIdentityState() }
+    }
     @Published var voiceIdentityEnabled = false {
         didSet {
             guard voiceIdentityEnabled != oldValue else { return }
@@ -904,7 +911,7 @@ final class RecorderViewModel: ObservableObject {
         self.history.processing = proc
         self.workspace.trashInput = { [weak self] in self?.trashOwnsInput ?? false }
         profiles.setLearningObserver { [weak self] in
-            Task { @MainActor in self?.voiceCatalogueUpdate &+= 1 }
+            Task { @MainActor in self?.voiceCatalogueDidChange() }
         }
 
         self.workspaceSubscription = self.workspace.$current.sink { [weak self] current in
