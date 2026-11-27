@@ -175,6 +175,7 @@ struct RecordingHistoryView: View {
                 if narrow ? model.workspaceShowsList : true {
                     VStack(spacing: 0) {
                         sidebarHeader(narrow: narrow)
+                        if narrow, let error = model.retentionError { errorBanner(error) }
                         sidebarContent
                         sidebarFooter
                     }
@@ -191,11 +192,7 @@ struct RecordingHistoryView: View {
                         Text(notice).font(.system(size: 12)).foregroundStyle(ODColors.muted).padding(8)
                     }
                     if let error = feedbackError {
-                        Text(error)
-                            .font(.system(size: 12))
-                            .foregroundColor(ODColors.red)
-                            .textSelection(.enabled)
-                            .padding(8)
+                        errorBanner(error)
                     }
 
                     if let url = model.selectedHistoryURL, let entry = history.entry(url) {
@@ -289,10 +286,19 @@ struct RecordingHistoryView: View {
     }
 
     var feedbackError: String? {
-        let historyError = history.error(for: model.selectedHistoryURL)
-        guard let url = model.selectedHistoryURL, history.entry(url)?.phase == .completed,
-              let failure = model.processingRoutes[url]?.failure, failure != historyError else { return historyError }
-        return [failure, historyError].compactMap { $0 }.joined(separator: "\n")
+        let selected = model.selectedHistoryURL
+        let historyError = history.error(for: selected)
+        var messages = [historyError, model.retentionError].compactMap { $0 }
+        if let selected, history.entry(selected)?.phase == .completed,
+           let failure = model.processingRoutes[selected]?.failure, !messages.contains(failure) {
+            messages.insert(failure, at: 0)
+        }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        Text(message).font(.system(size: 12)).foregroundColor(ODColors.red)
+            .textSelection(.enabled).padding(8)
     }
 
     func processingDetails(for entry: RecordingEntry) -> ProcessingProgressSnapshot? {

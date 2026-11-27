@@ -304,7 +304,8 @@ final class RecorderAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
             showWindow()
             let alert = NSAlert()
             alert.messageText = "Meeting Companion ещё работает"
-            alert.informativeText = "Дождись завершения записи, транскрибации или диагностики перед выходом."
+            alert.informativeText = model.retentionRunning ? "Дождись завершения автоочистки записей перед выходом."
+                : "Дождись завершения записи, транскрибации или диагностики перед выходом."
             alert.runModal()
             return .terminateCancel
         }

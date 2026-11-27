@@ -32,6 +32,7 @@ final class TranscriptReviewWindowManager: ObservableObject {
     var settingsInput: @MainActor () -> Bool = { false }
     var trashInput: @MainActor () -> Bool = { false }
     var nativeInput: @MainActor () -> Bool = { false }
+    var retentionInProgress: @MainActor (URL) -> Bool = { _ in false }
     @Published var savedRevision = 0
     @Published private(set) var commandNotice: String?
     private var generation = 0
@@ -92,11 +93,13 @@ final class TranscriptReviewWindowManager: ObservableObject {
 
     private func open(recordingURL: URL, title: String, ownTrashModal: @escaping @MainActor () -> Bool) async throws -> TranscriptReviewWindowModel {
         func admitted() -> Bool {
+            guard !retentionInProgress(RecordingEntry.canonicalURL(recordingURL)) else { return false }
             if ownTrashModal(), trashInput(), !settingsInput(), !nativeInput(), !externalModal, current?.currentDraftIdentity == nil { return true }
             return admitNavigation()
         }
-        guard admitted() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
         let key = RecordingEntry.canonicalURL(recordingURL)
+        guard !retentionInProgress(key) else { throw TranscriptEditsError.conflict("Выполняется автоочистка записи.") }
+        guard admitted() else { throw TranscriptEditsError.conflict("Сохраните или отмените ввод.") }
         if openingURL == key, let opening { return try await opening.value }
         generation += 1
         let expected = generation

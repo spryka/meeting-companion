@@ -110,6 +110,7 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         case date
         case title
         case displayTitle
+        case sourceRetention
         case duration
         case phase
         case problems
@@ -122,6 +123,7 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         let rawRecording = try container.decode(URL.self, forKey: .recording)
         self.recording = Self.canonicalURL(rawRecording)
         self.hasStandardLayout = RecordingPaths.isStandardLayout(recording)
+        self.sourceRetention = try container.decodeIfPresent(SourceRetention.self, forKey: .sourceRetention)
         self.date = try container.decode(Date.self, forKey: .date)
         self.title = try container.decode(String.self, forKey: .title)
         self.displayTitle = try container.decodeIfPresent(String.self, forKey: .displayTitle)
@@ -139,6 +141,7 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         try container.encode(title, forKey: .title)
         try container.encodeIfPresent(displayTitle, forKey: .displayTitle)
         try container.encodeIfPresent(duration, forKey: .duration)
+        try container.encodeIfPresent(sourceRetention, forKey: .sourceRetention)
         try container.encode(phase, forKey: .phase)
         try container.encode(problems, forKey: .problems)
         try container.encodeIfPresent(meeting, forKey: .meeting)
@@ -157,6 +160,8 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
     public var displayTitle: String?
     public var effectiveTitle: String { displayTitle ?? title }
     public var duration: Double?
+    public enum SourceRetention: String, Codable, Sendable { case removing, removed }
+    public var sourceRetention: SourceRetention?
     public var phase: Phase
     public var problems: [RecordingProblem] = []
     public var meeting: SavedMeeting?
@@ -252,6 +257,9 @@ public struct RecordingEntry: Codable, Identifiable, Equatable, Sendable {
         capabilities.hasSavedText = capabilities.canReview ? currentTranscriptURL != nil : availableFiles.contains(transcript)
         // Audio preview/export belong to a supported structured record, independently of source retry.
         capabilities.canPreviewAudio = capabilities.canReview && availableFiles.contains(recording)
+        if sourceRetention == .removed && !capabilities.canRetry && capabilities.canReview {
+            capabilities.reason = "Исходники удалены по сроку хранения"
+        }
         if !capabilities.canRetry && !capabilities.canReview {
             capabilities.reason = (capabilities.reason.map { $0 + " " } ?? "") + "Исходные WAV отсутствуют или недоступны."
         }

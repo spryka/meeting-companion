@@ -315,7 +315,10 @@ final class WorkspaceWindow: NSWindow {
     func focusAvailableNavigation() {
         guard admitsNavigationKeys else { return }
         let target = [preferredNavigation, libraryNavigation, transcriptNavigation].compactMap { $0 }.first { $0.isUsable }
-        if let target { target.focus() }
+        // SwiftUI may re-enable the navigation surface after the settings sheet closes.
+        // registerNavigation retries when the surface becomes usable.
+        guard let target else { restoringNavigation = true; return }
+        target.focus()
     }
 
     func recoverNavigationFocus() {
