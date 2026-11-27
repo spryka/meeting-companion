@@ -27,6 +27,8 @@ struct MeetingCompanionCLI {
             )
 
             let outputURL = try RecordingPaths.makeOutputURL(outputDirectory: options.outputDirectory, outputKind: options.outputKind)
+            let lock = try RecordingDirectoryLock(folder: outputURL.deletingLastPathComponent(), exclusive: false)
+            defer { withExtendedLifetime(lock) {} }
             let recorder = try await Recorder(
                 outputURL: outputURL,
                 outputKind: options.outputKind,

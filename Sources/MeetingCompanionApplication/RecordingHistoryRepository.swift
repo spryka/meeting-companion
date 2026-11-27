@@ -6,15 +6,16 @@ public struct RecordingTrashTarget: Sendable, Equatable {
     public let recording: URL
     public let folder: URL
     public let root: URL
-    fileprivate let device: dev_t
-    fileprivate let inode: ino_t
-    fileprivate let rootDevice: dev_t
-    fileprivate let rootInode: ino_t
+    let device: dev_t
+    let inode: ino_t
+    let rootDevice: dev_t
+    let rootInode: ino_t
 }
 
 public struct RecordingTrashFailure: LocalizedError, Sendable {
     public let message: String
     public let retryAllowed: Bool
+    public internal(set) var busy = false
     public var errorDescription: String? { message }
 }
 
@@ -146,6 +147,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         if updatedEntry.recording != canonical {
             updatedEntry = RecordingEntry(recording: canonical, date: entry.date, title: entry.title, phase: entry.phase)
             updatedEntry.displayTitle = entry.displayTitle
+            updatedEntry.sourceRetention = entry.sourceRetention
             updatedEntry.duration = entry.duration
             updatedEntry.problems = entry.problems
             updatedEntry.meeting = entry.meeting
@@ -207,16 +209,23 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
 
     public func prepareTrash(_ url: URL, root: URL) throws -> RecordingTrashTarget {
         try withLock {
-            guard let entry = lockedEntry(url) else { throw CocoaError(.fileNoSuchFile) }
-            let root = root.standardizedFileURL.resolvingSymlinksInPath()
-            // Keep the supplied path until symlink checks; canonicalizing first hides substitution.
-            let folder = url.deletingLastPathComponent().standardizedFileURL
-            let status = try directoryIdentity(folder), rootStatus = try directoryIdentity(root)
-            let target = RecordingTrashTarget(recording: entry.id, folder: folder, root: root,
-                device: status.st_dev, inode: status.st_ino, rootDevice: rootStatus.st_dev, rootInode: rootStatus.st_ino)
-            try validateTrash(target)
-            return target
+            guard lockedEntry(url) != nil else { throw CocoaError(.fileNoSuchFile) }
+            return try folderTarget(url, root: root, preview: false)
         }
+    }
+
+    func retentionTarget(_ url: URL, root: URL) throws -> RecordingTrashTarget {
+        try withLock { try folderTarget(url, root: root, preview: true) }
+    }
+
+    private func folderTarget(_ url: URL, root: URL, preview: Bool) throws -> RecordingTrashTarget {
+        let root = root.standardizedFileURL.resolvingSymlinksInPath()
+        let folder = url.deletingLastPathComponent().standardizedFileURL
+        let status = try directoryIdentity(folder), rootStatus = try directoryIdentity(root)
+        let target = RecordingTrashTarget(recording: canonicalURL(url), folder: folder, root: root,
+            device: status.st_dev, inode: status.st_ino, rootDevice: rootStatus.st_dev, rootInode: rootStatus.st_ino)
+        try validateTrash(target, preview: preview)
+        return target
     }
 
     public func reserveTrash(_ target: RecordingTrashTarget) throws -> UUID {
@@ -255,7 +264,10 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         }
         let writer = TranscriptEditsRepository(recordingDirectory: target.folder)
         do { try writer.acquireWriteLock() }
-        catch { throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: true) }
+        catch let error as TranscriptEditsError {
+            if case .lockDenied = error { throw trashBusyError }
+            throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: true)
+        }
         defer { writer.releaseWriteLock() }
         do { try voiceLearning?.preserveOutboxes(recording: target.recording, writer: writer, includeHistory: true) }
         catch { throw RecordingTrashFailure(message: error.localizedDescription, retryAllowed: true) }
@@ -287,8 +299,31 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         return outcome
     }
 
+    func validateRetention(_ target: RecordingTrashTarget, reservation: UUID, lock: RecordingDirectoryLock) throws {
+        try withLock {
+            var locked = stat()
+            guard fstat(lock.descriptor, &locked) == 0, target.device == locked.st_dev, target.inode == locked.st_ino else {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            try validateTrash(target, reservation: reservation)
+        }
+    }
+
+    // Write the new capabilities before lifting the reservation. This also supersedes older scans.
+    func recordSourceExpiry(_ state: RecordingEntry.SourceRetention, target: RecordingTrashTarget, reservation: UUID) throws {
+        try withLock {
+            try validateTrash(target, reservation: reservation)
+            var entry = RecordingEntry.load(recording: target.recording)
+            entry.sourceRetention = state
+            trashReservations.removeValue(forKey: target.recording)
+            defer { trashReservations[target.recording] = reservation }
+            _ = try lockedPutThrowing(entry)
+        }
+        notifySubscribers()
+    }
+
     private var trashBusyError: RecordingTrashFailure {
-        RecordingTrashFailure(message: "Дождитесь завершения работы с записью", retryAllowed: false)
+        RecordingTrashFailure(message: "Дождитесь завершения работы с записью", retryAllowed: false, busy: true)
     }
 
     private func allowsHistoryMutation(_ url: URL) -> Bool {
@@ -311,7 +346,7 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
         return value
     }
 
-    private func validateTrash(_ target: RecordingTrashTarget, reservation: UUID? = nil) throws {
+    private func validateTrash(_ target: RecordingTrashTarget, reservation: UUID? = nil, preview: Bool = false) throws {
         let folder = target.folder.path
         guard RecordingPaths.isStandardLayout(target.recording),
               target.folder.lastPathComponent == target.recording.deletingPathExtension().lastPathComponent,
@@ -320,12 +355,14 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
             throw RecordingTrashFailure(message: "Доступно только для записи в отдельной папке", retryAllowed: false)
         }
         try validateTrashIdentity(target)
-        guard let entry = entriesMap[target.recording], !entry.phase.isWorking,
-              !workReservations.contains(where: { !$0.value.isEmpty && foldersOverlap(folder, $0.key.deletingLastPathComponent().path) }),
-              !trashReservations.contains(where: {
-                  !($0.key == target.recording && $0.value == reservation) && foldersOverlap(folder, $0.key.deletingLastPathComponent().path)
-              }),
-              trashReservations[target.recording] == reservation else { throw trashBusyError }
+        if !preview {
+            guard entriesMap[target.recording]?.phase.isWorking != true,
+                  !workReservations.contains(where: { !$0.value.isEmpty && foldersOverlap(folder, $0.key.deletingLastPathComponent().path) }),
+                  !trashReservations.contains(where: {
+                      !($0.key == target.recording && $0.value == reservation) && foldersOverlap(folder, $0.key.deletingLastPathComponent().path)
+                  }),
+                  trashReservations[target.recording] == reservation else { throw trashBusyError }
+        }
         guard !entriesMap.keys.contains(where: { $0 != target.recording && $0.path.hasPrefix(folder + "/") }) else {
             throw RecordingTrashFailure(message: "Папка содержит другую запись или её принадлежность неоднозначна.", retryAllowed: false)
         }
@@ -565,6 +602,15 @@ public final class RecordingHistoryRepository: @unchecked Sendable {
 
         return (files.map { url in
             var entry = RecordingEntry.load(recording: url)
+            if RecordingPaths.isStandardLayout(url), entry.phase == .interrupted {
+                let mp4 = entry.base.appendingPathExtension("mp4")
+                struct Identity: Decodable { let recording: URL }
+                if let data = try? TranscriptResultStorage(recordingURL: url).metadataData(),
+                   let identity = try? JSONDecoder().decode(Identity.self, from: data),
+                   canonicalURL(identity.recording) == canonicalURL(mp4) {
+                    entry = RecordingEntry.load(recording: mp4)
+                }
+            }
             if entry.phase.isWorking { entry.phase = .interrupted }
             return entry
         }, failure, failure == nil)

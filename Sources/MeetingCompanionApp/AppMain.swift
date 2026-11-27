@@ -100,7 +100,11 @@ final class RecorderViewModel: ObservableObject {
 
     private let libraryRootLock: OSAllocatedUnfairLock<URL>
     @Published var outputDirectory: URL {
-        willSet { history.invalidateRefresh() }
+        willSet {
+            if newValue != outputDirectory { retentionDraft = nil }
+            invalidateRetention()
+            history.invalidateRefresh()
+        }
         didSet {
             let directory = outputDirectory
             libraryRootLock.withLock { $0 = directory }
@@ -112,6 +116,12 @@ final class RecorderViewModel: ObservableObject {
             }
         }
     }
+    let retentionGeneration = OSAllocatedUnfairLock(initialState: UUID())
+    @Published var retentionRunning = false
+    @Published var retentionError: String?
+    @Published var retentionDraft: (key: String, policy: RecordingRetention)?
+    var pendingRetentionRecording: URL?
+    var retentionTarget: URL?
     let calendar: MeetingCalendar
     let historyRepository: RecordingHistoryRepository
     let recordingSessionService: RecordingSessionService
@@ -202,6 +212,7 @@ final class RecorderViewModel: ObservableObject {
             guard let self else { return }
             defer { self.libraryRefreshPending = false }
             guard self.admitsLibraryRefresh, !self.history.loading, self.outputDirectory == root else { return }
+            self.retentionError = nil
             await self.history.refresh(root: root, manual: true, preservingMissing: { @MainActor [weak self] in
                 guard let self, self.workspace.hasInput || self.workspace.nativeInput(),
                       let selected = self.selectedHistoryURL else { return [] }
@@ -329,6 +340,17 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func dismissSettings() {
+        if let draft = retentionDraft {
+            do {
+                try saveRetention(draft.policy, key: draft.key)
+            } catch {
+                retentionDraft = nil
+                retentionError = "Не удалось сохранить сроки для выбранной папки. " + error.localizedDescription
+                settingsPage = .recording
+                return
+            }
+            retentionDraft = nil
+        }
         settingsPresented = false
         workspace.current?.refreshVoiceIdentityState()
         onSettingsVisibilityChange?()
@@ -351,6 +373,10 @@ final class RecorderViewModel: ObservableObject {
     var selectedHistoryURL: URL? {
         get { historySelection }
         set { guard newValue != historySelection, workspace.admitNavigation() else { return }; historySelection = newValue }
+    }
+    func clearMissingRetentionSelection() {
+        guard !workspaceRequested, let url = historySelection, history.entry(url) == nil else { return }
+        historySelection = nil
     }
     @Published private(set) var workspaceRequested = false
     @Published private var workspaceOpenGeneration = 0
@@ -439,7 +465,7 @@ final class RecorderViewModel: ObservableObject {
     private var pendingCapsuleEnqueue: UUID?
     @Published private var pendingProcessingEnqueues: [UUID: URL] = [:]
     private var latestProcessingSnapshot: ProcessingService.Snapshot?
-    private var activeRecordingURL: URL?
+    private(set) var activeRecordingURL: URL?
     private(set) var recordingMeetingID: String?
 
     @Published private var meetingSelection = MeetingSelection()
@@ -677,7 +703,7 @@ final class RecorderViewModel: ObservableObject {
     }
     var preventsSettingsOperation: Bool { workspace.hasForeignInput || hasBlockingWork }
     private var hasBlockingWork: Bool {
-        resetCommitBlockedByWork || localDiagnosticRunning || isResettingCache
+        retentionRunning || resetCommitBlockedByWork || localDiagnosticRunning || isResettingCache
     }
     private var resetCommitBlockedByWork: Bool {
         !sessionAttached || !processingAttached || preparingCapture || sessionStarting || sessionStopping || isRecording || isBusy || transcriptionJobs > 0 || voiceJobs > 0 || voiceModelStatus.isBusy || isAdmittingProcessing || !pendingProcessingEnqueues.isEmpty || preparationState != .idle || isCheckingAudio
@@ -893,6 +919,7 @@ final class RecorderViewModel: ObservableObject {
             }
         )
         self.workspace.settingsInput = { [weak self] in self?.settingsPresented ?? false }
+        self.workspace.retentionInProgress = { [weak self] url in self?.retentionTarget == url }
         self.history.openEditsWriter = { [weak self] in self?.workspace.current?.state.session?.editsRepository }
         self.history.processing = proc
         self.workspace.trashInput = { [weak self] in self?.trashOwnsInput ?? false }
@@ -1044,6 +1071,7 @@ final class RecorderViewModel: ObservableObject {
     private func handleProcessingEvent(_ event: ProcessingService.Event) async {
         await history.synchronize()
         switch event {
+        case .recordingSaved(let recording): scheduleRetention(afterSaving: recording)
         case .enqueued(let job), .started(let job):
             if lastFileURL == job.recordingURL, !isRecording, !sessionStarting, !sessionStopping {
                 cancelCapsuleDeadline()

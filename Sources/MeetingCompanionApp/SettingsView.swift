@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import MeetingCompanionCore
+import MeetingCompanionApplication
 
 struct RecorderSettingsView: View {
     @ObservedObject var model: RecorderViewModel
@@ -178,6 +179,16 @@ struct RecorderSettingsView: View {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
             }
+            if let key = RecordingRetention.preferenceKey(for: model.outputDirectory) {
+                RecordingRetentionSettings(model: model, preferenceKey: key)
+                    .id(key)
+            } else {
+                Text("Настройки хранения станут доступны, когда папка записей будет создана.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let notice = model.retentionError {
+                Text(notice).font(.caption).foregroundStyle(.red)
+            }
             DisclosureGroup("Дополнительно") {
                     ODSettingsPicker(title: "Захват системного звука", selection: $model.captureBackend,
                         options: [("Core Audio Tap (рекомендуется)", .coreAudioTap), ("ScreenCaptureKit (при проблемах)", .screenCaptureKit)])
@@ -324,6 +335,84 @@ struct RecorderSettingsView: View {
     }
 }
 
+private struct RecordingRetentionSettings: View {
+    @ObservedObject var model: RecorderViewModel
+    let preferenceKey: String
+    @State private var previewMessage: String?
+
+    private var selection: Binding<RecordingRetention> {
+        Binding {
+            if let draft = model.retentionDraft, draft.key == preferenceKey { return draft.policy }
+            return model.retentionPolicy(key: preferenceKey)
+        } set: { policy in
+            model.retentionDraft = policy == model.retentionPolicy(key: preferenceKey) ? nil : (preferenceKey, policy)
+        }
+    }
+
+    var body: some View {
+        let draft = selection.wrappedValue
+        let saved = model.retentionPolicy(key: preferenceKey)
+        ODSettingsGroup("Автоочистка") {
+            period("Удалять исходные аудиофайлы",
+                   description: "У готовых встреч удалятся отдельные дорожки микрофона и звука звонка. Запись можно будет слушать, а текст — читать и править. Расшифровать речь заново уже не получится.",
+                   value: selection.sourceDays, initial: 14, unit: .day, range: 1...3650)
+            period("Удалять встречу целиком",
+                   description: "Встреча исчезнет из библиотеки. Её папка будет безвозвратно удалена вместе с аудио, расшифровкой, правками и вложениями.",
+                   value: selection.meetingMonths, initial: 6, unit: .month, range: 1...120)
+            Text("Сроки отсчитываются от начала встречи. После сохранения новой записи приложение проверяет сроки и удаляет файлы безвозвратно, минуя Корзину.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if (draft.sourceDays > 0 && (saved.sourceDays == 0 || draft.sourceDays < saved.sourceDays))
+                || (draft.meetingMonths > 0 && (saved.meetingMonths == 0 || draft.meetingMonths < saved.meetingMonths)) {
+                Text(previewMessage ?? "Считаем встречи…")
+                    .font(.caption)
+                    .task(id: draft) {
+                        previewMessage = nil
+                        do {
+                            let candidates = try await model.retentionPreview(draft, root: model.outputDirectory)
+                            guard !Task.isCancelled else { return }
+                            let whole = candidates.filter { $0.action == .meeting }.count
+                            previewMessage = "Подходящие встречи\nТолько исходные аудиофайлы — \(candidates.count - whole)\nВстреча целиком — \(whole)"
+                        } catch {
+                            if !Task.isCancelled { previewMessage = "Не удалось подсчитать встречи. " + error.localizedDescription }
+                        }
+                    }
+            }
+        }
+    }
+
+    private static let relativeTime: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.dateTimeStyle = .numeric
+        return formatter
+    }()
+
+    private func period(_ title: String, description: String, value: Binding<Int>, initial: Int,
+                        unit: Calendar.Component, range: ClosedRange<Int>) -> some View {
+        var components = DateComponents()
+        components.setValue(value.wrappedValue, for: unit)
+        let interval = Self.relativeTime.localizedString(from: components)
+        return VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(get: { value.wrappedValue > 0 },
+                                 set: { value.wrappedValue = $0 ? initial : 0 })) {
+                Text(title).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if value.wrappedValue > 0 {
+                Stepper(interval, value: value, in: range)
+                    .fixedSize()
+                    .accessibilityLabel(title + ", срок").accessibilityValue(interval)
+            } else {
+                Text("Никогда").foregroundStyle(.secondary)
+            }
+            Text(description)
+                .font(.system(size: 12)).foregroundStyle(ODColors.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 private struct CalendarSettingsView: View {
     @ObservedObject var calendar: MeetingCalendar
 
@@ -434,7 +523,7 @@ struct SettingsShell: View {
                 Rectangle().fill(ODColors.line).frame(height: 1)
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Изменения сохраняются автоматически")
+                        Text(model.retentionDraft == nil ? "Изменения сохраняются автоматически" : "Сроки хранения сохранятся при закрытии настроек")
                         Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · сборка \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                     }
                     .font(.system(size: 11)).foregroundStyle(ODColors.muted)

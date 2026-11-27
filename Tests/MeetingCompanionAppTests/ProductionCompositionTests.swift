@@ -2,10 +2,12 @@ import Foundation
 import Combine
 import os
 import AppKit
+import AVFoundation
 import SwiftUI
 import Testing
 import MeetingCompanionCore
 import MeetingCompanionApplication
+import MeetingCompanionPlatform
 @testable import MeetingCompanionApp
 
 @MainActor private final class Capsule24Clock {
@@ -82,12 +84,182 @@ private actor Capsule28OpenGate {
         return try #require(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)).alphaComponent
     }
 
-    private func settle(_ predicate: @MainActor () async -> Bool) async throws {
+    private func settle(_ message: String = "Bounded synthetic service observation timed out", _ predicate: @MainActor () async -> Bool) async throws {
         for _ in 0..<1000 {
             if await predicate() { return }
             try await Task.sleep(for: .milliseconds(1))
         }
-        try #require(await predicate(), "Bounded synthetic service observation timed out")
+        try #require(await predicate(), Comment(rawValue: message))
+    }
+
+    // Run in an isolated test process when exercising native settings controls.
+    private func exerciseRetentionSwitches(_ model: RecorderViewModel, defaults: UserDefaults) async throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
+        NSApp.finishLaunching()
+        model.settingsPage = .recording
+        try #require(model.presentSettings())
+        let host = NSHostingView(rootView: SettingsShell(model: model).defaultAppStorage(defaults))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 1000), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: 680, height: 1000)
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(150))
+        host.layoutSubtreeIfNeeded()
+        host.displayIfNeeded()
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        func switches(_ view: NSView) -> [NSSwitch] {
+            if let control = view as? NSSwitch { return [control] }
+            return view.subviews.flatMap(switches)
+        }
+        let toggles = switches(host)
+        try #require(toggles.count == 2)
+        toggles[0].performClick(nil)
+        toggles[1].performClick(nil)
+        // A page change tears down the recording controls before the ordinary Done button is pressed.
+        model.settingsPage = .general
+        await Task.yield()
+        host.layoutSubtreeIfNeeded()
+        // The ordinary Done button in the settings footer.
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let click = try #require(NSEvent.mouseEvent(with: type,
+                location: NSPoint(x: host.bounds.width - 58, y: 30), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            window.sendEvent(click)
+        }
+        try await settle { !model.settingsPresented }
+    }
+
+    @Test func retentionStartsAfterSuccessfulSave() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
+        let suite = "retention-test-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        defaults.set(root.path, forKey: "recordingsDirectory")
+        let repository = RecordingHistoryRepository()
+        func addMeeting(_ date: Date) throws -> URL {
+            let url = try RecordingPaths.makeOutputURL(outputDirectory: root, date: date)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent().appendingPathComponent("raw"), withIntermediateDirectories: true)
+            try Data([1]).write(to: url)
+            _ = try repository.putThrowing(RecordingEntry(recording: url, date: date, title: "Тест", phase: .completed))
+            return url
+        }
+        let old = try addMeeting(Date().addingTimeInterval(-300 * 86400))
+        let new = try addMeeting(Date())
+        let recent = try addMeeting(Date().addingTimeInterval(-20 * 86400))
+        let folder = recent.deletingLastPathComponent()
+        let version = folder.appendingPathComponent("raw/transcripts/res_valid_parakeet_off")
+        let manager = FileManager.default
+        try manager.createDirectory(at: version, withIntermediateDirectories: true)
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/transcript-document/valid_parakeet_off.json")
+        try manager.copyItem(at: fixture, to: version.appendingPathComponent("result.json"))
+        try Data("Синтетический текст".utf8).write(to: version.appendingPathComponent("transcript.txt"))
+        do {
+            let file = try AVAudioFile(forWriting: version.appendingPathComponent("mix.m4a"), settings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32000
+            ])
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 64000))
+            buffer.frameLength = buffer.frameCapacity
+            buffer.floatChannelData?[0].update(repeating: 0, count: Int(buffer.frameLength))
+            try file.write(from: buffer)
+        }
+        let mix = version.appendingPathComponent("mix.m4a")
+        let encoded = try Data(contentsOf: mix)
+        #expect(try verifyRetentionMix(mix, expectedDuration: 4))
+        #expect(try !verifyRetentionMix(mix, expectedDuration: 8))
+        for damaged in [Data(), Data("Это не AAC".utf8), Data(encoded.prefix(encoded.count / 2))] {
+            try damaged.write(to: mix)
+            #expect((try? verifyRetentionMix(mix, expectedDuration: 4)) != true)
+        }
+        try encoded.write(to: mix)
+        _ = try repository.updateThrowing(recent) { $0.duration = 4 }
+        let before = TranscriptEditsRepository(recordingDirectory: folder)
+        let doc = try #require(try TranscriptResultStorage(recordingURL: recent).currentDocument())
+        _ = try before.loadEdits(resultID: doc.resultID)
+        _ = try before.saveTurnOverride(resultID: doc.resultID, turnID: doc.turns[0].id, text: "Сохранённая правка", displayName: nil)
+        before.releaseWriteLock()
+        let svc = ProcessingService(transcriptionRunner: DiagnosticRunner(), audioExporter: Exporter(), historyRepository: repository)
+        let model = isolatedRecorderModel(processingService: svc, historyRepository: repository, defaults: defaults, startBackgroundServices: false)
+        try await settle { model.isAttached }
+        let key = try #require(RecordingRetention.preferenceKey(for: root))
+        let policy = RecordingRetention(sourceDays: 14, meetingMonths: 6)
+        #expect(model.retentionPolicy(key: key) == RecordingRetention())
+        let preview = try await model.retentionPreview(policy, root: root)
+        #expect(preview.filter { $0.action == .meeting }.map(\.target.recording) == [old])
+        #expect(preview.filter { $0.action == .sources }.map(\.target.recording) == [recent])
+        #expect(model.retentionPolicy(key: key) == RecordingRetention())
+        if ProcessInfo.processInfo.environment["RETENTION_NATIVE_SETTINGS_TEST"] == "1" {
+            try await exerciseRetentionSwitches(model, defaults: defaults)
+        } else {
+            try #require(model.presentSettings())
+            model.retentionDraft = (key, policy)
+            model.settingsPage = .general
+            #expect(model.retentionPolicy(key: key) == RecordingRetention())
+            model.dismissSettings()
+        }
+        try #require(!model.settingsPresented && model.retentionPolicy(key: key) == policy)
+        let otherRoot = root.appendingPathComponent("другая библиотека")
+        try manager.createDirectory(at: otherRoot, withIntermediateDirectories: false)
+        try #require(model.presentSettings())
+        model.retentionDraft = (key, RecordingRetention(sourceDays: 7, meetingMonths: 8))
+        model.outputDirectory = otherRoot
+        model.dismissSettings()
+        #expect(model.retentionDraft == nil)
+        let otherKey = try #require(RecordingRetention.preferenceKey(for: otherRoot))
+        #expect(model.retentionPolicy(key: otherKey) == RecordingRetention())
+        #expect(throws: Error.self) { try model.saveRetention(policy, key: key) }
+        model.scheduleRetention(afterSaving: new)
+        #expect(!model.retentionRunning)
+        model.outputDirectory = root
+        #expect(model.retentionPolicy(key: key) == policy)
+        await model.history.refresh(root: root)
+
+        let failed = try addMeeting(Date().addingTimeInterval(-60))
+        let finished = OSAllocatedUnfairLock(initialState: false)
+        let saved = OSAllocatedUnfairLock(initialState: [URL]())
+        await svc.addEventHandler { event in
+            switch event {
+            case .recordingSaved(let url): saved.withLock { $0.append(url) }
+            case .completed(let job, _, _), .failed(let job, _, _):
+                if job.recordingURL == failed { finished.withLock { $0 = true } }
+            default: break
+            }
+        }
+        try manager.removeItem(at: failed)
+        _ = await svc.enqueue(recordingURL: failed, settings: .init(parakeet: false, echoCancellation: false),
+                              stoppedCapture: SyntheticSavedCapture(outputURL: failed, fileSize: 0))
+        try await settle { finished.withLock { $0 } }
+        #expect(saved.withLock { $0.isEmpty })
+        #expect(manager.fileExists(atPath: old.path) && !model.retentionRunning)
+
+        // A directory at the writer-lock path causes a real I/O failure on this meeting only.
+        let blocked = try addMeeting(Date().addingTimeInterval(-280 * 86400))
+        let blockedFolder = blocked.deletingLastPathComponent()
+        let blockedLock = TranscriptEditsRepository(recordingDirectory: blockedFolder).lockURL()
+        try manager.createDirectory(at: blockedLock, withIntermediateDirectories: false)
+        _ = await svc.enqueue(recordingURL: new, settings: .init(parakeet: false, echoCancellation: false),
+                              stoppedCapture: SyntheticSavedCapture(outputURL: new))
+        try await settle("Не удалена просроченная встреча") { !FileManager.default.fileExists(atPath: old.deletingLastPathComponent().path) }
+        try await settle("Не удалены исходники") { !model.retentionRunning && !manager.fileExists(atPath: recent.path) }
+        #expect(manager.fileExists(atPath: new.path))
+        try await settle { repository.entry(new)?.phase == .completed }
+        let notice = try #require(model.retentionError)
+        #expect(notice.contains(blockedFolder.lastPathComponent))
+        let library = RecordingHistoryView(model: model, history: model.history, workspace: model.workspace, showSettings: {})
+        #expect(library.feedbackError?.contains(notice) == true)
+        #expect(model.history.entry(old) == nil && model.history.entry(blocked) != nil)
+        #expect(try Data(contentsOf: blocked) == Data([1]))
+        let review = try await model.workspace.open(recordingURL: recent, title: "Тест")
+        try await settle("Плеер редактора не открыл готовый микс") { review.playbackDuration >= 3.9 }
+        await review.seekPlayback(to: 1)
+        #expect(abs(review.playbackPosition - 1) < 0.15)
+        let export = root.appendingPathComponent("export.txt")
+        review.requestExport(savePanelRunner: { _, done in done(.OK, export) })
+        #expect(try String(contentsOf: export, encoding: .utf8).contains("Сохранённая правка"))
+        model.workspace.closeCurrent()
     }
 
     @Test func queuedProgressPresentationReportsWaiting() {
@@ -923,6 +1095,13 @@ private actor Capsule28OpenGate {
         clock.deadlines.last?.action()
         #expect(!model.capsuleDismissed)
     }
+}
+
+private struct SyntheticSavedCapture: StoppedCaptureProtocol {
+    let outputURL: URL
+    let duration: Double = 10
+    var fileSize = 1
+    func finish() async -> RecordingResult { .init(outputURL: outputURL, duration: duration, fileSize: fileSize, warnings: []) }
 }
 
 private struct Exporter: AudioExporterProtocol {

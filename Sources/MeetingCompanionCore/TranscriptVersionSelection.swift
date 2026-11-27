@@ -298,7 +298,7 @@ public struct TranscriptResultStorage: Sendable {
     /// Merges unknown top-level fields from `existingData` into `encodedData` without numeric loss.
     public static func mergeUnknownFields(from existingData: Data, into encodedData: Data) throws -> Data {
         let knownKeys: Set<String> = [
-            "recording", "date", "title", "displayTitle", "duration", "phase", "problems", "meeting", "log"
+            "recording", "date", "title", "displayTitle", "duration", "phase", "problems", "meeting", "log", "sourceRetention"
         ]
         let existingFields = try parseTopLevelFields(data: existingData)
         _ = try parseTopLevelFields(data: encodedData)

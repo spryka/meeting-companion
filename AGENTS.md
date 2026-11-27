@@ -57,7 +57,7 @@ artifact layout, failure behavior and evaluation method.
 
 - Keep `local.meeting-companion` bundle ID and `MeetingCompanion` storage paths
   stable; changing signing identity can reset macOS permissions.
-- Never remove user recordings or transcripts. Remove app-owned model/runtime caches
+- Preserve user recordings and transcripts except under the explicitly enabled, library-specific retention policy. Remove app-owned model/runtime caches
   only through the user-confirmed reset action; preserve shared caches. Reset permissions
   only at the user's explicit request, with `scripts/reset-permissions.sh` after
   the app quits. Never reset permissions automatically during build/install.

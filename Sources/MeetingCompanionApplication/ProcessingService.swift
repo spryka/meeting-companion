@@ -109,6 +109,7 @@ public actor ProcessingService {
     public enum Event: Sendable {
         case enqueued(ProcessingJob)
         case started(ProcessingJob)
+        case recordingSaved(URL)
         case progress(ProcessingJob, TranscriptionProgress)
         case completed(ProcessingJob, transcriptURL: URL, persistenceWarning: String? = nil)
         case failed(ProcessingJob, errorDescription: String, persistenceWarning: String? = nil)
@@ -295,6 +296,8 @@ public actor ProcessingService {
         try VoiceEmbeddingProtocol.validateRequest(request)
         let recording = RecordingEntry.canonicalURL(recordingURL)
         let id = UUID()
+        if let historyRepository, !historyRepository.reserveWork(recording, id: id) { throw VoiceJobError.unavailable }
+        defer { historyRepository?.releaseWork(recording, id: id) }
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             let response: VoiceEmbeddingProtocol.Response = try await withCheckedThrowingContinuation { continuation in
@@ -602,6 +605,7 @@ public actor ProcessingService {
                 // Finalize stopped capture or export audio if missing
                 if let stopped = nextJob.stoppedCapture {
                     let result = await stopped.finish()
+                    if result.fileSize > 0 { await self.emit(.recordingSaved(nextJob.recordingURL)) }
                     for warning in result.warnings {
                         await self.handleProgress(job: nextJob, progress: .init(stage: .audio, completed: 0, total: 0, warning: warning))
                     }
