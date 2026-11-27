@@ -18,7 +18,7 @@
 ## Установка
 
 В версии **2.3.0 (сборка 110)** появилась [автоочистка записей](#автоочистка-записей).
-DMG для Apple Silicon доступен на странице [последнего стабильного релиза](https://github.com/spryka/meeting-companion/releases/latest).
+[Скачать DMG для Apple Silicon](https://github.com/spryka/meeting-companion/releases/download/v2.3.0/Meeting-Companion-2.3.0-arm64.dmg)
 
 [Все версии](https://github.com/spryka/meeting-companion/releases)
 · [История изменений](CHANGELOG.md)
